@@ -36,23 +36,34 @@
     (and (pos? total)
          (<= (* allowed allowed) (* k total)))))
 
+(defn- empty-entity-filter?
+  "Whether the clauses before this search admit no entity at all. The
+   executor passes an empty EntityBitSet on purpose for an empty relation;
+   its seq view is nil, which Proximum's filtered search rejects (#1144)."
+  [entity-filter]
+  (and (some? entity-filter)
+       (zero? (long (es/entity-bitset-cardinality entity-filter)))))
+
 (defn- search-results
   [prox-idx {:keys [vector k ef filter-strategy]} entity-filter]
-  (let [filter-strategy (or filter-strategy
-                            (when (and entity-filter
-                                       (exact-filter-cheaper? prox-idx k entity-filter))
-                              :exact))
-        opts (cond-> {}
-               ef (assoc :ef ef)
-               filter-strategy (assoc :filter-strategy filter-strategy))]
-    (if entity-filter
-      ;; Proximum translates this lazy Roaring64 ID view directly into its
-      ;; native internal-id bitset. Do not materialize a second boxed HashSet;
-      ;; sparse SQL filters then cost O(matches), while the native bitset is the
-      ;; one dense representation HNSW actually consumes.
-      (prox/search-filtered prox-idx vector k
-                            (es/entity-bitset-seq entity-filter) opts)
-      (prox/search prox-idx vector k opts))))
+  (if (empty-entity-filter? entity-filter)
+    []
+    (let [filter-strategy (or filter-strategy
+                              (when (and entity-filter
+                                         (exact-filter-cheaper? prox-idx k entity-filter))
+                                :exact))
+          opts (cond-> {}
+                 ef (assoc :ef ef)
+                 filter-strategy (assoc :filter-strategy filter-strategy))]
+      (if entity-filter
+        ;; Proximum translates this lazy Roaring64 ID view directly into its
+        ;; native internal-id bitset. Do not materialize a second boxed HashSet;
+        ;; sparse SQL filters then cost O(matches), while the native bitset is the
+        ;; one dense representation HNSW actually consumes. The view is never
+        ;; nil: Proximum reads a nil filter as an error or as no filter.
+        (prox/search-filtered prox-idx vector k
+                              (es/entity-bitset-iterable entity-filter) opts)
+        (prox/search prox-idx vector k opts)))))
 
 (defn- close-generation! [generation]
   (when generation
@@ -312,7 +323,10 @@
     ;; the discovered HNSW candidates, not the full corpus: exact primary recheck
     ;; can validate returned rows, but cannot repair ANN false negatives, hence
     ;; :recall remains :approximate.
-    (if-not generation
+    (if (or (not generation)
+            ;; An empty filter admits no candidate. Answer the exhausted empty
+            ;; page here rather than open a scan Proximum would reject (#1144).
+            (empty-entity-filter? entity-filter))
       {:candidates []
        :precision :recheck
        :recall :approximate
@@ -338,7 +352,7 @@
                         scan-mode (assoc :mode scan-mode)
                         entity-filter
                         (assoc :entity-filter
-                               (es/entity-bitset-seq entity-filter))
+                               (es/entity-bitset-iterable entity-filter))
                         (some? strict-order?) (assoc :strict-order? strict-order?)
                         ef (assoc :ef ef)
                         query-id (assoc :query-id query-id)

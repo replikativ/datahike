@@ -16,6 +16,13 @@ When something is added, it's typically marked *Experimental*. When the API cont
   constant output `[[count ?n] 4]` failed to parse on both engines. Because
   the two spellings share one cache entry, whichever ran first in a process
   decided how the other was read. Fixes [#1145].
+- **A proximum `knn` after clauses that match nothing returns no rows
+  ([#1148]).** When the clauses before `knn` bound no entity, the empty entity
+  filter reached Proximum as `nil`. A top-k search threw "search-filtered
+  requires a predicate fn, Set, or ArrayBitSet", for both the `[?e ...]` and
+  `[[?e ?d]]` binding forms and in a database with no entities. A candidate
+  scan read `nil` as no filter and returned unfiltered candidates. Both now
+  return an empty result without calling Proximum. Fixes [#1144].
 - **The JVM HTTP client no longer sends a body with a GET ([#1141]).**
   A read went out as a GET with its arguments in the body. Google's front end
   (Cloud Run, load balancers) answers that with a 400 or closes the stream, and
@@ -977,3 +984,5 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1105]: https://github.com/replikativ/datahike/issues/1105
 [#1149]: https://github.com/replikativ/datahike/pull/1149
 [#1145]: https://github.com/replikativ/datahike/issues/1145
+[#1148]: https://github.com/replikativ/datahike/pull/1148
+[#1144]: https://github.com/replikativ/datahike/issues/1144

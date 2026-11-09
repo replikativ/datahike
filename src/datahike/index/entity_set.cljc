@@ -124,3 +124,18 @@
    (defn entity-bitset-seq
      [bs]
      (seq bs)))
+
+#?(:clj
+   (defn entity-bitset-iterable
+     "An Iterable view of the bitset's entity IDs, never nil. Unlike
+      `entity-bitset-seq`, an empty bitset gives an empty view rather than nil,
+      so a consumer cannot mistake \"nothing allowed\" for \"no filter\". Each
+      `.iterator` call starts a fresh pass, so it can be read more than once."
+     ^Iterable [^Roaring64NavigableMap bs]
+     (reify Iterable
+       (iterator [_] (.iterator bs))))
+
+   :cljs
+   (defn entity-bitset-iterable
+     [bs]
+     bs))

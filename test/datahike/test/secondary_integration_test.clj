@@ -1136,6 +1136,121 @@
             (d/release conn))
           (finally (d/delete-database cfg)))))))
 
+;; #1144: the executor hands an external engine an empty EntityBitSet when
+;; the clauses before it bind no entity. Its seq view is nil, which Proximum's
+;; filtered search rejects, so knn threw instead of returning no rows.
+
+(defn- proximum-knn-db
+  "Memory db with a :proximum index over :doc/emb; `docs` are [name vector]."
+  [docs]
+  (let [cfg {:store {:backend :memory :id (random-uuid)} :schema-flexibility :write}]
+    (d/create-database cfg)
+    (let [conn (d/connect cfg)]
+      (d/transact conn [{:db/ident :doc/name :db/valueType :db.type/string
+                         :db/cardinality :db.cardinality/one}
+                        {:db/ident :doc/emb :db/valueType :db.type/float-array
+                         :db/cardinality :db.cardinality/one}])
+      (d/transact conn [{:db/ident :idx/emb :db.secondary/type :proximum
+                         :db.secondary/attrs [:doc/emb]
+                         :db.secondary/config {:dim 4 :distance :cosine
+                                               :store-config {:backend :memory
+                                                              :id (random-uuid)}}}])
+      (Thread/sleep 800)
+      (when (seq docs)
+        (d/transact conn (mapv (fn [[n v]] {:doc/name n :doc/emb (float-array v)}) docs))
+        (Thread/sleep 500))
+      {:cfg cfg :conn conn})))
+
+(deftest proximum-knn-empty-entity-filter
+  (when-not proximum-available?
+    (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
+  (when proximum-available?
+    (binding [q/*disable-planner* false]
+      (let [qvec (float-array [1.0 0.0 0.0 0.0])
+            filter-q '[:find ?e :in $ ?q
+                       :where [?e :doc/name "zzz"]
+                       [(datahike.index.secondary.proximum/knn :idx/emb ?q 3) [?e ...]]]
+            retrieval-q '[:find ?e ?d :in $ ?q
+                          :where [?e :doc/name "zzz"]
+                          [(datahike.index.secondary.proximum/knn :idx/emb ?q 3) [[?e ?d]]]]
+            bare-q '[:find ?e ?d :in $ ?q
+                     :where [(datahike.index.secondary.proximum/knn :idx/emb ?q 3) [[?e ?d]]]]]
+        (testing "a pattern that matches no entity before knn"
+          (let [{:keys [cfg conn]} (proximum-knn-db [["east" [1.0 0.0 0.0 0.0]]
+                                                     ["east2" [0.9 0.1 0.0 0.0]]
+                                                     ["north" [0.0 1.0 0.0 0.0]]])]
+            (try
+              (is (= #{} (d/q filter-q @conn qvec)) "[?e ...]")
+              (is (= #{} (d/q retrieval-q @conn qvec)) "[[?e ?d]]")
+              (is (= 3 (count (d/q bare-q @conn qvec)))
+                  "an unfiltered knn still finds the documents")
+              (is (= #{["north"]}
+                     (d/q '[:find ?n :in $ ?q
+                            :where [?e :doc/name "north"]
+                            [(datahike.index.secondary.proximum/knn :idx/emb ?q 3) [?e ...]]
+                            [?e :doc/name ?n]]
+                          @conn qvec))
+                  "a non-empty filter admits only its entities")
+              (finally (d/release conn) (d/delete-database cfg)))))
+        (testing "a database with no entities"
+          (let [{:keys [cfg conn]} (proximum-knn-db [])]
+            (try
+              (is (= #{} (d/q filter-q @conn qvec)) "[?e ...]")
+              (is (= #{} (d/q retrieval-q @conn qvec)) "[[?e ?d]]")
+              (is (= #{} (d/q bare-q @conn qvec)) "no filter")
+              (finally (d/release conn) (d/delete-database cfg)))))))))
+
+(deftest proximum-index-empty-entity-filter
+  (when-not proximum-available?
+    (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
+  (when proximum-available?
+    (let [qspec {:vector (float-array [1.0 0.0 0.0 0.0]) :k 3}
+          empty-bs (es/entity-bitset)
+          only-2 (es/entity-bitset-from-longs [2])
+          idx (sec/create-index :proximum
+                                {:attrs #{:person/embedding}
+                                 :dim 4 :distance :cosine
+                                 :store-config {:backend :memory :id (random-uuid)}}
+                                nil)
+          tidx (sec/-as-transient idx)
+          _ (doseq [[e v] [[1 [1.0 0.0 0.0 0.0]] [2 [0.0 1.0 0.0 0.0]]]]
+              (sec/-transact! tidx {:datom (datahike.datom/datom e :person/embedding
+                                                                 (float-array v))
+                                    :added? true}))]
+      (testing "the filter view handed to Proximum is never nil"
+        (is (some? (es/entity-bitset-iterable empty-bs)))
+        (is (= [] (vec (es/entity-bitset-iterable empty-bs))))
+        (let [view (es/entity-bitset-iterable only-2)]
+          (is (= [2] (vec view)))
+          (is (= [2] (vec view)) "a second pass sees the same ids")))
+      (testing "transient index"
+        (is (zero? (es/entity-bitset-cardinality (sec/-search tidx qspec empty-bs))))
+        (is (= [] (sec/-slice-ordered tidx qspec empty-bs nil :asc nil)))
+        (is (= [2] (vec (es/entity-bitset-seq (sec/-search tidx qspec only-2))))))
+      (let [pidx (sec/-persistent! tidx)]
+        (testing "persistent index"
+          (is (zero? (es/entity-bitset-cardinality (sec/-search pidx qspec empty-bs))))
+          (is (= [] (sec/-slice-ordered pidx qspec empty-bs nil :asc nil)))
+          (is (= 2 (count (sec/-slice-ordered pidx qspec nil nil :asc nil)))
+              "the index holds both vectors")
+          (is (= [2] (vec (es/entity-bitset-seq (sec/-search pidx qspec only-2)))))
+          (is (= [2] (mapv :entity-id (sec/-slice-ordered pidx qspec only-2 nil :asc nil)))
+              "the nearest vector, entity 1, is filtered out"))
+        (testing "candidate scan answers an exhausted empty page"
+          (let [page (sec/-candidate-page pidx {:vector (:vector qspec)
+                                                :candidate-limit 3}
+                                          empty-bs {:limit 2})]
+            (is (= 1 (count (sec/validate-candidate-scan [page]))))
+            (is (= [] (:candidates page)))
+            (is (true? (:exhausted? page)))
+            (is (nil? (:continuation page)))))
+        (testing "candidate scan applies a non-empty filter"
+          (let [page (sec/-candidate-page pidx {:vector (:vector qspec)
+                                                :candidate-limit 3}
+                                          only-2 {:limit 2})]
+            (is (= [2] (mapv :entity-id (:candidates page)))
+                "the nearest vector, entity 1, is filtered out")))))))
+
 ;; ---------------------------------------------------------------------------
 ;; Stratum Entity-Filter Aggregate Tests
 
