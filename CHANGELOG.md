@@ -6,6 +6,24 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **A proximum `knn` filtered after retractions finds every survivor
+  ([#TODO]).** Proximum built the filter for a top-k search with room for only
+  as many vectors as were LIVE, but vector ids are never reused, so after
+  deletes a surviving entity's id could fall outside it and never match: with
+  100 vectors and the 60 oldest retracted, a `knn` restricted to the newest
+  three returned nothing. Fixed in proximum 0.1.39.
+- **Seqs survive CBOR as seqs ([#TODO]).** With boring 0.1.31, a list, lazy
+  seq or cons is written as the tag-27 `clojure/seq` marker on the HTTP CBOR
+  wire, on the kabel wire and in export dumps, and reads back as a seq rather
+  than a vector. A query's call forms such as `(count ?v)` now reach the server
+  as lists, `d/datoms` over `:format :cbor` returns a seq as transit and edn
+  already did, and a list or lazy seq stored under `:schema-flexibility :read`
+  is a seq again after export and import. Dumps of databases that hold no seq
+  values are byte-identical to before. **Upgrade every CBOR peer together, the
+  server and any peer that reads dumps first.** A reader on an older boring
+  does not know the marker: the HTTP CBOR client and server reject it with an
+  error, while a kabel peer or an import decodes it SILENTLY as an
+  `UnknownRecord`. Transit, edn and json are unaffected.
 - **A proximum `knn` after clauses that match nothing returns no rows
   ([#1148]).** When the clauses before `knn` bound no entity, the empty entity
   filter reached Proximum as `nil`. A top-k search threw "search-filtered

@@ -74,6 +74,17 @@
                    e    (<! (<ok (client/q '[:find ?e . :where [?e :name "Ada"]] db)))
                    pulled (<! (<ok (client/pull db '[:name :age] e)))
                    _    (is (= {:name "Ada" :age 36} pulled))
+                   ;; Call forms leave ClojureScript's boring writer as the
+                   ;; tag-27 `clojure/seq` marker (boring 0.1.31); the JVM
+                   ;; server must read them back as the query that was sent.
+                   calls (<! (<ok (client/q '[:find ?n (count ?a)
+                                              :where [?e :name ?n] [?e :age ?a]
+                                              [(> ?a 40)] [(str ?n "!") ?s]]
+                                            db)))
+                   _    (is (= #{["Grace" 1]} (set calls)) "an aggregate, a predicate and a call")
+                   datoms (<! (<ok (client/datoms db :eavt e)))
+                   _    (is (seq? datoms) "a datoms result arrives as a seq")
+                   _    (is (= [[e :age 36] [e :name "Ada"]] (mapv (juxt :e :a :v) datoms)))
                    _    (<! (client/release conn))
                    _    (<! (<ok (client/delete-database cfg)))]
                (is (false? (<! (<ok (client/database-exists? cfg)))) "deleted"))
