@@ -346,7 +346,7 @@
               ;; history probe: remember the seed commit and a fingerprint of
               ;; its contents; re-read it through the commit graph after the
               ;; load (does retained history survive the GC mode?)
-              probe-q '[:find (count ?e) (sum ?n) :with ?e :where [?e :e/n ?n]]
+              probe-q '[:find (sum ?n) (count ?n) :with ?e :where [?e :e/n ?n]]
               seed-cid (dv/commit-id @conn)
               seed-print (when (pos? seed-entities) (vec (first (d/q probe-q @conn))))
               seed-tx-ns @tx-ns
