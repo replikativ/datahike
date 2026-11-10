@@ -6,6 +6,21 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **JSON clients keep the lists in a query, and a call spelled as a vector
+  fails with a clear error ([#1149]).** JSON has no list type, so the JVM
+  client sent the call `(count ?v)` as the vector `[count ?v]`. The planner
+  read a one-argument call as an inline lookup ref ("Invalid entid") and an
+  `or` of predicates as data patterns, which answered wrongly without an
+  error. Datahike's tagged JSON now writes lists as `["!list", [...]]`. Lazy
+  seqs, which most results are, stay plain arrays. A call, rule call or
+  `not`/`or`/`and` clause written as a vector now raises an `ex-info` of
+  `:type :datahike.query/vector-call` that names the clause, wherever it
+  stands and whichever spelling ran first in the process; send such a query
+  as EDN or in a format that keeps lists. Upgrade the server before JSON
+  clients: an older server reads the tag as the vector `["!list" [...]]` and
+  raises, for example "Lookup ref attribute should be marked as :db/unique:
+  ["!list" [count ?v]]". CBOR is fixed by the boring 0.1.31 bump. Fixes
+  [#1145].
 - **A proximum `knn` after clauses that match nothing returns no rows
   ([#1148]).** When the clauses before `knn` bound no entity, the empty entity
   filter reached Proximum as `nil`. A top-k search threw "search-filtered
@@ -972,5 +987,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1123]: https://github.com/replikativ/datahike/pull/1123
 [#1112]: https://github.com/replikativ/datahike/issues/1112
 [#1105]: https://github.com/replikativ/datahike/issues/1105
+[#1149]: https://github.com/replikativ/datahike/pull/1149
+[#1145]: https://github.com/replikativ/datahike/issues/1145
 [#1148]: https://github.com/replikativ/datahike/pull/1148
 [#1144]: https://github.com/replikativ/datahike/issues/1144

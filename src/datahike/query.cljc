@@ -619,6 +619,87 @@
              {}
              (select-keys query extra-ks)))
 
+;; ---------------------------------------------------------------------------
+;; Call spelling (#1145)
+;;
+;; A call is a list, `[(count ?v) ?c]`, as in Datomic. The datalog parser also
+;; accepts it as a vector, `[[count ?v] ?c]`, but the engine reads a vector as a
+;; data pattern or lookup ref there, so a vector-spelled call raised "Invalid
+;; entid" or, on the planner, answered wrongly. It is what a query looks like
+;; after a codec without a list type, so refuse it by name. This runs before
+;; the normalized-query memo: a list and a vector spelling are `=` and hash
+;; alike, so a memo hit would hand a vector query the list query's reading.
+
+(defn- vector-spelled-call?
+  "A vector whose head is a plain symbol, not a `?var`, `_` or `$source`. In a
+   clause position that is a call, rule call or not/or/and written as a vector:
+   a data pattern starts with a variable, `_`, a source or a constant, and a
+   lookup ref with an attribute."
+  [x]
+  (and (vector? x)
+       (let [h (first x)]
+         (and (symbol? h)
+              (not (analyze/free-var? h))
+              (not= '_ h)
+              (not= \$ (first (name h)))))))
+
+(defn- vector-call-error [form clause]
+  (ex-info (str "A function call, predicate, rule call or not/or/and clause must be "
+                "a list, not a vector: " (pr-str form) ". Send the query as EDN, "
+                "or use a client format that keeps lists.")
+           {:type   :datahike.query/vector-call
+            :error  :query/where
+            :form   form
+            :clause clause}))
+
+(defn- check-clause-spelling!
+  "Throw on a vector-spelled call anywhere a clause can stand: the clause
+   itself (a rule call or not/or/and), its call position `[[f …] …]`, and
+   recursively the bodies of not, not-join, and, or and or-join."
+  [clause]
+  (cond
+    (vector? clause)
+    (cond
+      (vector-spelled-call? clause) (throw (vector-call-error clause clause))
+      (vector-spelled-call? (first clause)) (throw (vector-call-error (first clause) clause)))
+
+    (seq? clause)
+    (let [[h & more] (if (source-prefixed-clause? clause) (rest clause) clause)]
+      (case h
+        (not and or) (run! check-clause-spelling! more)
+        (not-join or-join) (run! check-clause-spelling! (rest more))
+        nil))))
+
+(defn- check-rules-spelling!
+  "Rule heads and bodies of the rule set bound to `%`."
+  [rules]
+  (when (sequential? rules)
+    (doseq [rule rules]
+      (when (sequential? rule)
+        (let [[head & body] rule]
+          (when (vector-spelled-call? head)
+            (throw (vector-call-error head rule)))
+          (run! check-clause-spelling! body))))))
+
+(defn- raw-where-clauses
+  "The `:where` clauses of an unnormalized query form, in map or vector syntax."
+  [q]
+  (let [q (if (and (seq? q) (= 'quote (first q))) (second q) q)]
+    (cond
+      (map? q) (:where q)
+      (sequential? q) (->> q
+                           (drop-while #(not= :where %))
+                           rest
+                           (take-while #(not (keyword? %))))
+      :else nil)))
+
+(defn- check-rules-in-args!
+  "Refuse a vector-spelled rule head or call in the rule set bound to `%`."
+  [query args]
+  (let [idx (first (keep-indexed (fn [i x] (when (= '% x) i)) (:in query)))]
+    (when (and idx (sequential? args) (< idx (count args)))
+      (check-rules-spelling! (nth (vec args) idx)))))
+
 (defn normalize-q-input
   "Turns input to q into a map with :query and :args fields.
    Also normalizes the query into a map representation."
@@ -628,17 +709,26 @@
         ;; database snapshots in the memo LRU and make every lookup hash
         ;; the argument values.
         qform (or (and (map? query-input) (:query query-input)) query-input)
+        ;; Before the memo, which keys a list and a vector spelling as one.
+        ;; A string is its own spelling, so it is checked once it is read.
+        _     (when-not (string? qform)
+                (run! check-clause-spelling! (raw-where-clauses qform)))
         query (form-memo
                [::qnorm qform]
                #(-> qform
-                    ((fn [q] (if (string? q) (edn/read-string q) q)))
+                    ((fn [q] (if (string? q)
+                               (let [q (edn/read-string q)]
+                                 (run! check-clause-spelling! (raw-where-clauses q))
+                                 q)
+                               q)))
                     ((fn [q] (if (= 'quote (first q)) (second q) q)))
                     ((fn [q] (if (sequential? q) (dpi/query->map q) q)))))
         args (if (and (map? query-input) (contains? query-input :args))
                (do (when (seq arg-inputs)
                      (log/warn :datahike/query-input-ignored {:query query}))
                    (:args query-input))
-               arg-inputs)]
+               arg-inputs)
+        _    (check-rules-in-args! query args)]
     (-> {:query (-> (apply dissoc query extra-ks)
                     normalize-list-fn-clauses
                     normalize-repeated-vars)
