@@ -348,7 +348,11 @@
               ;; load (does retained history survive the GC mode?)
               probe-q '[:find (sum ?n) (count ?n) :with ?e :where [?e :e/n ?n]]
               seed-cid (dv/commit-id @conn)
-              seed-print (when (pos? seed-entities) (vec (first (d/q probe-q @conn))))
+              seed-print (when (pos? seed-entities)
+                           (try (vec (first (d/q probe-q @conn)))
+                                (catch Throwable e
+                                  (println "  probe query failed" (.getMessage e))
+                                  nil)))
               seed-tx-ns @tx-ns
               entities (loop [i 0 entities seed-entities]
                          (if (< i commits)
