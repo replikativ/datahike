@@ -48,6 +48,9 @@
 
 
  :w1-e
- [{:label "w1-kh0-g3x-r2" :workload :w1 :gc :g3 :config {:keep-history? false :exclusive? true} :gc-opts {:interval-ms 15000 :history-window-ms 60000} :wl {:seed-entities 40000 :commits 3000 :sample-every 250}}
+ [{:label "w1-ch1-g1-r2" :workload :w1 :gc :g1 :config {:crypto-hash? true} :wl {:seed-entities 40000 :commits 3000 :sample-every 250}}
+  {:label "w1-def-g1-r2" :workload :w1 :gc :g1 :wl {:seed-entities 40000 :commits 3000 :sample-every 250}}
+  {:label "w1-def-g0-r2" :workload :w1 :gc :g0 :wl {:seed-entities 40000 :commits 3000 :sample-every 250}}
+  {:label "w1-kh0-g3x-r2" :workload :w1 :gc :g3 :config {:keep-history? false :exclusive? true} :gc-opts {:interval-ms 15000 :history-window-ms 60000} :wl {:seed-entities 40000 :commits 3000 :sample-every 250}}
   {:label "w1-def-g3x-r2" :workload :w1 :gc :g3 :config {:exclusive? true} :gc-opts {:interval-ms 15000 :history-window-ms 60000} :wl {:seed-entities 40000 :commits 3000 :sample-every 250}}]
 }

@@ -55,6 +55,7 @@
   (:require [datahike.api :as d]
             [datahike.gc :as gc]
             [datahike.online-gc :as online-gc]
+            [datahike.versioning :as dv]
             [konserve.core :as k]
             [konserve.impl.defaults :as kd]
             [superv.async :refer [<?? S]]
@@ -342,6 +343,12 @@
                       (transact! (mapv #(new-entity r (+ n %)) (range k)))
                       (recur (+ n k)))))
               seed-sample (sample! :seed 0 seed-entities @tx-ns)
+              ;; history probe: remember the seed commit and a fingerprint of
+              ;; its contents; re-read it through the commit graph after the
+              ;; load (does retained history survive the GC mode?)
+              probe-q '[:find (count ?e) (sum ?n) :with ?e :where [?e :e/n ?n]]
+              seed-cid (dv/commit-id @conn)
+              seed-print (when (pos? seed-entities) (vec (first (d/q probe-q @conn))))
               seed-tx-ns @tx-ns
               entities (loop [i 0 entities seed-entities]
                          (if (< i commits)
@@ -361,13 +368,32 @@
                     (recur (inc w))))
               load-tx-ns (- @tx-ns seed-tx-ns)
               cycles-during-run (:cycles @gc-stats)
+              history-probe (cond
+                              (nil? seed-print) "n/a"
+                              :else
+                              (try
+                                (if-let [old (dv/commit-as-db conn seed-cid)]
+                                  (let [p (vec (first (d/q probe-q old)))]
+                                    (if (= p seed-print)
+                                      "ok"
+                                      (str "WRONG " p " expected " seed-print)))
+                                  "pruned")
+                                (catch Throwable e (str "ERROR " (.getMessage e)))))
+              _ (println "  history-probe" history-probe)
               end (sample! :end commits entities @tx-ns)
               t-all (System/nanoTime)
-              swept-all (count (<?? S (gc/gc-storage! @conn (Date. 0) {:min-age-ms 0})))
+              ;; a collection that throws is a finding, not a harness failure:
+              ;; record it and carry on to the next step
+              try-gc (fn [remove-before]
+                       (try (count (<?? S (gc/gc-storage! @conn remove-before {:min-age-ms 0})))
+                            (catch Throwable e
+                              (println "  GC ERROR" (.getMessage e))
+                              (str "ERROR " (.getMessage e)))))
+              swept-all (try-gc (Date. 0))
               gc-all-ms (/ (- (System/nanoTime) t-all) 1e6)
               end-all (sample! :end-gc-all commits entities @tx-ns)
               t-now (System/nanoTime)
-              swept-now (count (<?? S (gc/gc-storage! @conn (Date.) {:min-age-ms 0})))
+              swept-now (try-gc (Date.))
               gc-now-ms (/ (- (System/nanoTime) t-now) 1e6)
               end-now (sample! :end-gc-now commits entities @tx-ns)
               _ (k/remove-write-hook! store ::amp)
@@ -419,6 +445,7 @@
                               :amp_after_gc_now (:amp end-now)
                               :heap_mb_end (:heap_mb end)
                               :integrity cold
+                              :history_probe history-probe
                               :history_window_ms history-window-ms
                               :interval_ms (when bg-stop interval-ms)})
               summary-cols [:label :workload :config :gc :commits :load_commits_per_s :seed_s
@@ -428,7 +455,7 @@
                             :run_gc_cycles :run_gc_swept :run_gc_ms_mean :run_gc_ms_max :run_gc_errors
                             :ogc_collected :end_gc_all_swept :end_gc_all_ms :store_mb_after_gc_all
                             :files_after_gc_all :end_gc_now_swept :end_gc_now_ms :store_mb_after_gc_now
-                            :files_after_gc_now :amp_after_gc_now :heap_mb_end :integrity
+                            :files_after_gc_now :amp_after_gc_now :heap_mb_end :integrity :history_probe
                             :history_window_ms :interval_ms]]
           (spit csv-file (str (str/join "," (map name csv-cols)) "\n"
                               (str/join "\n" (map csv-line @rows)) "\n"))
