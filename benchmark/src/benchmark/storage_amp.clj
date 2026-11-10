@@ -346,10 +346,13 @@
               ;; history probe: remember the seed commit and a fingerprint of
               ;; its contents; re-read it through the commit graph after the
               ;; load (does retained history survive the GC mode?)
-              probe-q '[:find (sum ?n) (count ?n) :with ?e :where [?e :e/n ?n]]
+              ;; straight off the index, not d/q: the query result cache would
+              ;; answer the re-read of the same commit from memory
+              probe-q (fn [db] (reduce (fn [[s c] d] [(+ s (long (:v d))) (inc c)])
+                                       [0 0] (d/datoms db :aevt :e/n)))
               seed-cid (dv/commit-id @conn)
               seed-print (when (pos? seed-entities)
-                           (try (vec (first (d/q probe-q @conn)))
+                           (try (probe-q @conn)
                                 (catch Throwable e
                                   (println "  probe query failed" (.getMessage e))
                                   nil)))
@@ -377,7 +380,7 @@
                               :else
                               (try
                                 (if-let [old (dv/commit-as-db conn seed-cid)]
-                                  (let [p (vec (first (d/q probe-q old)))]
+                                  (let [p (probe-q old)]
                                     (if (= p seed-print)
                                       "ok"
                                       (str "WRONG " p " expected " seed-print)))
