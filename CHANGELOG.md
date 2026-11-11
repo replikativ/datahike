@@ -6,6 +6,13 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **A collection binding is built in one pass ([#1156]).** A collection binding
+  such as `[?x ...]` or `[[?a ?b] ...]` built one relation for each value, and
+  folded them together. A function clause did the same for each input tuple.
+  A collection of scalars, or of flat tuples of scalars, now becomes one
+  relation, and a function clause keeps one accumulator for the whole call.
+  Results and errors do not change. A query that binds 10000 tuples runs about
+  3 to 4 times faster, on the JVM and on node. Fixes [#1155].
 - **A proximum `knn` after clauses that match nothing returns no rows
   ([#1148]).** When the clauses before `knn` bound no entity, the empty entity
   filter reached Proximum as `nil`. A top-k search threw "search-filtered
@@ -973,4 +980,6 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1112]: https://github.com/replikativ/datahike/issues/1112
 [#1105]: https://github.com/replikativ/datahike/issues/1105
 [#1148]: https://github.com/replikativ/datahike/pull/1148
+[#1156]: https://github.com/replikativ/datahike/pull/1156
+[#1155]: https://github.com/replikativ/datahike/issues/1155
 [#1144]: https://github.com/replikativ/datahike/issues/1144
