@@ -891,17 +891,26 @@
       (keyword? x)))
 
 ;; Relation algebra
+(defn- tget
+  "(get tuple idx), without reflection when the tuple is an array: `get` on an
+   array goes through java.lang.reflect.Array on the JVM."
+  [tuple idx]
+  (if (da/array? tuple)
+    (aget ^objects tuple (int idx))
+    (get tuple idx)))
+
 (defn join-tuples [t1 #?(:cljs idxs1
-                         :clj ^{:tag "[[Ljava.lang.Object;"} idxs1)
+                         :clj ^{:tag "[Ljava.lang.Object;"} idxs1)
                    t2 #?(:cljs idxs2
-                         :clj ^{:tag "[[Ljava.lang.Object;"} idxs2)]
+                         :clj ^{:tag "[Ljava.lang.Object;"} idxs2)]
   (let [l1 (alength idxs1)
         l2 (alength idxs2)
-        res (da/make-array (+ l1 l2))]
+        #?@(:clj [^objects res (da/make-array (+ l1 l2))]
+            :cljs [res (da/make-array (+ l1 l2))])]
     (dotimes [i l1]
-      (aset res i (get t1 (aget idxs1 i))))
+      (aset res i (tget t1 (aget idxs1 i))))
     (dotimes [i l2]
-      (aset res (+ l1 i) (get t2 (aget idxs2 i))))
+      (aset res (+ l1 i) (tget t2 (aget idxs2 i))))
     res))
 
 (defn sum-rel [a b]
@@ -1626,14 +1635,14 @@
   (let [idx (attrs attr)]
     (if (contains? rel/*lookup-attrs* attr)
       (fn [tuple]
-        (let [eid (get tuple idx)]
+        (let [eid (tget tuple idx)]
           (cond
             (number? eid) eid                               ;; quick path to avoid fn call
             (sequential? eid) (dbu/entid rel/*implicit-source* eid)
             (da/array? eid) (dbu/entid rel/*implicit-source* eid)
             :else eid)))
       (fn [tuple]
-        (get tuple idx)))))
+        (tget tuple idx)))))
 
 ;; ONE implementation, in datahike.query.relation — the planner joins through
 ;; that namespace and this engine through this one, and when this var carried
@@ -1827,7 +1836,10 @@
 (defn- rel-prod-by-attrs [context attrs]
   (let [rels (filter #(rel-contains-attrs? % attrs) (:rels context))
         production (reduce prod-rel rels)]
-    [(update context :rels #(remove (set rels) %)) production]))
+    ;; Identity, not a set: a record's hash walks every tuple of the relation,
+    ;; and a relation equal to a selected one has the same attrs, so it was
+    ;; selected by the filter above anyway.
+    [(update context :rels #(remove (fn [r] (some (fn [x] (identical? r x)) rels)) %)) production]))
 
 (defn -call-fn [context rel f args]
   (let [sources (:sources context)
@@ -1857,7 +1869,7 @@
       ;; TODO raise if not all args are bound
       (dotimes [i len]
         (when-some [tuple-idx (aget tuples-args i)]
-          (let [v (get tuple tuple-idx)]
+          (let [v (tget tuple tuple-idx)]
             (da/aset static-args i v))))
       (apply f static-args))))
 
