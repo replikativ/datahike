@@ -6,6 +6,13 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Relation tuples are read without reflection ([#1154]).** A tuple is an
+  `Object[]`, and `get` on an array goes through `java.lang.reflect.Array` on
+  the JVM. In a profile of a 10,000-row fn-clause query that was about 23 % of
+  the samples. `join-tuples`, `getter-fn` and `-call-fn` now use `aget` on
+  arrays, and `rel-prod-by-attrs` removes relations by identity, not by
+  hashing them. A fn-clause query over 10,000 rows is about 12 % faster.
+  Fixes [#1153].
 - **A proximum `knn` after clauses that match nothing returns no rows
   ([#1148]).** When the clauses before `knn` bound no entity, the empty entity
   filter reached Proximum as `nil`. A top-k search threw "search-filtered
@@ -963,6 +970,8 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#980]: https://github.com/replikativ/datahike/pull/980
 [#1092]: https://github.com/replikativ/datahike/pull/1092
 [#1090]: https://github.com/replikativ/datahike/pull/1090
+[#1154]: https://github.com/replikativ/datahike/pull/1154
+[#1153]: https://github.com/replikativ/datahike/issues/1153
 [#1141]: https://github.com/replikativ/datahike/pull/1141
 [#1139]: https://github.com/replikativ/datahike/pull/1139
 [#1143]: https://github.com/replikativ/datahike/pull/1143
