@@ -4,6 +4,7 @@
       :clj  [clojure.test :as t :refer        [is are deftest testing]])
    [datahike.api :as d]
    [datahike.db :as db]
+   [datahike.query :as dq]
    [datahike.query.resolve :as qr])
   (:import [java.util UUID Date])
   #?(:clj
@@ -839,3 +840,14 @@
                (catch ExceptionInfo e e))]
        (is (= :datahike/query-timeout (:type (ex-data e))))
        (is (= 5 (:timeout-ms (ex-data e)))))))
+
+(deftest join-tuples-reads-array-and-vector-tuples
+  ;; Relation tuples are arrays in the engine and vectors where a caller
+  ;; builds a relation by hand. Both must read the same.
+  (let [idxs (to-array [1 0])]
+    (is (= [:b :a :y :x]
+           (vec (dq/join-tuples (to-array [:a :b]) idxs (to-array [:x :y]) idxs))))
+    (is (= [:b :a :y :x]
+           (vec (dq/join-tuples [:a :b] idxs [:x :y] idxs))))
+    (is (= [:b :a :y :x]
+           (vec (dq/join-tuples (to-array [:a :b]) idxs [:x :y] idxs))))))
