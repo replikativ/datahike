@@ -6,6 +6,17 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **A variable passed twice to a rule call makes the two arguments equal
+  ([#1151]).** `(selfie ?e ?e)` with the rule `[(selfie ?a ?b) [?a :friend ?b]]`
+  should match only the entities that are their own friend. It matched every
+  entity that had a friend. The planner got this wrong in every query shape
+  tested, and the base engine got it wrong whenever `?e` was unbound at the
+  call. The fix covers recursive rules, nested calls, constant arguments, and
+  calls inside `not`, `not-join` and `or`. The planner also no longer raises
+  "Cannot resolve any more clauses" in two shapes: a negation whose body follows a rule call with a function clause
+  over that call's output, and a function clause over the output of a
+  recursive rule when nothing is bound before the call, where the error used
+  to depend on the variable names. Fixes [#1150].
 - **JSON clients keep the lists in a query, and a call spelled as a vector
   fails with a clear error ([#1149]).** JSON has no list type, so the JVM
   client sent the call `(count ?v)` as the vector `[count ?v]`. The planner
@@ -1007,6 +1018,8 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1123]: https://github.com/replikativ/datahike/pull/1123
 [#1112]: https://github.com/replikativ/datahike/issues/1112
 [#1105]: https://github.com/replikativ/datahike/issues/1105
+[#1151]: https://github.com/replikativ/datahike/pull/1151
+[#1150]: https://github.com/replikativ/datahike/issues/1150
 [#1149]: https://github.com/replikativ/datahike/pull/1149
 [#1145]: https://github.com/replikativ/datahike/issues/1145
 [#1148]: https://github.com/replikativ/datahike/pull/1148
