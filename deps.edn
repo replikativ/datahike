@@ -87,7 +87,7 @@
         junit/junit                                 {:mvn/version "4.13.2"}
         medley/medley                               {:mvn/version "1.4.0"}
         metosin/spec-tools                          {:mvn/version "0.10.8"}
-        metosin/malli                               {:mvn/version "0.20.1"}
+        metosin/malli                               {:mvn/version "0.20.3"}
         org.babashka/http-client                    {:mvn/version "0.4.24"}
         metosin/jsonista                            {:mvn/version "1.0.0"}
         com.github.pkpkpk/cljs-cache                {:mvn/version "1.0.21"}

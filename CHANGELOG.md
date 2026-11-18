@@ -6,6 +6,13 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **`merge` and `into` on a database work on Clojure 1.13 ([#1159]).**
+  A `DB` claimed to be an editable collection, but `transient` returned a
+  `DB` rather than a transient map. Clojure 1.13's `merge` transients any
+  editable collection, so `(merge db {...})` raised a `ClassCastException`.
+  `into` on a database failed on every Clojure version. malli goes to 0.20.3,
+  whose Swagger generation no longer `merge`s a map entry, so the HTTP
+  server's `/swagger.json` also answers on 1.13. Fixes [#1157].
 - **A variable passed twice to a rule call makes the two arguments equal
   ([#1151]).** `(selfie ?e ?e)` with the rule `[(selfie ?a ?b) [?a :friend ?b]]`
   should match only the entities that are their own friend. It matched every
@@ -1026,3 +1033,5 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1144]: https://github.com/replikativ/datahike/issues/1144
 [#1152]: https://github.com/replikativ/datahike/pull/1152
 [#1158]: https://github.com/replikativ/datahike/pull/1158
+[#1159]: https://github.com/replikativ/datahike/pull/1159
+[#1157]: https://github.com/replikativ/datahike/issues/1157
