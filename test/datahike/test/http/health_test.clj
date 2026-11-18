@@ -7,6 +7,7 @@
             [datahike.http.permissions :as permissions]
             [datahike.http.server :as server]
             [datahike.http.system :as system]
+            [datahike.writer :as writer]
             [konserve.core :as k]))
 
 (def token "health-test-token")
@@ -99,3 +100,40 @@
         (is (= #{::healthy ::broken} (set @probed))
             "a failed store does not prevent the remaining probes")
         (is (not (re-find #"secret|credentials" (body response))))))))
+
+(deftest readiness-fails-when-the-writer-has-shut-down
+  (let [config   {:store {:backend :memory
+                          :id      #uuid "0a3c43f1-5c0e-4f3b-9d58-6f1d2b7a9e11"}}
+        registry (atom {})]
+    (binding [connections/*connections* registry]
+      (try
+        (d/create-database config)
+        (let [conn    (d/connect config)
+              handler (server/app {:token token :metrics false} registry)]
+          (is (instance? datahike.writer.LocalWriter (:writer @(:wrapped-atom conn)))
+              "the connection uses a local writer")
+          (testing "a healthy writer is ready"
+            (is (= 200 (:status (request handler "/health/ready")))))
+          (writer/-shutdown (:writer @(:wrapped-atom conn)))
+          (testing "the store still answers, but the dead writer fails readiness"
+            (let [response (request handler "/health/ready")]
+              (is (= 503 (:status response)))
+              (is (= "not ready\n" (body response)))))
+          (testing "liveness does not depend on the writer"
+            (is (= 200 (:status (request handler "/health/live")))))
+          (d/release conn))
+        (finally
+          (when (d/database-exists? config)
+            (d/delete-database config)))))))
+
+(deftest readiness-ignores-writers-that-are-not-local
+  (let [remote-id   #uuid "6d1f6b24-71a1-4d5e-8a52-0c1c7e2f3b90"
+        remote-conn (connector/conn-from-db
+                     {:store ::remote
+                      :writer (reify writer/PWriter
+                                (-dispatch! [_ _] nil)
+                                (-shutdown [_] nil))})
+        connections (atom {[remote-id :db] {:conn remote-conn :count 1}})]
+    (with-redefs [k/get (fn [& _] nil)]
+      (let [handler (server/app {:token token :metrics false} connections)]
+        (is (= 200 (:status (request handler "/health/ready"))))))))

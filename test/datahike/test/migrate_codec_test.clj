@@ -140,3 +140,25 @@
     (is (= (hex (into {} (reverse (vec fixture))))
            (hex (into {} (vec fixture))))
         "insertion order does not change the bytes")))
+
+(deftest a-record-is-an-array-and-a-seq-is-marked-test
+  ;; boring 0.1.31 writes a seq under `:archival` as the tag-27 marker
+  ;; `clojure/seq` around its array, so it decodes as a seq rather than a
+  ;; vector. A dump record is a VECTOR, so its bytes did not move: these are
+  ;; the octets 0.1.28 wrote too, and the reason dumps of ordinary databases
+  ;; are byte-identical across the bump.
+  (testing "a record vector is a plain array"
+    (is (= "8501d827623a6161781a20000001f5"
+           (hex [1 :a "x" 536870913 true])))
+    (is (vector? (dec* (enc [1 :a "x" 536870913 true])))))
+  (testing "a seq value is wrapped, and only a seq"
+    ;; 27(["clojure/seq", [1, 2]])
+    (is (= "d81b826b636c6f6a7572652f736571820102" (hex (list 1 2))))
+    (is (= (hex (list 1 2)) (hex (map inc [0 1])) (hex (cons 1 (list 2))))
+        "a list, a lazy seq and a cons are the same value on the wire")
+    (is (= "820102" (hex [1 2])))
+    (is (seq? (dec* (enc (list 1 2)))))
+    (is (= [1 :a '(1 2) 536870913 true]
+           (dec* (enc [1 :a (list 1 2) 536870913 true]))))
+    (is (seq? (nth (dec* (enc [1 :a (list 1 2) 536870913 true])) 2))
+        "inside a record too")))
