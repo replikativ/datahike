@@ -9,10 +9,11 @@ When something is added, it's typically marked *Experimental*. When the API cont
 - **Relation tuples are read without reflection ([#1154]).** A tuple is an
   `Object[]`, and `get` on an array goes through `java.lang.reflect.Array` on
   the JVM. In a profile of a 10,000-row fn-clause query that was about 23 % of
-  the samples. `join-tuples`, `getter-fn` and `-call-fn` now use `aget` on
-  arrays, and `rel-prod-by-attrs` removes relations by identity, not by
-  hashing them. A fn-clause query over 10,000 rows is about 12 % faster.
-  Fixes [#1153].
+  the samples. `join-tuples`, `getter-fn`, `sum-rel` and `-call-fn` now use
+  `aget` on arrays, on both engines: the planner and the base engine now share
+  one copy of each, in `datahike.query.relation`. `rel-prod-by-attrs` removes
+  relations by identity, not by hashing them. A fn-clause query over 10,000
+  rows is about 12 % faster. Fixes [#1153].
 - **`merge` and `into` on a database work on Clojure 1.13 ([#1159]).**
   A `DB` claimed to be an editable collection, but `transient` returned a
   `DB` rather than a transient map. Clojure 1.13's `merge` transients any
