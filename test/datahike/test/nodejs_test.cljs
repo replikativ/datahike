@@ -37,6 +37,7 @@
             ;; green. Same shape as #917: the twin nobody executed.
             [datahike.test.array-test]
             [datahike.test.query-binding-seam-test]
+            [datahike.test.query-collection-binding-test]
             ;; Background GC (start-background-gc! / gc-storage!) — portable smoke.
             [datahike.test.background-gc-test]
             [datahike.test.metrics-test]
@@ -935,6 +936,7 @@
                'datahike.test.query-language-test
                'datahike.test.array-test
                'datahike.test.query-binding-seam-test
+               'datahike.test.query-collection-binding-test
                'datahike.test.background-gc-test
                'datahike.test.metrics-test
                'datahike.test.store-ref-test

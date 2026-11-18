@@ -6,6 +6,13 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **A collection binding is built in one pass ([#1156]).** A collection binding
+  such as `[?x ...]` or `[[?a ?b] ...]` built one relation for each value, and
+  folded them together. A function clause did the same for each input tuple.
+  A collection of scalars, or of flat tuples of scalars, now becomes one
+  relation, and a function clause keeps one accumulator for the whole call.
+  Results and errors do not change. A query that binds 10000 tuples runs about
+  3 to 4 times faster, on the JVM and on node. Fixes [#1155].
 - **Relation tuples are read without reflection ([#1154]).** A tuple is an
   `Object[]`, and `get` on an array goes through `java.lang.reflect.Array` on
   the JVM. In a profile of a 10,000-row fn-clause query that was about 23 % of
@@ -1040,6 +1047,8 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1149]: https://github.com/replikativ/datahike/pull/1149
 [#1145]: https://github.com/replikativ/datahike/issues/1145
 [#1148]: https://github.com/replikativ/datahike/pull/1148
+[#1156]: https://github.com/replikativ/datahike/pull/1156
+[#1155]: https://github.com/replikativ/datahike/issues/1155
 [#1144]: https://github.com/replikativ/datahike/issues/1144
 [#1152]: https://github.com/replikativ/datahike/pull/1152
 [#1158]: https://github.com/replikativ/datahike/pull/1158
