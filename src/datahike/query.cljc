@@ -1140,7 +1140,7 @@
         idxs2 (:idxs2 plan)
         obligations (:obligations plan)]
     (reduce (fn [acc t2]
-              (if (every? (fn [[i1 i2]] (a= (get t1 i1) (get t2 i2))) obligations)
+              (if (every? (fn [[i1 i2]] (a= (tget t1 i1) (tget t2 i2))) obligations)
                 (conj! acc (join-tuples t1 idxs1 t2 idxs2))
                 acc))
             acc tuples2)))
