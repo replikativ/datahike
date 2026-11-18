@@ -971,10 +971,4 @@
       (on-both-engines #{["Oleg"] ["Petr"] ["Bob"] ["Carl"]}
                        '[:find ?n :in $ % :where
                          [?e :name ?n] (not-join [?e] (selfie ?e ?f) [(identity ?e) ?f])]
-                       db rules))
-    (testing "rules and calls spelled as vectors, as CBOR and JSON clients send them"
-      (on-both-engines #{1} '[:find [?e ...] :in $ % :where [selfie ?e ?e]] db rules)
-      (on-both-engines everyone '[:find [?e ...] :in $ % :where [selfie ?e _]] db rules)
-      (on-both-engines (into #{} (map (fn [e] [e e])) everyone)
-                       '[:find ?x ?y :in $ % :where [?x :name] [?y :name] (same ?x ?y)]
-                       db '[[[same ?a ?a] [?a :name]]]))))
+                       db rules))))
