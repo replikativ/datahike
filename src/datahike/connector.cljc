@@ -212,8 +212,15 @@
 (def create-time-fixed-index-keys
   "Sub-keys of :index-config that shape the on-disk index representation and are
    therefore fixed when the database is created. At connect they are adopted from
-   the stored config, so a reconnect does not need to re-specify them."
-  #{:branching-factor :diff-buf-size})
+   the stored config, so a reconnect does not need to re-specify them.
+
+   `:temporal-superseded-only?` (EXPERIMENTAL, default false) shapes WHAT the
+   temporal trees contain rather than how a node is encoded, but it is
+   create-time fixed for the same reason: a store written under it has no live
+   cardinality-one datom in its temporal trees, and reading it with the flag off
+   silently drops every current value from `history`/`as-of`/`since`. See
+   `datahike.db.utils/superseded-only-temporal?`."
+  #{:branching-factor :diff-buf-size :temporal-superseded-only?})
 
 (def store-fixed-record-keys
   "Top-level config keys that describe how records in the store are laid out
@@ -248,6 +255,20 @@
                                   [k {:given (get config k)
                                       :stored (get stored-config k)}])))
                         store-fixed-record-keys)]
+    ;; NOT overridable, unlike the settings below: a store created with
+    ;; `:temporal-superseded-only?` holds no live cardinality-one datom in its
+    ;; temporal trees. Read with the flag off, `history`/`as-of`/`since` would
+    ;; silently lose every current value; `:allow-unsafe-config` must not be
+    ;; able to ask for that. (The other direction is harmless: the full-copy
+    ;; layout is a superset.)
+    (when (and (true? (:temporal-superseded-only? stored-ic))
+               (contains? given-ic :temporal-superseded-only?)
+               (not (true? (:temporal-superseded-only? given-ic))))
+      (log/raise "This database was created with :temporal-superseded-only? and cannot be read without it."
+                 {:type   :temporal-superseded-only-cannot-be-disabled
+                  :given  (:temporal-superseded-only? given-ic)
+                  :stored true
+                  :config config}))
     (when (and (seq conflicts) (not unsafe?))
       (log/raise "Create-time-fixed index settings differ from the stored configuration."
                  {:type      :create-time-fixed-index-config-mismatch
