@@ -13,6 +13,58 @@ When something is added, it's typically marked *Experimental*. When the API cont
   arrays, and `rel-prod-by-attrs` removes relations by identity, not by
   hashing them. A fn-clause query over 10,000 rows is about 12 % faster.
   Fixes [#1153].
+- **`merge` and `into` on a database work on Clojure 1.13 ([#1159]).**
+  A `DB` claimed to be an editable collection, but `transient` returned a
+  `DB` rather than a transient map. Clojure 1.13's `merge` transients any
+  editable collection, so `(merge db {...})` raised a `ClassCastException`.
+  `into` on a database failed on every Clojure version. malli goes to 0.20.3,
+  whose Swagger generation no longer `merge`s a map entry, so the HTTP
+  server's `/swagger.json` also answers on 1.13. Fixes [#1157].
+- **A variable passed twice to a rule call makes the two arguments equal
+  ([#1151]).** `(selfie ?e ?e)` with the rule `[(selfie ?a ?b) [?a :friend ?b]]`
+  should match only the entities that are their own friend. It matched every
+  entity that had a friend. The planner got this wrong in every query shape
+  tested, and the base engine got it wrong whenever `?e` was unbound at the
+  call. The fix covers recursive rules, nested calls, constant arguments, and
+  calls inside `not`, `not-join` and `or`. The planner also no longer raises
+  "Cannot resolve any more clauses" in two shapes: a negation whose body follows a rule call with a function clause
+  over that call's output, and a function clause over the output of a
+  recursive rule when nothing is bound before the call, where the error used
+  to depend on the variable names. Fixes [#1150].
+- **JSON clients keep the lists in a query, and a call spelled as a vector
+  fails with a clear error ([#1149]).** JSON has no list type, so the JVM
+  client sent the call `(count ?v)` as the vector `[count ?v]`. The planner
+  read a one-argument call as an inline lookup ref ("Invalid entid") and an
+  `or` of predicates as data patterns, which answered wrongly without an
+  error. Datahike's tagged JSON now writes lists as `["!list", [...]]`. Lazy
+  seqs, which most results are, stay plain arrays. A call, rule call or
+  `not`/`or`/`and` clause written as a vector now raises an `ex-info` of
+  `:type :datahike.query/vector-call` that names the clause, wherever it
+  stands and whichever spelling ran first in the process; send such a query
+  as EDN or in a format that keeps lists. Upgrade the server before JSON
+  clients: an older server reads the tag as the vector `["!list" [...]]` and
+  raises, for example "Lookup ref attribute should be marked as :db/unique:
+  ["!list" [count ?v]]". CBOR keeps lists since the boring 0.1.31 bump
+  ([#1152]). Fixes [#1145].
+- **A proximum `knn` filtered after retractions finds every survivor
+  ([#1152]).** Proximum built the filter for a top-k search with room for only
+  as many vectors as were LIVE, but vector ids are never reused, so after
+  deletes a surviving entity's id could fall outside it and never match: with
+  100 vectors and the 60 oldest retracted, a `knn` restricted to the newest
+  three returned nothing. Fixed in proximum 0.1.39.
+- **Seqs survive CBOR as seqs ([#1152]).** With boring 0.1.31, a list, lazy
+  seq or cons is written as the tag-27 `clojure/seq` marker on the HTTP CBOR
+  wire, on the kabel wire and in export dumps, and reads back as a seq rather
+  than a vector. A query's call forms such as `(count ?v)` now reach the server
+  as lists, `d/datoms` over `:format :cbor` returns a seq as transit and edn
+  already did, and a list or lazy seq stored under `:schema-flexibility :read`
+  is a seq again after export and import. Dumps of databases that hold no seq
+  values are byte-identical to before. **Upgrade every CBOR peer together, the
+  server and any peer that reads dumps first.** A reader on an older boring
+  does not know the marker: the HTTP CBOR client and server reject it with an
+  error, while a kabel peer or an import decodes it SILENTLY as a
+  `#clojure/seq [...]` tagged literal, which is not `=` to the seq. Transit,
+  edn and json are unaffected.
 - **A proximum `knn` after clauses that match nothing returns no rows
   ([#1148]).** When the clauses before `knn` bound no entity, the empty entity
   filter reached Proximum as `nil`. A top-k search threw "search-filtered
@@ -458,6 +510,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ### Notable fixes
 
+- **`/health/ready` fails once a connection's writer has shut down** — a fatal commit error (for example a storage 503) closes a local writer for good, and every later transaction then fails with `:writer-shut-down`; the readiness probe only read the store, which still answered, so an orchestrator never restarted the instance. The probe now also reports 503 when a connection's `LocalWriter` has a closed transaction queue. Remote and custom writers are not checked, and `/health/live` is unchanged. ([#1158])
 - **A negation whose body has no solution excludes nothing again** — `not-join` decided satisfiability *after* projecting its body to the join variables, and the relation that makes a body unsolvable is usually one the join variables do not reach: a scan over an unrelated entity. Projected away, the body looked satisfiable and the clause excluded **every** row — `(not-join [?e] [?e :name] [?o :city "nowhere"])` answered `#{}` where nothing should have been excluded. The base engine has guarded this since `(not-join [?g] [?g :name "a"] [999 :city ?c])`; the planner grew its own NOT-JOIN executor and did not. It bites wherever the body is a cross product by construction — lowering a SQL outer join whose `ON` condition is not an equality asks "is there ANY row of the right table satisfying it", so the left rows that should have been null-extended disappeared instead — and wherever a join variable is bound by a function rather than a pattern. ([#1092])
 - **A commit can no longer name a schema that was never written** — every commit record points at its schema through `:schema-meta-key`, an out-of-line content-addressed blob, and whether to write that blob was decided by a process-local cache that was marked *before* the write and keyed by the store's `:id` rather than by the store. Three consequences, all of them silent while the writing process lived (the in-memory read cache answers) and all of them fatal on the next cold start, where `stored->db` produced a database with `:schema nil` / `:rschema nil` and the first query threw `NullPointerException: … because "this.rschema" is null` from deep inside `_attrs_by`: **(1)** a commit that threw after `db->stored` — the writer shuts down, but the claim outlived the connection, so a supervisor's reconnect committed a head naming a key nothing had stored, and every commit after it named the same missing key; **(2)** two stores at different paths sharing an `:id` shared one cache, so the second database was born with a dangling key — no error, no GC, no concurrency involved; **(3)** projecting a db onto the wire (`datahike.cbor`) marked the key as written and discarded it. Durability is now **proven rather than assumed**: the claim is recorded only after a write has been *awaited* or a read has actually reached the store, and it lives on the store object, so it cannot be borrowed by a different store and dies with the one it describes. Steady-state write volume is unchanged under `:writer-ownership :exclusive` — the only deleter is then your own collection, whose mark unions every branch head's `:schema-meta-key`, and which withdraws the claim anyway. Under `:shared` ownership (the default) or a remote writer the claim expires on the same clock as the GC sweep floor, so a commit re-asserts the blob periodically; because the key is content-addressed, that single write retroactively repairs *every* commit that named it. Finally, a record that names a `:schema-meta-key` the store cannot produce now raises `:schema-meta-missing` with the key, branch and commit id instead of opening a schema-less database — nothing inside datahike deletes a live schema-meta blob, but a collector outside it sweeping by its own allow-list would not know to follow that field. The garbage collector gets the same treatment rather than a silent degradation: the mark derives which attributes hold `:db.type/store-ref` from the record's schema, so a missing blob made it report that a snapshot names NO blobs — the sweep then deleted objects the database still referenced, `reachable-store-refs` handed the same short set to an application that deletes its own S3 prefix against it, and a sync walker shipped a head's datoms without the blobs they name. The same nil also hid a head's `:building` secondary index from the deferral check. All three now raise `:schema-meta-missing` instead. The guard is conditioned on the key being NAMED, not on the schema being nil, because a nil schema is ordinary: a bulk-import checkpoint record carries no schema by construction (its blobs travel in `:datahike.gc/keys`), and refusing on that would break every index build. Records predating the out-of-lining carry `:schema` inline and are unaffected. The `:schema-write-cache-size` / `DATAHIKE_SCHEMA_WRITE_CACHE_SIZE` setting is gone; it configured the removed cache and is now ignored. ([#1090])
 - **A secondary index that has not been backfilled is no longer queried** — a schema-declared secondary index is created with status `:building` and backfilled by the writer, so a database built with `d/db-with` (no connection, hence no writer) stays `:building` indefinitely and holds only the datoms of transactions made *after* the index was declared. The aggregate path never checked the status, so it answered from that partial index: `(min ?x)` returned `nil` on the declaring transaction and, after a further transaction, the minimum of just the later datoms — a silent wrong answer rather than a stale one. An index whose status is `:building` or `:disabled` is now skipped, matching the check the transaction path already makes; the query falls back to a path that reads the primary indices and is correct. A hand-assembled index (no status) is complete by construction and a `:ready` one has been backfilled, so both keep using the fast path. ([#914])
@@ -981,5 +1034,13 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1123]: https://github.com/replikativ/datahike/pull/1123
 [#1112]: https://github.com/replikativ/datahike/issues/1112
 [#1105]: https://github.com/replikativ/datahike/issues/1105
+[#1151]: https://github.com/replikativ/datahike/pull/1151
+[#1150]: https://github.com/replikativ/datahike/issues/1150
+[#1149]: https://github.com/replikativ/datahike/pull/1149
+[#1145]: https://github.com/replikativ/datahike/issues/1145
 [#1148]: https://github.com/replikativ/datahike/pull/1148
 [#1144]: https://github.com/replikativ/datahike/issues/1144
+[#1152]: https://github.com/replikativ/datahike/pull/1152
+[#1158]: https://github.com/replikativ/datahike/pull/1158
+[#1159]: https://github.com/replikativ/datahike/pull/1159
+[#1157]: https://github.com/replikativ/datahike/issues/1157

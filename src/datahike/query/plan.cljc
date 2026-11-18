@@ -1712,6 +1712,21 @@
   [op]
   (op-produced-vars op))
 
+(defn- force-candidate
+  "The op to emit when none is runnable, from `[op cost]` pairs.
+
+   Cheapest first, as before, but among ops that are equally unrunnable a
+   RECURSIVE RULE goes first: its required vars are an ordering hint only
+   (see `op-required-vars`), so it is correct as a pure producer, while any
+   other op emitted with its inputs unbound raises at execute time. Without
+   the preference the choice fell to the iteration order of a hash set, so
+   `(reach ?e ?f) [(identity ?e) ?f]` with nothing bound answered in one run
+   and raised \"Cannot resolve any more clauses\" in another."
+  [scored]
+  (first (sort-by (fn [[op cost]]
+                    [cost (if (= :recursive-rule (:op op)) 0 1)])
+                  scored)))
+
 (defn order-plan-ops
   "Order plan operations using DP for entity-group ordering and greedy
    interleaving for dependency-constrained ops (predicates, functions, etc.).
@@ -1777,7 +1792,9 @@
            ordered
            (let [scored (map (fn [op] [op (op-cost op bound-vars var-cards)]) remaining)
                  executable (filter #(< (second %) max-cost) scored)
-                 best (first (sort-by second (if (seq executable) executable scored)))
+                 best (if (seq executable)
+                        (first (sort-by second executable))
+                        (force-candidate scored))
                  [chosen-op chosen-cost] best]
              ;; Emitting an op whose required vars aren't bound: for a top-level
              ;; plan this means the query is unresolvable and execution will
@@ -1850,7 +1867,7 @@
                    ;; No more groups, remaining ops still unready — force the
                    ;; cheapest so we make progress (preserves prior behaviour).
                    :force     (let [scored (map (fn [op] [op (op-cost op bound-vars var-cards)]) remaining)
-                                    [chosen-op chosen-cost] (first (sort-by second scored))]
+                                    [chosen-op chosen-cost] (force-candidate scored)]
                                 ;; Same unbound-required-vars situation as the
                                 ;; no-groups greedy fallback above — debug here,
                                 ;; authoritative raise at execute time.
