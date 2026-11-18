@@ -4,7 +4,7 @@
    [clojure.string :as str]
    [datahike.index :as di]
    [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
-   #?(:cljs [datahike.db :refer [HistoricalDB]])
+   [datahike.db :as db #?@(:cljs [:refer [HistoricalDB]])]
    [datahike.array :as arr]
    [datahike.backfill.effects :as effects]
    #?(:clj [datahike.backfill.admission :as admission])
@@ -2070,7 +2070,7 @@
                           :db.valid/from vf
                           :db.valid/to vt})))
         meta-entities (flush-tx-meta initial-report)]
-    (loop [report (update initial-report :db-after transient)
+    (loop [report (update initial-report :db-after db/db-transient)
            es (if (dbi/-keep-history? db-before)
                 (concat meta-entities
                         initial-es')
@@ -2104,7 +2104,7 @@
                 (dissoc ::pending-vt-validation)
                 (assoc-in [:tempids :db/current-tx] (current-tx report))
                 (update-in [:db-after :max-tx] inc)
-                (update :db-after persistent!)
+                (update :db-after db/db-persistent!)
                 (update :db-after finalize-secondary-indices)
                 (#?(:clj (fn [report] (admission/finish prepared report))
                     :cljs identity))
@@ -2199,7 +2199,7 @@
   [initial-report initial-es]
   (loop [report (-> initial-report
                     (update :datahike/tx-ops #(or % #{}))
-                    (update :db-after transient))
+                    (update :db-after db/db-transient))
          es initial-es
          migration-state (or (:migration initial-report) {})]
     (if (empty? es)
@@ -2218,7 +2218,7 @@
       ;; already produced.
       (-> report
           (assoc :migration migration-state)
-          (update :db-after persistent!)
+          (update :db-after db/db-persistent!)
           (update :db-after finalize-secondary-indices)
           (update :db-after #(tracking/schema-transition (:db-before initial-report) %)))
       (let [[entity & entities] es

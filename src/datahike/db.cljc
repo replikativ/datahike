@@ -22,7 +22,7 @@
   #?(:cljs (:require-macros [datahike.db :refer [defrecord-updatable]]
                             [datahike.datom :refer [combine-cmp datom]]
                             [datahike.tools :refer [meta-data]]))
-  #?(:clj (:import [clojure.lang AMapEntry ITransientCollection IEditableCollection IPersistentCollection Seqable
+  #?(:clj (:import [clojure.lang AMapEntry IPersistentCollection Seqable
                     IHashEq Associative IKeywordLookup ILookup]
                    [datahike.datom Datom]
                    [java.io Writer]
@@ -273,6 +273,11 @@
 
       :else datoms)))
 
+;; A DB deliberately does not implement IEditableCollection. `transient` must
+;; return an ITransientAssociative, and `into`/`merge` transient any editable
+;; collection — Clojure 1.13's `merge` goes through `into1`, so
+;; `(merge db {...})` raised a ClassCastException (#1157). The transaction
+;; path calls db-transient / db-persistent! by name instead.
 (defn db-transient [db]
   (-> db
       (update :eavt di/-transient)
@@ -398,10 +403,7 @@
        IReversible (-rseq [db] (-rseq (.-eavt db)))
        ICounted (-count [db] (count (.-eavt db)))
        IEmptyableCollection (-empty [db] (empty-db (ds/get-user-schema db)))
-       IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
-       IEditableCollection (-as-transient [db] (db-transient db))
-       ITransientCollection (-conj! [db key] (throw (ex-info "datahike.DB/conj! is not supported" {})))
-       (-persistent! [db] (db-persistent! db))]
+       IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))]
 
       :clj
       ;; `equals` must be given explicitly, not inherited. defrecord's
@@ -419,12 +421,7 @@
        IPersistentCollection
        (count [db] (di/-count eavt))
        (equiv [db other] (equiv-db db other))
-       (empty [db] (empty-db (ds/get-user-schema db)))
-       IEditableCollection
-       (asTransient [db] (db-transient db))
-       ITransientCollection
-       (conj [db key] (throw (ex-info "datahike.DB/conj! is not supported" {})))
-       (persistent [db] (db-persistent! db))])
+       (empty [db] (empty-db (ds/get-user-schema db)))])
 
   dbi/IDB
   (-schema [db] (.-schema db))
