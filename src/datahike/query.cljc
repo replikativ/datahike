@@ -1041,50 +1041,15 @@
       (keyword? x)))
 
 ;; Relation algebra
-(defn join-tuples [t1 #?(:cljs idxs1
-                         :clj ^{:tag "[[Ljava.lang.Object;"} idxs1)
-                   t2 #?(:cljs idxs2
-                         :clj ^{:tag "[[Ljava.lang.Object;"} idxs2)]
-  (let [l1 (alength idxs1)
-        l2 (alength idxs2)
-        res (da/make-array (+ l1 l2))]
-    (dotimes [i l1]
-      (aset res i (get t1 (aget idxs1 i))))
-    (dotimes [i l2]
-      (aset res (+ l1 i) (get t2 (aget idxs2 i))))
-    res))
+;; ONE implementation of each, in datahike.query.relation: the planner joins
+;; through that namespace and this engine through this one, and two copies drift
+;; (see tuple-key-fn below). #1154 sped up the copies here while the default
+;; engine kept reading tuples through reflection.
+(def ^:private tget rel/tget)
 
-(defn sum-rel [a b]
-  (let [{attrs-a :attrs, tuples-a :tuples} a
-        {attrs-b :attrs, tuples-b :tuples} b]
-    (cond
-      (= attrs-a attrs-b)
-      (rel/->Relation attrs-a (into (vec tuples-a) tuples-b))
+(def join-tuples rel/join-tuples)
 
-      (not (same-keys? attrs-a attrs-b))
-      (log/raise "Can't sum relations with different attrs: " attrs-a " and " attrs-b
-                 {:error :query/where})
-
-      (every? number? (vals attrs-a))                       ;; can’t conj into BTSetIter
-      (let [idxb->idxa (vec (for [[sym idx-b] attrs-b]
-                              [idx-b (attrs-a sym)]))
-            tlen (->> (vals attrs-a) (reduce max) (inc))
-            tuples' (persistent!
-                     (reduce
-                      (fn [acc tuple-b]
-                        (let [tuple' (da/make-array tlen)]
-                          (doseq [[idx-b idx-a] idxb->idxa]
-                            (aset tuple' idx-a (get tuple-b idx-b)))
-                          (conj! acc tuple')))
-                      (transient (vec tuples-a))
-                      tuples-b))]
-        (rel/->Relation attrs-a tuples'))
-
-      :else
-      (let [all-attrs (zipmap (keys (merge attrs-a attrs-b)) (range))]
-        (-> (rel/->Relation all-attrs [])
-            (sum-rel a)
-            (sum-rel b))))))
+(def sum-rel rel/sum-rel)
 
 (defn simplify-rel [rel]
   (rel/->Relation (:attrs rel) (distinct-tuples (:tuples rel))))
@@ -1772,18 +1737,8 @@
 ;; Dynamic vars *lookup-attrs* and *implicit-source* are defined in datahike.query.relation
 ;; Use rel/*lookup-attrs* and rel/*implicit-source* directly.
 
-(defn getter-fn [attrs attr]
-  (let [idx (attrs attr)]
-    (if (contains? rel/*lookup-attrs* attr)
-      (fn [tuple]
-        (let [eid (get tuple idx)]
-          (cond
-            (number? eid) eid                               ;; quick path to avoid fn call
-            (sequential? eid) (dbu/entid rel/*implicit-source* eid)
-            (da/array? eid) (dbu/entid rel/*implicit-source* eid)
-            :else eid)))
-      (fn [tuple]
-        (get tuple idx)))))
+;; One implementation, in datahike.query.relation (see join-tuples).
+(def getter-fn rel/getter-fn)
 
 ;; ONE implementation, in datahike.query.relation — the planner joins through
 ;; that namespace and this engine through this one, and when this var carried
@@ -1977,7 +1932,10 @@
 (defn- rel-prod-by-attrs [context attrs]
   (let [rels (filter #(rel-contains-attrs? % attrs) (:rels context))
         production (reduce prod-rel rels)]
-    [(update context :rels #(remove (set rels) %)) production]))
+    ;; Identity, not a set: a record's hash walks every tuple of the relation,
+    ;; and a relation equal to a selected one has the same attrs, so it was
+    ;; selected by the filter above anyway.
+    [(update context :rels #(remove (fn [r] (some (fn [x] (identical? r x)) rels)) %)) production]))
 
 (defn -call-fn [context rel f args]
   (let [sources (:sources context)
@@ -2007,7 +1965,7 @@
       ;; TODO raise if not all args are bound
       (dotimes [i len]
         (when-some [tuple-idx (aget tuples-args i)]
-          (let [v (get tuple tuple-idx)]
+          (let [v (tget tuple tuple-idx)]
             (da/aset static-args i v))))
       (apply f static-args))))
 
