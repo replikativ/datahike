@@ -10,7 +10,9 @@ When something is added, it's typically marked *Experimental*. When the API cont
   A `DB` claimed to be an editable collection, but `transient` returned a
   `DB` rather than a transient map. Clojure 1.13's `merge` transients any
   editable collection, so `(merge db {...})` raised a `ClassCastException`.
-  `into` on a database failed on every Clojure version. Fixes [#1157].
+  `into` on a database failed on every Clojure version. malli goes to 0.20.3,
+  whose Swagger generation no longer `merge`s a map entry, so the HTTP
+  server's `/swagger.json` also answers on 1.13. Fixes [#1157].
 - **A proximum `knn` after clauses that match nothing returns no rows
   ([#1148]).** When the clauses before `knn` bound no entity, the empty entity
   filter reached Proximum as `nil`. A top-k search threw "search-filtered
