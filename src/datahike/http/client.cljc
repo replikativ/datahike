@@ -637,6 +637,7 @@
                "!kw" (keyword (second items))
                "!sym" (symbol (second items))
                "!set" (set (second items))
+               "!list" (apply list (second items))
                "!uuid" (uuid (second items))
                "!date" (js/Date. (js/Number (second items)))
                "!datahike/Datom" (apply dd/datom (second items))

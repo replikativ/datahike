@@ -13,6 +13,51 @@ When something is added, it's typically marked *Experimental*. When the API cont
   `into` on a database failed on every Clojure version. malli goes to 0.20.3,
   whose Swagger generation no longer `merge`s a map entry, so the HTTP
   server's `/swagger.json` also answers on 1.13. Fixes [#1157].
+- **A variable passed twice to a rule call makes the two arguments equal
+  ([#1151]).** `(selfie ?e ?e)` with the rule `[(selfie ?a ?b) [?a :friend ?b]]`
+  should match only the entities that are their own friend. It matched every
+  entity that had a friend. The planner got this wrong in every query shape
+  tested, and the base engine got it wrong whenever `?e` was unbound at the
+  call. The fix covers recursive rules, nested calls, constant arguments, and
+  calls inside `not`, `not-join` and `or`. The planner also no longer raises
+  "Cannot resolve any more clauses" in two shapes: a negation whose body follows a rule call with a function clause
+  over that call's output, and a function clause over the output of a
+  recursive rule when nothing is bound before the call, where the error used
+  to depend on the variable names. Fixes [#1150].
+- **JSON clients keep the lists in a query, and a call spelled as a vector
+  fails with a clear error ([#1149]).** JSON has no list type, so the JVM
+  client sent the call `(count ?v)` as the vector `[count ?v]`. The planner
+  read a one-argument call as an inline lookup ref ("Invalid entid") and an
+  `or` of predicates as data patterns, which answered wrongly without an
+  error. Datahike's tagged JSON now writes lists as `["!list", [...]]`. Lazy
+  seqs, which most results are, stay plain arrays. A call, rule call or
+  `not`/`or`/`and` clause written as a vector now raises an `ex-info` of
+  `:type :datahike.query/vector-call` that names the clause, wherever it
+  stands and whichever spelling ran first in the process; send such a query
+  as EDN or in a format that keeps lists. Upgrade the server before JSON
+  clients: an older server reads the tag as the vector `["!list" [...]]` and
+  raises, for example "Lookup ref attribute should be marked as :db/unique:
+  ["!list" [count ?v]]". CBOR keeps lists since the boring 0.1.31 bump
+  ([#1152]). Fixes [#1145].
+- **A proximum `knn` filtered after retractions finds every survivor
+  ([#1152]).** Proximum built the filter for a top-k search with room for only
+  as many vectors as were LIVE, but vector ids are never reused, so after
+  deletes a surviving entity's id could fall outside it and never match: with
+  100 vectors and the 60 oldest retracted, a `knn` restricted to the newest
+  three returned nothing. Fixed in proximum 0.1.39.
+- **Seqs survive CBOR as seqs ([#1152]).** With boring 0.1.31, a list, lazy
+  seq or cons is written as the tag-27 `clojure/seq` marker on the HTTP CBOR
+  wire, on the kabel wire and in export dumps, and reads back as a seq rather
+  than a vector. A query's call forms such as `(count ?v)` now reach the server
+  as lists, `d/datoms` over `:format :cbor` returns a seq as transit and edn
+  already did, and a list or lazy seq stored under `:schema-flexibility :read`
+  is a seq again after export and import. Dumps of databases that hold no seq
+  values are byte-identical to before. **Upgrade every CBOR peer together, the
+  server and any peer that reads dumps first.** A reader on an older boring
+  does not know the marker: the HTTP CBOR client and server reject it with an
+  error, while a kabel peer or an import decodes it SILENTLY as a
+  `#clojure/seq [...]` tagged literal, which is not `=` to the seq. Transit,
+  edn and json are unaffected.
 - **A proximum `knn` after clauses that match nothing returns no rows
   ([#1148]).** When the clauses before `knn` bound no entity, the empty entity
   filter reached Proximum as `nil`. A top-k search threw "search-filtered
@@ -980,8 +1025,13 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1123]: https://github.com/replikativ/datahike/pull/1123
 [#1112]: https://github.com/replikativ/datahike/issues/1112
 [#1105]: https://github.com/replikativ/datahike/issues/1105
+[#1151]: https://github.com/replikativ/datahike/pull/1151
+[#1150]: https://github.com/replikativ/datahike/issues/1150
+[#1149]: https://github.com/replikativ/datahike/pull/1149
+[#1145]: https://github.com/replikativ/datahike/issues/1145
 [#1148]: https://github.com/replikativ/datahike/pull/1148
 [#1144]: https://github.com/replikativ/datahike/issues/1144
+[#1152]: https://github.com/replikativ/datahike/pull/1152
 [#1158]: https://github.com/replikativ/datahike/pull/1158
 [#1159]: https://github.com/replikativ/datahike/pull/1159
 [#1157]: https://github.com/replikativ/datahike/issues/1157
