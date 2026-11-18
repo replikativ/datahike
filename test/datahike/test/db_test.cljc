@@ -118,3 +118,19 @@
          (is (= (hash db) (hash f1)))
          (is (= f1 f2))
          (is (= (hash f1) (hash f2)))))))
+
+(deftest db-is-not-an-editable-collection
+  ;; #1157: `merge` and `into` transient any editable collection, and a
+  ;; transient must be an ITransientAssociative. A DB claimed to be editable
+  ;; but answered `transient` with a DB, so Clojure 1.13's `merge` (via
+  ;; `into1`) raised a ClassCastException.
+  (let [empty-db (db/empty-db)]
+    (is (not (#?(:clj instance? :cljs implements?) #?(:clj clojure.lang.IEditableCollection
+                                                      :cljs IEditableCollection)
+                                                   empty-db)))
+    (is (= {} (:schema (merge empty-db {:schema {}}))))
+    (is (= 1 (:extra (into empty-db {:extra 1}))))
+    (testing "transactions still build their indexes transiently"
+      (is (= #{[1 "Ivan"]}
+             (d/q '[:find ?e ?v :where [?e :name ?v]]
+                  (d/db-with empty-db [{:db/id 1 :name "Ivan"}])))))))

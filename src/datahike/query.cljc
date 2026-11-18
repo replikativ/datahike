@@ -284,13 +284,35 @@
          (or (analyze/quote-form? out)
              (and (not (symbol? out)) (not (sequential? out)))))))
 
-(defn- blank-rule-call?
+(defn- rule-call-args
+  "The arguments of a rule call, or nil when `clause` is not one.
+
+   A call is written `(r ?a ?b)`, or `[r ?a ?b]` — the spelling CBOR and JSON
+   clients send, since those formats have no list type — and may be prefixed
+   with a `$source`. A vector is a call only when a plain symbol heads it: a
+   data pattern starts with a variable, `_`, a `$source`, a constant or a
+   lookup ref, and a vector function clause `[[f ?x] ?y]` with a vector. This
+   runs on every clause of every query, so the common data pattern leaves at
+   the first test of its head."
   [clause]
-  (when (seq? clause)
-    (let [[head & args] (if (source-prefixed-clause? clause) (rest clause) clause)]
-      (and (symbol? head) (not (analyze/free-var? head))
-           (not (#{'not 'not-join 'and 'or 'or-join} head))
-           (some #{'_} args)))))
+  (when (sequential? clause)
+    (let [call (if (source-prefixed-clause? clause) (rest clause) clause)
+          head (first call)]
+      (when (and (symbol? head)
+                 (not (analyze/free-var? head))
+                 (not= '_ head)
+                 (not= \$ (first (name head)))
+                 (not (#{'not 'not-join 'and 'or 'or-join} head)))
+        (vec (rest call))))))
+
+(defn- blank-rule-call? [clause]
+  (boolean (some #{'_} (rule-call-args clause))))
+
+(defn- repeated-var-rule-call?
+  "Does a rule call pass the same variable in two argument positions?"
+  [clause]
+  (let [args (rule-call-args clause)]
+    (boolean (and (next args) (repeated-var-pattern? args)))))
 
 (defn- where-needs-normalization?
   "Cheap pre-scan for repeated pattern vars, constant outputs and blank rule calls."
@@ -300,6 +322,7 @@
            (cond
              (constant-output-clause? clause) true
              (blank-rule-call? clause) true
+             (repeated-var-rule-call? clause) true
              (source-prefixed-clause? clause) (repeated-var-pattern? (vec (rest clause)))
              (data-pattern-clause? clause)    (repeated-var-pattern? clause)
              (and (seq? clause) (#{'not 'and 'or} (first clause)))
@@ -348,6 +371,43 @@
   (into #{} (comp (filter symbol?) (filter analyze/free-var?))
         (tree-seq coll? seq form)))
 
+(defn- rewrite-rule-call
+  "Rewrite the arguments of a rule call. Returns the clauses that replace it.
+
+   Each blank argument is independent, but occurrences of its rule-head
+   parameter within the body must still share one existential variable. In
+   particular it must never become a constant `(identity _)` binding.
+
+   A variable passed in two positions, `(selfie ?e ?e)`, says the two
+   arguments are EQUAL. Both engines substitute the call's arguments for the
+   head parameters, so the body's DISTINCT variables became one — `[?a :friend
+   ?b]` turned into `[?e :friend ?e]`, a pattern that repeats a variable and
+   which neither engine unifies inside a rule body (the seam that rewrites such
+   patterns runs before rules are expanded). The planner answered with every
+   entity that has a friend; the base engine did the same whenever `?e` was
+   still unbound at the call. Every later occurrence becomes a fresh variable,
+   and the equality is stated as an obligation APPENDED after the call — a
+   binding clause rather than an `=` predicate, like `normalize-rule-head`'s,
+   so that it binds when the call leaves the fresh variable unbound and
+   filters when it does not."
+  [clause fresh!]
+  (let [nprefix (if (source-prefixed-clause? clause) 2 1)
+        prefix (take nprefix clause)
+        [args obligations]
+        (reduce (fn [[out obl seen] a]
+                  (cond
+                    (= '_ a) [(conj out (fresh! '?__rule_blank)) obl seen]
+                    (not (analyze/free-var? a)) [(conj out a) obl seen]
+                    (contains? seen a) (let [v (fresh! a)]
+                                         [(conj out v) (conj obl [(list 'identity a) v]) seen])
+                    :else [(conj out a) obl (conj seen a)]))
+                [[] [] #{}]
+                (drop nprefix clause))]
+    (cons (if (vector? clause)
+            (into (vec prefix) args)
+            (apply list (concat prefix args)))
+          obligations)))
+
 (declare normalize-where-clauses normalize-where-clause)
 
 (defn- normalize-branch
@@ -368,11 +428,8 @@
     (let [v (fresh! '?__fn_result)]
       [[(first clause) v] [(list '= v (second clause))]])
 
-    ;; Each blank argument is independent, but occurrences of its rule-head
-    ;; parameter within the body must still share one existential variable.
-    ;; In particular it must never become a constant `(identity _)` binding.
-    (blank-rule-call? clause)
-    [(apply list (map #(if (= '_ %) (fresh! '?__rule_blank) %) clause))]
+    (or (blank-rule-call? clause) (repeated-var-rule-call? clause))
+    (rewrite-rule-call clause fresh!)
 
     (source-prefixed-clause? clause)
     (let [pattern (vec (rest clause))]
@@ -434,9 +491,10 @@
   (and (symbol? x) (= \? (first (name x)))))
 
 (defn- head-repeats-var?
-  "True when a rule head names the same variable in two argument positions."
+  "True when a rule head names the same variable in two argument positions.
+   The head may be a list or, as CBOR and JSON clients send it, a vector."
   [head]
-  (and (seq? head)
+  (and (sequential? head)
        (let [vs (filter query-var? (rest head))]
          (not= (count vs) (count (distinct vs))))))
 
@@ -466,7 +524,7 @@
                     [(conj ps p) (conj seen p) extra]))
                 [[] #{} []]
                 (rest head))]
-    (into [(cons (first head) params)]
+    (into [(if (vector? head) (into [(first head)] params) (cons (first head) params))]
           (concat (rest rule) extra))))
 
 (defn- normalize-rule-bodies
@@ -537,8 +595,10 @@
 (defn normalize-repeated-vars
   "Rewrite every data pattern that mentions a variable twice into a pattern of
    distinct variables plus an explicit `=` join predicate. Also expands scalar
-   constant function outputs into equality constraints and
-   blank rule-call arguments into fresh existential variables. Returns `query`
+   constant function outputs into equality constraints,
+   blank rule-call arguments into fresh existential variables, and a variable
+   passed twice to a rule call into a fresh one plus an equality obligation
+   (see `rewrite-rule-call`). Returns `query`
    UNCHANGED (identical object) when no clause needs rewriting, so the plan
    and result caches are not perturbed for queries this does not affect."
   [query]
@@ -619,6 +679,87 @@
              {}
              (select-keys query extra-ks)))
 
+;; ---------------------------------------------------------------------------
+;; Call spelling (#1145)
+;;
+;; A call is a list, `[(count ?v) ?c]`, as in Datomic. The datalog parser also
+;; accepts it as a vector, `[[count ?v] ?c]`, but the engine reads a vector as a
+;; data pattern or lookup ref there, so a vector-spelled call raised "Invalid
+;; entid" or, on the planner, answered wrongly. It is what a query looks like
+;; after a codec without a list type, so refuse it by name. This runs before
+;; the normalized-query memo: a list and a vector spelling are `=` and hash
+;; alike, so a memo hit would hand a vector query the list query's reading.
+
+(defn- vector-spelled-call?
+  "A vector whose head is a plain symbol, not a `?var`, `_` or `$source`. In a
+   clause position that is a call, rule call or not/or/and written as a vector:
+   a data pattern starts with a variable, `_`, a source or a constant, and a
+   lookup ref with an attribute."
+  [x]
+  (and (vector? x)
+       (let [h (first x)]
+         (and (symbol? h)
+              (not (analyze/free-var? h))
+              (not= '_ h)
+              (not= \$ (first (name h)))))))
+
+(defn- vector-call-error [form clause]
+  (ex-info (str "A function call, predicate, rule call or not/or/and clause must be "
+                "a list, not a vector: " (pr-str form) ". Send the query as EDN, "
+                "or use a client format that keeps lists.")
+           {:type   :datahike.query/vector-call
+            :error  :query/where
+            :form   form
+            :clause clause}))
+
+(defn- check-clause-spelling!
+  "Throw on a vector-spelled call anywhere a clause can stand: the clause
+   itself (a rule call or not/or/and), its call position `[[f …] …]`, and
+   recursively the bodies of not, not-join, and, or and or-join."
+  [clause]
+  (cond
+    (vector? clause)
+    (cond
+      (vector-spelled-call? clause) (throw (vector-call-error clause clause))
+      (vector-spelled-call? (first clause)) (throw (vector-call-error (first clause) clause)))
+
+    (seq? clause)
+    (let [[h & more] (if (source-prefixed-clause? clause) (rest clause) clause)]
+      (case h
+        (not and or) (run! check-clause-spelling! more)
+        (not-join or-join) (run! check-clause-spelling! (rest more))
+        nil))))
+
+(defn- check-rules-spelling!
+  "Rule heads and bodies of the rule set bound to `%`."
+  [rules]
+  (when (sequential? rules)
+    (doseq [rule rules]
+      (when (sequential? rule)
+        (let [[head & body] rule]
+          (when (vector-spelled-call? head)
+            (throw (vector-call-error head rule)))
+          (run! check-clause-spelling! body))))))
+
+(defn- raw-where-clauses
+  "The `:where` clauses of an unnormalized query form, in map or vector syntax."
+  [q]
+  (let [q (if (and (seq? q) (= 'quote (first q))) (second q) q)]
+    (cond
+      (map? q) (:where q)
+      (sequential? q) (->> q
+                           (drop-while #(not= :where %))
+                           rest
+                           (take-while #(not (keyword? %))))
+      :else nil)))
+
+(defn- check-rules-in-args!
+  "Refuse a vector-spelled rule head or call in the rule set bound to `%`."
+  [query args]
+  (let [idx (first (keep-indexed (fn [i x] (when (= '% x) i)) (:in query)))]
+    (when (and idx (sequential? args) (< idx (count args)))
+      (check-rules-spelling! (nth (vec args) idx)))))
+
 (defn normalize-q-input
   "Turns input to q into a map with :query and :args fields.
    Also normalizes the query into a map representation."
@@ -628,17 +769,26 @@
         ;; database snapshots in the memo LRU and make every lookup hash
         ;; the argument values.
         qform (or (and (map? query-input) (:query query-input)) query-input)
+        ;; Before the memo, which keys a list and a vector spelling as one.
+        ;; A string is its own spelling, so it is checked once it is read.
+        _     (when-not (string? qform)
+                (run! check-clause-spelling! (raw-where-clauses qform)))
         query (form-memo
                [::qnorm qform]
                #(-> qform
-                    ((fn [q] (if (string? q) (edn/read-string q) q)))
+                    ((fn [q] (if (string? q)
+                               (let [q (edn/read-string q)]
+                                 (run! check-clause-spelling! (raw-where-clauses q))
+                                 q)
+                               q)))
                     ((fn [q] (if (= 'quote (first q)) (second q) q)))
                     ((fn [q] (if (sequential? q) (dpi/query->map q) q)))))
         args (if (and (map? query-input) (contains? query-input :args))
                (do (when (seq arg-inputs)
                      (log/warn :datahike/query-input-ignored {:query query}))
                    (:args query-input))
-               arg-inputs)]
+               arg-inputs)
+        _    (check-rules-in-args! query args)]
     (-> {:query (-> (apply dissoc query extra-ks)
                     normalize-list-fn-clauses
                     normalize-repeated-vars)
@@ -891,50 +1041,15 @@
       (keyword? x)))
 
 ;; Relation algebra
-(defn join-tuples [t1 #?(:cljs idxs1
-                         :clj ^{:tag "[[Ljava.lang.Object;"} idxs1)
-                   t2 #?(:cljs idxs2
-                         :clj ^{:tag "[[Ljava.lang.Object;"} idxs2)]
-  (let [l1 (alength idxs1)
-        l2 (alength idxs2)
-        res (da/make-array (+ l1 l2))]
-    (dotimes [i l1]
-      (aset res i (get t1 (aget idxs1 i))))
-    (dotimes [i l2]
-      (aset res (+ l1 i) (get t2 (aget idxs2 i))))
-    res))
+;; ONE implementation of each, in datahike.query.relation: the planner joins
+;; through that namespace and this engine through this one, and two copies drift
+;; (see tuple-key-fn below). #1154 sped up the copies here while the default
+;; engine kept reading tuples through reflection.
+(def ^:private tget rel/tget)
 
-(defn sum-rel [a b]
-  (let [{attrs-a :attrs, tuples-a :tuples} a
-        {attrs-b :attrs, tuples-b :tuples} b]
-    (cond
-      (= attrs-a attrs-b)
-      (rel/->Relation attrs-a (into (vec tuples-a) tuples-b))
+(def join-tuples rel/join-tuples)
 
-      (not (same-keys? attrs-a attrs-b))
-      (log/raise "Can't sum relations with different attrs: " attrs-a " and " attrs-b
-                 {:error :query/where})
-
-      (every? number? (vals attrs-a))                       ;; can’t conj into BTSetIter
-      (let [idxb->idxa (vec (for [[sym idx-b] attrs-b]
-                              [idx-b (attrs-a sym)]))
-            tlen (->> (vals attrs-a) (reduce max) (inc))
-            tuples' (persistent!
-                     (reduce
-                      (fn [acc tuple-b]
-                        (let [tuple' (da/make-array tlen)]
-                          (doseq [[idx-b idx-a] idxb->idxa]
-                            (aset tuple' idx-a (get tuple-b idx-b)))
-                          (conj! acc tuple')))
-                      (transient (vec tuples-a))
-                      tuples-b))]
-        (rel/->Relation attrs-a tuples'))
-
-      :else
-      (let [all-attrs (zipmap (keys (merge attrs-a attrs-b)) (range))]
-        (-> (rel/->Relation all-attrs [])
-            (sum-rel a)
-            (sum-rel b))))))
+(def sum-rel rel/sum-rel)
 
 (defn simplify-rel [rel]
   (rel/->Relation (:attrs rel) (distinct-tuples (:tuples rel))))
@@ -1692,18 +1807,8 @@
 ;; Dynamic vars *lookup-attrs* and *implicit-source* are defined in datahike.query.relation
 ;; Use rel/*lookup-attrs* and rel/*implicit-source* directly.
 
-(defn getter-fn [attrs attr]
-  (let [idx (attrs attr)]
-    (if (contains? rel/*lookup-attrs* attr)
-      (fn [tuple]
-        (let [eid (get tuple idx)]
-          (cond
-            (number? eid) eid                               ;; quick path to avoid fn call
-            (sequential? eid) (dbu/entid rel/*implicit-source* eid)
-            (da/array? eid) (dbu/entid rel/*implicit-source* eid)
-            :else eid)))
-      (fn [tuple]
-        (get tuple idx)))))
+;; One implementation, in datahike.query.relation (see join-tuples).
+(def getter-fn rel/getter-fn)
 
 ;; ONE implementation, in datahike.query.relation — the planner joins through
 ;; that namespace and this engine through this one, and when this var carried
@@ -1897,7 +2002,10 @@
 (defn- rel-prod-by-attrs [context attrs]
   (let [rels (filter #(rel-contains-attrs? % attrs) (:rels context))
         production (reduce prod-rel rels)]
-    [(update context :rels #(remove (set rels) %)) production]))
+    ;; Identity, not a set: a record's hash walks every tuple of the relation,
+    ;; and a relation equal to a selected one has the same attrs, so it was
+    ;; selected by the filter above anyway.
+    [(update context :rels #(remove (fn [r] (some (fn [x] (identical? r x)) rels)) %)) production]))
 
 (defn -call-fn [context rel f args]
   (let [sources (:sources context)
@@ -1927,7 +2035,7 @@
       ;; TODO raise if not all args are bound
       (dotimes [i len]
         (when-some [tuple-idx (aget tuples-args i)]
-          (let [v (get tuple tuple-idx)]
+          (let [v (tget tuple tuple-idx)]
             (da/aset static-args i v))))
       (apply f static-args))))
 

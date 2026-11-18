@@ -55,18 +55,26 @@
 ;; ---------------------------------------------------------------------------
 ;; Tuple operations
 
+(defn tget
+  "(get tuple idx), without reflection when the tuple is an array: `get` on an
+   array goes through java.lang.reflect.Array on the JVM."
+  [tuple idx]
+  (if (da/array? tuple)
+    (aget ^objects tuple (int idx))
+    (get tuple idx)))
+
 (defn getter-fn [attrs attr]
   (let [idx (attrs attr)]
     (if (contains? *lookup-attrs* attr)
       (fn [tuple]
-        (let [eid (get tuple idx)]
+        (let [eid (tget tuple idx)]
           (cond
             (number? eid) eid                               ;; quick path to avoid fn call
             (sequential? eid) (dbu/entid *implicit-source* eid)
             (da/array? eid) (dbu/entid *implicit-source* eid)
             :else eid)))
       (fn [tuple]
-        (get tuple idx)))))
+        (tget tuple idx)))))
 
 ;; THE key rule lives in datahike.array — see `value-key` there, and its twin
 ;; `native-key` for the planner's java.util/JS probe containers. A join hashes
@@ -98,16 +106,17 @@
       (persistent! hash-table))))
 
 (defn join-tuples [t1 #?(:cljs idxs1
-                         :clj ^{:tag "[[Ljava.lang.Object;"} idxs1)
+                         :clj ^{:tag "[Ljava.lang.Object;"} idxs1)
                    t2 #?(:cljs idxs2
-                         :clj ^{:tag "[[Ljava.lang.Object;"} idxs2)]
+                         :clj ^{:tag "[Ljava.lang.Object;"} idxs2)]
   (let [l1 (alength idxs1)
         l2 (alength idxs2)
-        res (da/make-array (+ l1 l2))]
+        #?@(:clj [^objects res (da/make-array (+ l1 l2))]
+            :cljs [res (da/make-array (+ l1 l2))])]
     (dotimes [i l1]
-      (aset res i (get t1 (aget idxs1 i))))
+      (aset res i (tget t1 (aget idxs1 i))))
     (dotimes [i l2]
-      (aset res (+ l1 i) (get t2 (aget idxs2 i))))
+      (aset res (+ l1 i) (tget t2 (aget idxs2 i))))
     res))
 
 ;; ---------------------------------------------------------------------------
@@ -204,7 +213,7 @@
                       (fn [acc tuple-b]
                         (let [tuple' (da/make-array tlen)]
                           (doseq [[idx-b idx-a] idxb->idxa]
-                            (aset tuple' idx-a (get tuple-b idx-b)))
+                            (aset tuple' idx-a (tget tuple-b idx-b)))
                           (conj! acc tuple')))
                       (transient (vec tuples-a))
                       tuples-b))]
