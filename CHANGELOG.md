@@ -6,7 +6,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
-- **`merge` and `into` on a database work on Clojure 1.13 ([#TODO]).**
+- **`merge` and `into` on a database work on Clojure 1.13 ([#1159]).**
   A `DB` claimed to be an editable collection, but `transient` returned a
   `DB` rather than a transient map. Clojure 1.13's `merge` transients any
   editable collection, so `(merge db {...})` raised a `ClassCastException`.
@@ -981,4 +981,5 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1148]: https://github.com/replikativ/datahike/pull/1148
 [#1144]: https://github.com/replikativ/datahike/issues/1144
 [#1158]: https://github.com/replikativ/datahike/pull/1158
+[#1159]: https://github.com/replikativ/datahike/pull/1159
 [#1157]: https://github.com/replikativ/datahike/issues/1157
