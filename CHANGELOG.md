@@ -6,6 +6,17 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **A query with many scalar `:in` values plans a bounded number of times ([#1107]).**
+  A scalar `:in` value was folded into the plan as a constant. Each new value
+  was a new plan, and the plan cache did not help: a three-clause lookup cost
+  about 50 ms for each call, against 0.3 ms with the planner off. Now
+  `*fold-scalar-ins*` has a third value, `:auto`, which is the default. A query
+  shape still folds its scalars for its first 8 distinct values. After that,
+  the shape binds its scalars as relations and one plan serves every value.
+  This applies only where the scalar is the value of a plain data pattern
+  (`[?e :attr ?v]`) and is a string, number, boolean, uuid or instant. Other
+  shapes keep folding. `true` and `false` work as before. The same lookup now
+  costs about 0.01 ms for each call. Fixes [#1107].
 - **A collection binding is built in one pass ([#1156]).** A collection binding
   such as `[?x ...]` or `[[?a ?b] ...]` built one relation for each value, and
   folded them together. A function clause did the same for each input tuple.
@@ -1048,6 +1059,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1145]: https://github.com/replikativ/datahike/issues/1145
 [#1148]: https://github.com/replikativ/datahike/pull/1148
 [#1156]: https://github.com/replikativ/datahike/pull/1156
+[#1107]: https://github.com/replikativ/datahike/issues/1107
 [#1155]: https://github.com/replikativ/datahike/issues/1155
 [#1144]: https://github.com/replikativ/datahike/issues/1144
 [#1152]: https://github.com/replikativ/datahike/pull/1152
