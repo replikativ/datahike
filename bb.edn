@@ -134,7 +134,6 @@
                             :depends [prep]
                             :task (clj-kondo-tools/generate-clj-kondo-config!
                                     "resources/clj-kondo.exports/io.replikativ/datahike/config.edn"
-                                    ".clj-kondo/datahike/datahike/config.edn"
                                     ".clj-kondo/config.edn")}
 
          test-clj-kondo-export {:doc "Lint a consumer of datahike.api with the exported clj-kondo config"

@@ -2,7 +2,8 @@
 ;; Type definitions for datahike.api are AUTO-GENERATED
 ;; To regenerate: bb codegen-clj-kondo
 
-{:config-paths ["datahike/datahike"],
+{:config-paths
+ ["../resources/clj-kondo.exports/io.replikativ/datahike"],
  :lint-as
  {datahike.db/defrecord-updatable clojure.core/deftype,
   datahike.lru/defcache clojure.core/deftype,
@@ -69,9 +70,7 @@
      schema {:arities {1 {:args [:any], :ret :any}}},
      index-range {:arities {2 {:args [:any :any], :ret :any}}},
      pull-many
-     {:arities
-      {2 {:args [:any :any], :ret :seqable},
-       3 {:args [:any :vector :seqable], :ret :seqable}}},
+     {:arities {3 {:args [:any :vector :seqable], :ret :seqable}}},
      explain {:arities {2 {:args [:any :any], :ret :string}}},
      since {:arities {2 {:args [:any :any], :ret :any}}},
      force-branch!

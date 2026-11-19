@@ -217,19 +217,6 @@
       (println (str "  Generated " type-count " type definitions for type checking"))
       output-path)))
 
-(defn copy-export-to-local!
-  "Copies the export config and the emit-api hook from export-path to local-path.
-  local-path is usually .clj-kondo/datahike/datahike/config.edn."
-  [export-path local-path]
-  (let [local-file (io/file local-path)
-        local-hook (hook-path local-path)]
-    (io/make-parents local-file)
-    (io/make-parents local-hook)
-    (io/copy (io/file export-path) local-file)
-    (io/copy (hook-path export-path) local-hook)
-    (println (str "Copied to local config: " local-path))
-    local-path))
-
 (defn update-main-config!
   "Update main .clj-kondo/config.edn with type-mismatch linter.
 
@@ -287,10 +274,10 @@
 
 (comment
   ;; Generate config
-  (write-config! ".clj-kondo/datahike/datahike/config.edn")
+  (write-config! "resources/clj-kondo.exports/io.replikativ/datahike/config.edn")
 
   ;; Verify config is up-to-date
-  (verify-config ".clj-kondo/datahike/datahike/config.edn")
+  (verify-config "resources/clj-kondo.exports/io.replikativ/datahike/config.edn")
 
   ;; Preview what would be generated
   (clojure.pprint/pprint (generate-config)))
