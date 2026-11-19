@@ -1,0 +1,48 @@
+name: clj-kondo export
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  clj-kondo-export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Git checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Maven repository
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('deps.edn') }}
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install clojure tools
+        uses: DeLaGuardo/setup-clojure@13.4
+        with:
+          cli: 1.12.2.1565
+          bb: 1.12.208
+          clj-kondo: 2026.01.19
+
+      - name: Compile Java interfaces
+        run: clojure -T:build prep-lib
+
+      - name: Regenerate clj-kondo export
+        run: bb codegen-clj-kondo
+
+      - name: Check that the export is up to date
+        run: |
+          git status --porcelain resources/clj-kondo.exports .clj-kondo/config.edn
+          git diff --exit-code resources/clj-kondo.exports .clj-kondo/config.edn
+          test -z "$(git status --porcelain resources/clj-kondo.exports .clj-kondo/config.edn)"
+
+      - name: Lint a consumer with the export
+        run: bb test-clj-kondo-export
