@@ -11,6 +11,12 @@ When something is added, it's typically marked *Experimental*. When the API cont
   `d/q` and the other API functions no longer show as unresolved vars in
   clj-kondo and clojure-lsp. Calls are checked against the arities of the
   implementation.
+- **`database-exists?` takes no arguments, and `pull-many` drops its map
+  arity ([#TODO]).** `(d/database-exists?)` loads the default config like
+  `(d/create-database)` instead of throwing an arity error. The specification
+  listed `(pull-many db {:selector ... :eid ...})`, which the implementation
+  never accepted. The specification and the generated bindings no longer
+  list it.
 - **A collection binding is built in one pass ([#1156]).** A collection binding
   such as `[?x ...]` or `[[?a ?b] ...]` built one relation for each value, and
   folded them together. A function clause did the same for each input tuple.

@@ -425,9 +425,7 @@
      :impl datahike.pull-api/pull}
 
     pull-many
-    {:args [:function
-            [:=> [:cat :datahike/SDB :datahike/SPullOptions] [:sequential :map]]
-            [:=> [:cat :datahike/SDB [:vector :any] [:sequential :datahike/SEId]] [:sequential :map]]]
+    {:args [:=> [:cat :datahike/SDB [:vector :any] [:sequential :datahike/SEId]] [:sequential :map]]
      :ret [:sequential :map]
      :categories [:query :pull]
      :stability :stable

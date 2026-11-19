@@ -644,6 +644,14 @@
            (map dvec (d/index-range @db {:attrid :likes :start "egg" :end "pineapple"}))))
     (d/release db)))
 
+#?(:clj
+   (deftest test-database-exists?-without-config
+     (testing "database-exists? without arguments validates the default config like create-database"
+       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Store :id is required"
+                             (d/database-exists?)))
+       (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Store :id is required"
+                             (d/create-database))))))
+
 (deftest test-database-hash
   (testing "Hashing without history"
     (let [cfg {:store {:backend :memory

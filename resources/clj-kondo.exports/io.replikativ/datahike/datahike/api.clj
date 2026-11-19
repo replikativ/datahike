@@ -14,7 +14,7 @@
      (defn commit-id "Retrieve the commit-id for this database value." ([db] (datahike.api.impl/commit-id db)))
      (defn connect "Connects to a Datahike database via configuration map." ([] (datahike.connector/connect)) ([config] (datahike.connector/connect config)) ([config opts] (datahike.connector/connect config opts)))
      (defn create-database "Creates a database via configuration map." ([& args] (apply datahike.api.impl/create-database args)))
-     (defn database-exists? "Checks if a database exists via configuration map." ([config] (datahike.api.impl/database-exists? config)))
+     (defn database-exists? "Checks if a database exists via configuration map." ([] (datahike.api.impl/database-exists?)) ([config] (datahike.api.impl/database-exists? config)))
      (defn datoms "Index lookup. Returns sequence of datoms matching index components." ([arg0 arg1 & args] (apply datahike.api.impl/datoms arg0 arg1 args)))
      (defn db "Returns the underlying immutable database value from a connection. Prefer using @conn directly." ([conn] (datahike.api.impl/db conn)))
      (defn db-with "Applies transaction to immutable db value, returns new db. Same as (:db-after (with db tx-data))." ([db tx-data] (datahike.api.impl/db-with db tx-data)))
