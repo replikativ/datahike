@@ -7,16 +7,12 @@
 (defn generate-clj-kondo-config!
   "Generate clj-kondo configuration from api-specification.
 
-  This:
-  1. Generates export config and emit-api hook at resources/clj-kondo.exports/io.replikativ/datahike/
-     (packaged in jar, auto-imported by consuming projects)
-  2. Updates main config at .clj-kondo/config.edn with type-mismatch linter
-     (for Datahike's own project, which loads the export via :config-paths)"
-  [export-path main-path]
+  Generates export config and emit-api hook at resources/clj-kondo.exports/io.replikativ/datahike/
+  (packaged in jar, auto-imported by consuming projects, loaded by Datahike's own .clj-kondo/config.edn)"
+  [export-path]
   (println "Generating clj-kondo configuration...")
   (let [clj-code (str "(require '[datahike.codegen.clj-kondo :as clj-kondo]) "
-                      "(clj-kondo/write-config! \"" export-path "\") "
-                      "(clj-kondo/update-main-config! \"" main-path "\")")
+                      "(clj-kondo/write-config! \"" export-path "\")")
         result (p/shell {:out :string
                          :err :string}
                         "clojure" "-M" "-e" clj-code)]

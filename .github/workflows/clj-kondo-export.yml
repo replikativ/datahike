@@ -40,9 +40,9 @@ jobs:
 
       - name: Check that the export is up to date
         run: |
-          git status --porcelain resources/clj-kondo.exports .clj-kondo/config.edn
-          git diff --exit-code resources/clj-kondo.exports .clj-kondo/config.edn
-          test -z "$(git status --porcelain resources/clj-kondo.exports .clj-kondo/config.edn)"
+          git status --porcelain resources/clj-kondo.exports
+          git diff --exit-code resources/clj-kondo.exports
+          test -z "$(git status --porcelain resources/clj-kondo.exports)"
 
       - name: Lint a consumer with the export
         run: bb test-clj-kondo-export

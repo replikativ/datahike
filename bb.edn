@@ -133,8 +133,7 @@
          codegen-clj-kondo {:doc "Generate clj-kondo config from API specification"
                             :depends [prep]
                             :task (clj-kondo-tools/generate-clj-kondo-config!
-                                    "resources/clj-kondo.exports/io.replikativ/datahike/config.edn"
-                                    ".clj-kondo/config.edn")}
+                                    "resources/clj-kondo.exports/io.replikativ/datahike/config.edn")}
 
          test-clj-kondo-export {:doc "Lint a consumer of datahike.api with the exported clj-kondo config"
                                 :task (clj-kondo-tools/test-export! "resources/clj-kondo.exports/io.replikativ/datahike")}

@@ -5,8 +5,7 @@
   Writes :type-mismatch types for each API function."
   (:require [datahike.api.specification :refer [api-specification malli-schema->argslist]]
             [clojure.java.io :as io]
-            [clojure.string :as str]
-            [clojure.pprint :as pprint]))
+            [clojure.string :as str]))
 
 ;; =============================================================================
 ;; Malli Schema to clj-kondo Type Conversion
@@ -217,41 +216,6 @@
       (println (str "  Generated " type-count " type definitions for type checking"))
       output-path)))
 
-(defn update-main-config!
-  "Update main .clj-kondo/config.edn with type-mismatch linter.
-
-  Reads existing config, merges in type definitions, and writes back.
-  This enables type checking for Datahike's own project (export config
-  is for consuming libraries).
-
-  Args:
-    main-config-path - Path to main config (usually .clj-kondo/config.edn)"
-  [main-config-path]
-  (let [config (generate-config)
-        type-defs (get-in config [:linters :type-mismatch :namespaces 'datahike.api])
-        main-config-file (io/file main-config-path)
-        existing-config (when (.exists main-config-file)
-                          (read-string (slurp main-config-file)))
-
-        ;; Merge type-mismatch into existing linters
-        updated-config (update-in existing-config
-                                  [:linters :type-mismatch :namespaces]
-                                  (fn [existing]
-                                    (merge existing {'datahike.api type-defs})))]
-
-    ;; Write updated config with pretty printing
-    (with-open [writer (io/writer main-config-file)]
-      (binding [*out* writer]
-        (println ";; clj-kondo configuration for Datahike")
-        (println ";; Type definitions for datahike.api are AUTO-GENERATED")
-        (println ";; To regenerate: bb codegen-clj-kondo")
-        (println)
-        (pprint/pprint updated-config)))
-
-    (println (str "Updated main config: " main-config-path))
-    (println (str "  Added type checking for " (count type-defs) " API functions"))
-    main-config-path))
-
 ;; =============================================================================
 ;; Verification
 ;; =============================================================================
@@ -280,4 +244,4 @@
   (verify-config "resources/clj-kondo.exports/io.replikativ/datahike/config.edn")
 
   ;; Preview what would be generated
-  (clojure.pprint/pprint (generate-config)))
+  (generate-config))
