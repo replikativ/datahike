@@ -2,7 +2,7 @@
   "Generate clj-kondo export configuration for dynamically generated API."
   (:require [babashka.fs :as fs]
             [babashka.process :as p]
-            [clojure.edn :as edn]))
+            [pod.borkdude.clj-kondo :as clj-kondo]))
 
 (defn generate-clj-kondo-config!
   "Generate clj-kondo configuration from api-specification.
@@ -37,29 +37,32 @@
     [6 :unresolved-var]
     [7 :invalid-arity]})
 
-(defn- clj-kondo
-  [dir & args]
-  (apply p/shell {:dir (str dir) :out :string :err :string :continue true}
-         "clj-kondo" args))
-
 (defn test-export!
   "Lints a consumer of datahike.api with the clj-kondo export in export-dir.
-  Throws if the findings differ from the expected findings."
+  Throws if the findings differ from the expected findings.
+
+  Runs clj-kondo through the pod bb.edn already loads, so the check uses the
+  same clj-kondo version as `bb lint` and needs no binary on the PATH."
   [export-dir]
   (let [dir (fs/create-temp-dir {:prefix "clj-kondo-export"})
+        config-dir (str (fs/path dir ".clj-kondo"))
+        cache-dir (str (fs/path dir ".clj-kondo" ".cache"))
+        consumer (str (fs/path dir "src" "consumer.clj"))
         api-source (str (fs/absolutize "src/datahike/api.cljc"))]
     (try
-      (fs/copy-tree export-dir (fs/path dir ".clj-kondo" "imports" "io.replikativ" "datahike"))
+      (fs/copy-tree export-dir (fs/path config-dir "imports" "io.replikativ" "datahike"))
       (fs/create-dirs (fs/path dir "src"))
-      (spit (str (fs/path dir "src" "consumer.clj")) consumer-source)
-      (let [deps (clj-kondo dir "--lint" api-source "--dependencies")]
-        (when-not (zero? (:exit deps))
-          (throw (ex-info "clj-kondo failed to analyze datahike.api" deps))))
-      (let [{:keys [out]} (clj-kondo dir "--lint" "src" "--config" "{:output {:format :edn}}")
-            findings (set (map (juxt :row :type) (:findings (edn/read-string out))))]
-        (if (= expected-findings findings)
+      (spit consumer consumer-source)
+      ;; What a consumer's editor does first: analyze the dependency, so its
+      ;; vars are in the cache. Reports no findings.
+      (clj-kondo/run! {:lint [api-source] :dependencies true
+                       :config-dir config-dir :cache-dir cache-dir})
+      (let [{:keys [findings]} (clj-kondo/run! {:lint [consumer]
+                                                :config-dir config-dir :cache-dir cache-dir})
+            actual (set (map (juxt :row :type) findings))]
+        (if (= expected-findings actual)
           (println "clj-kondo export OK")
           (throw (ex-info "Unexpected clj-kondo findings"
-                          {:expected expected-findings :actual findings}))))
+                          {:expected expected-findings :actual actual :findings findings}))))
       (finally
         (fs/delete-tree dir)))))

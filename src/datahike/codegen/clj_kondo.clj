@@ -154,8 +154,8 @@
   (let [arglists (or (impl-arglists impl)
                      [(-> (apply min-key count (malli-schema->argslist args))
                           (conj '& 'args))])]
-    `(~'defn ~fn-name ~doc
-      ~@(map #(hook-arity impl %) (distinct (map plain-arglist arglists))))))
+    (list* 'defn fn-name doc
+           (map #(hook-arity impl %) (distinct (map plain-arglist arglists))))))
 
 (defn generate-hook-source
   "Returns the source of a clj-kondo macroexpand hook for datahike.api/emit-api.
