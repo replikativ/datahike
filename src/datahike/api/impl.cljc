@@ -108,11 +108,9 @@
   #?(:clj @(apply dw/delete-database args)
      :cljs (apply dw/delete-database args)))
 
-(defn database-exists?
-  ([] (database-exists? {}))
-  ([config]
-   #?(:clj  @(writing/database-exists? config)
-      :cljs (writing/database-exists? config))))
+(defn database-exists? [config]
+  #?(:clj  @(writing/database-exists? config)
+     :cljs (writing/database-exists? config)))
 
 ;; Dispatch on the ARG SHAPE (map vs index+components), not the concrete map
 ;; class: a small map literal is PersistentArrayMap on the JVM but can be

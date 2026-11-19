@@ -33,7 +33,6 @@
 (d/connect)
 (d/pull 1 2 3 4)
 (d/nope)
-(d/pull-many 1 {:selector [:name] :eid 2})
 (d/database-exists?)
 ")
 

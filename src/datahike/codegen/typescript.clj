@@ -64,7 +64,7 @@
    'q ["query" "inputs"]
    'query-stats ["query" "inputs"]
    'pull ["db" "patternOrOptions" "eid"]
-   'pull-many ["db" "pattern" "eids"]
+   'pull-many ["db" "patternOrOptions" "eids"]
    'entity ["db" "eid"]
    'datoms ["db" "indexOrOptions" "components"]
    'seek-datoms ["db" "indexOrOptions" "components"]

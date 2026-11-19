@@ -70,7 +70,9 @@
      schema {:arities {1 {:args [:any], :ret :any}}},
      index-range {:arities {2 {:args [:any :any], :ret :any}}},
      pull-many
-     {:arities {3 {:args [:any :vector :seqable], :ret :seqable}}},
+     {:arities
+      {2 {:args [:any :any], :ret :seqable},
+       3 {:args [:any :vector :seqable], :ret :seqable}}},
      explain {:arities {2 {:args [:any :any], :ret :string}}},
      since {:arities {2 {:args [:any :any], :ret :any}}},
      force-branch!
