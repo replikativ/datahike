@@ -6,16 +6,12 @@
   "Generate clj-kondo configuration from api-specification.
 
   This:
-  1. Generates export config at resources/clj-kondo.exports/io.replikativ/datahike/config.edn
+  1. Generates export config and emit-api hook at resources/clj-kondo.exports/io.replikativ/datahike/
      (packaged in jar, auto-imported by consuming projects)
-  2. Copies to .clj-kondo/datahike/datahike/config.edn
+  2. Copies both to .clj-kondo/datahike/datahike/
      (for local development via :config-paths)
   3. Updates main config at .clj-kondo/config.edn with type-mismatch linter
-     (for Datahike's own project)
-
-  This allows clj-kondo to understand the dynamically expanded API functions
-  from the emit-api macro, providing IDE autocomplete, signature hints, and
-  type checking."
+     (for Datahike's own project)"
   [export-path local-path main-path]
   (println "Generating clj-kondo configuration...")
   (let [clj-code (str "(require '[datahike.codegen.clj-kondo :as clj-kondo]) "

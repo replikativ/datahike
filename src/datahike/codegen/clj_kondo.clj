@@ -1,18 +1,11 @@
 (ns datahike.codegen.clj-kondo
   "Generate clj-kondo export config from api.specification.
 
-  This namespace provides tooling to generate clj-kondo configuration that:
-  - Exports all dynamically generated API functions
-  - Provides proper arglists for each function
-  - Includes documentation strings
-  - Provides type information for :type-mismatch linter
-  - Enables IDE autocomplete, signature hints, and type checking
-
-  The generated config allows clj-kondo to understand the dynamically
-  expanded API functions from the emit-api macro, eliminating yellow
-  squiggles and providing full IDE support."
+  Writes a :macroexpand hook for datahike.api/emit-api that defines each API function with its docstring and arglists.
+  Writes :type-mismatch types for each API function."
   (:require [datahike.api.specification :refer [api-specification malli-schema->argslist]]
             [clojure.java.io :as io]
+            [clojure.string :as str]
             [clojure.pprint :as pprint]))
 
 ;; =============================================================================
@@ -133,60 +126,83 @@
 ;; Config Generation
 ;; =============================================================================
 
-(defn- generate-var-definition
-  "Generate clj-kondo var definition for a single API function.
+(defn- plain-param
+  [i param]
+  (cond
+    (symbol? param) param
+    (and (map? param) (symbol? (:as param))) (:as param)
+    :else (symbol (str "arg" i))))
 
-  Returns a map with :arglists and :doc for the function."
-  [fn-name {:keys [args doc]}]
-  (let [arglists (malli-schema->argslist args)
-        ;; Ensure arglists is a proper list (not lazy seq or vector)
-        arglists-list (if (list? arglists)
-                        arglists
-                        (apply list arglists))]
-    ;; Use a quoted form (via syntax-quote) so it prints as '(...) not (quote (...))
-    {:arglists `'~arglists-list
-     :doc doc}))
+(defn- plain-arglist
+  [arglist]
+  (vec (map-indexed plain-param arglist)))
+
+(defn- impl-arglists
+  [impl]
+  (require (symbol (namespace impl)))
+  (:arglists (meta (resolve impl))))
+
+(defn- hook-arity
+  [impl arglist]
+  (let [[fixed [_ rest-param]] (split-with #(not= '& %) arglist)]
+    (list arglist
+          (if rest-param
+            `(~'apply ~impl ~@fixed ~rest-param)
+            `(~impl ~@fixed)))))
+
+(defn- hook-defn
+  [fn-name {:keys [args doc impl]}]
+  (let [arglists (or (impl-arglists impl)
+                     [(-> (apply min-key count (malli-schema->argslist args))
+                          (conj '& 'args))])]
+    `(~'defn ~fn-name ~doc
+      ~@(map #(hook-arity impl %) (distinct (map plain-arglist arglists))))))
+
+(defn generate-hook-source
+  "Returns the source of a clj-kondo macroexpand hook for datahike.api/emit-api.
+  The hook expands to one defn per API operation, with the arglists of its implementation."
+  []
+  (let [defns (map (fn [[fn-name spec]] (hook-defn fn-name spec))
+                   (into (sorted-map) api-specification))]
+    (with-out-str
+      (println ";; AUTO-GENERATED from api-specification by bb codegen-clj-kondo")
+      (println "(ns datahike.api)")
+      (println)
+      (println "(defmacro emit-api []")
+      (println (str "  '(do\n"
+                    (str/join "\n" (map #(str "     " (pr-str %)) defns))
+                    "))")))))
 
 (defn generate-config
-  "Generate complete clj-kondo export configuration.
-
-  Returns an EDN map with:
-  - :var-definitions - Basic function signatures for IDE support
-  - :linters :type-mismatch - Type information for type checking"
+  "Returns the clj-kondo export configuration.
+  It registers the emit-api hook and the :type-mismatch types of datahike.api."
   []
-  (let [var-defs (into {}
-                       (map (fn [[fn-name spec]]
-                              [fn-name (generate-var-definition fn-name spec)])
-                            api-specification))
-        type-defs (into {}
+  (let [type-defs (into {}
                         (keep (fn [[fn-name spec]]
                                 (when-let [type-def (generate-type-definition fn-name spec)]
                                   [fn-name type-def]))
                               api-specification))]
-    {:var-definitions
-     {'datahike.api var-defs}
+    {:hooks
+     {:macroexpand {'datahike.api/emit-api 'datahike.api/emit-api}}
 
      :linters
      {:type-mismatch
       {:namespaces
        {'datahike.api type-defs}}}}))
 
+(defn- hook-path
+  [config-path]
+  (io/file (.getParentFile (io/file config-path)) "datahike" "api.clj"))
+
 (defn write-config!
-  "Write clj-kondo export configuration to file.
-
-  This should be the resources/ location so it gets packaged in the jar
-  and auto-imported by consuming projects.
-
-  Args:
-    output-path - Path to write config.edn (usually resources/clj-kondo.exports/io.replikativ/datahike/config.edn)"
+  "Writes the clj-kondo export configuration to output-path and the emit-api hook next to it.
+  output-path is usually resources/clj-kondo.exports/io.replikativ/datahike/config.edn."
   [output-path]
   (let [config (generate-config)
-        output-file (io/file output-path)]
-
-    ;; Ensure parent directories exist
-    (.mkdirs (.getParentFile output-file))
-
-    ;; Write export config (using prn for now to avoid pprint issues with quoted forms)
+        output-file (io/file output-path)
+        hook-file (hook-path output-path)]
+    (io/make-parents output-file)
+    (io/make-parents hook-file)
     (with-open [writer (io/writer output-file)]
       (binding [*out* writer]
         (println ";; clj-kondo export configuration for Datahike")
@@ -194,34 +210,23 @@
         (println ";; To regenerate: bb codegen-clj-kondo")
         (println)
         (prn config)))
-
-    (let [var-count (count (get-in config [:var-definitions 'datahike.api]))
-          type-count (count (get-in config [:linters :type-mismatch :namespaces 'datahike.api]))]
+    (spit hook-file (generate-hook-source))
+    (let [type-count (count (get-in config [:linters :type-mismatch :namespaces 'datahike.api]))]
       (println (str "Generated clj-kondo export config: " output-path))
-      (println (str "  Exported " var-count " API functions with signatures"))
+      (println (str "  Generated emit-api hook for " (count api-specification) " API functions: " hook-file))
       (println (str "  Generated " type-count " type definitions for type checking"))
       output-path)))
 
 (defn copy-export-to-local!
-  "Copy export config to .clj-kondo directory for local development.
-
-  The export config in resources/ gets packaged in the jar. For local
-  development, we also need it in .clj-kondo/datahike/datahike/ which
-  is referenced via :config-paths.
-
-  Args:
-    export-path - Source path (resources/clj-kondo.exports/io.replikativ/datahike/config.edn)
-    local-path - Destination path (.clj-kondo/datahike/datahike/config.edn)"
+  "Copies the export config and the emit-api hook from export-path to local-path.
+  local-path is usually .clj-kondo/datahike/datahike/config.edn."
   [export-path local-path]
-  (let [export-file (io/file export-path)
-        local-file (io/file local-path)]
-
-    ;; Ensure parent directories exist
-    (.mkdirs (.getParentFile local-file))
-
-    ;; Copy file
-    (io/copy export-file local-file)
-
+  (let [local-file (io/file local-path)
+        local-hook (hook-path local-path)]
+    (io/make-parents local-file)
+    (io/make-parents local-hook)
+    (io/copy (io/file export-path) local-file)
+    (io/copy (hook-path export-path) local-hook)
     (println (str "Copied to local config: " local-path))
     local-path))
 

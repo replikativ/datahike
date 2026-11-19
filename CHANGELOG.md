@@ -6,6 +6,11 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **clj-kondo resolves the `datahike.api` functions ([#TODO]).** The exported
+  clj-kondo config now has a hook for the macro that defines the API, so
+  `d/q` and the other API functions no longer show as unresolved vars in
+  clj-kondo and clojure-lsp. Calls are checked against the arities of the
+  implementation.
 - **A collection binding is built in one pass ([#1156]).** A collection binding
   such as `[?x ...]` or `[[?a ?b] ...]` built one relation for each value, and
   folded them together. A function clause did the same for each input tuple.
