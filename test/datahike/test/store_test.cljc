@@ -3,6 +3,8 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
       :clj  [clojure.test :as t :refer        [is deftest testing]])
    [datahike.api :as d]
+   #?(:clj [datahike.index.interface :as di])
+   #?(:clj [org.replikativ.persistent-sorted-set :as psset])
    [datahike.migrate.fs :as fs]))
 
 (defn test-store [cfg]
@@ -133,6 +135,47 @@
            (is (= (* 2 n) (count (filter #(#{:name :age} (:a %)) (d/datoms db :eavt))))
                "exactly one :name + one :age datom per entity (no stale buffered-replace duplicate)")
            (d/release conn))
+         (d/delete-database cfg)))))
+
+#?(:clj
+   (deftest test-subtree-counts-survive-reconnect-and-write
+     ;; #1108: after a reconnect, the first write left the root of each index with
+     ;; an unknown subtree count, and `has-subtree-counts?` stayed false from then
+     ;; on. The planner then used heuristic estimates for the whole store.
+     (let [cfg {:store {:backend :file
+                        :path (fs/temp-store-path! "dh-subtree-counts")
+                        :id #uuid "d1ffb000-0000-0000-0000-000000001108"}
+                :schema-flexibility :read :keep-history? false :allow-unsafe-config true
+                :index :datahike.index/persistent-set
+                :index-config {:branching-factor 8}}
+           write! (fn [conn i]
+                    (d/transact conn (vec (for [j (range 250)]
+                                            {:k (+ (* i 250) j) :v (str "x" j)}))))
+           counts? (fn [conn]
+                     (let [db @conn]
+                       (every? #(di/-has-subtree-counts? (get db %)) [:eavt :aevt :avet])))]
+       (d/delete-database cfg)
+       (d/create-database cfg)
+       (let [conn (atom (d/connect cfg))]
+         (dotimes [i 10] (write! @conn i))
+         (is (counts? @conn) "counts known after the first connection")
+         (dotimes [round 3]
+           (d/release @conn)
+           (reset! conn (d/connect cfg))
+           (is (counts? @conn) "counts known after a read-only reconnect")
+           (write! @conn (+ 10 round))
+           (is (counts? @conn) (str "counts known after reconnect " (inc round) " and a write"))
+           (write! @conn (+ 20 round))
+           (is (counts? @conn) "counts known after a second write"))
+         (is (= (count (d/datoms @@conn :eavt)) (di/-count (:eavt @@conn)))
+             "the datom count agrees with the index count")
+         (let [pset (:eavt @@conn)
+               ds (vec (d/datoms @@conn :eavt))]
+           (is (= (count ds) (psset/count-slice pset nil nil))
+               "count-slice over the whole index agrees with the datoms")
+           (is (= 2901 (psset/count-slice pset (nth ds 100) (nth ds 3000)))
+               "count-slice over a range agrees with the datoms"))
+         (d/release @conn)
          (d/delete-database cfg)))))
 
 #?(:clj

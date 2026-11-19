@@ -297,6 +297,26 @@
         (psset/walk-addresses pset (fn [address] (swap! addresses conj address)))
         @addresses))))
 
+#?(:clj
+   (defn- subtree-counts?
+     "True when the root of `pset` knows its subtree count.
+      After a reconnect and a write, the cached count of the root can be unknown
+      (-1) while the counts of its children are known. `PersistentSortedSet
+      .hasSubtreeCounts` only reads the cached value, so it stays false for that
+      set and its successors, and the query estimator falls back to heuristic
+      estimates (#1108). Here, an unknown root count is computed from the
+      children and cached on the root. The count depends only on the subtree,
+      so the cache is safe to share."
+     [^PersistentSortedSet pset]
+     (or (psset/has-subtree-counts? pset)
+         (let [root (.root pset)]
+           (boolean
+            (when (instance? Branch root)
+              (let [n (.computeSubtreeCount ^Branch root (.-_storage pset))]
+                (when (>= n 0)
+                  (set! (.-_subtreeCount ^Branch root) n)
+                  true))))))))
+
 (extend-type #?(:clj PersistentSortedSet :cljs BTSet)
   IIndex
   (-slice [^PersistentSortedSet pset from to index-type]
@@ -313,7 +333,7 @@
   (-count-slice [^PersistentSortedSet pset from to cmp]
     (psset/count-slice pset from to cmp))
   (-has-subtree-counts? [^PersistentSortedSet pset]
-    #?(:clj  (psset/has-subtree-counts? pset)
+    #?(:clj  (subtree-counts? pset)
        :cljs true))
   (-all [pset]
     (identity pset))
