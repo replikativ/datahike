@@ -1752,17 +1752,98 @@
               (map #(in->rel %1 %2) (:bindings binding) coll)))))
 
 (def ^:dynamic *fold-scalar-ins*
-  "When true (default), a scalar :in binding becomes a constant folded
-   into the where clauses before planning: plans specialize on the value
-   (best for one-off queries and value-dependent estimates), but the
-   plan cache then misses for every distinct value. Bind false for
-   parameterized workloads that repeat one query SHAPE with varying
-   scalars (SQL prepared statements): the scalar binds as a 1-row
-   relation instead, the clauses stay in var form, and the plan cache
-   hits across values (measured ~4x faster novel-value dispatch on an
-   indexed point lookup). Function-valued bindings always fold — they
-   are invoked in clause position and cannot live in a relation."
-  true)
+  "How a scalar :in binding reaches the planner.
+
+   true: the scalar becomes a constant folded into the where clauses before
+   planning. The plan specializes on the value (best for one-off queries and
+   value-dependent estimates), but the plan cache misses for every distinct
+   value.
+
+   false: the scalar binds as a 1-row relation, the clauses stay in var form,
+   and the plan cache hits across values (measured ~4x faster novel-value
+   dispatch on an indexed point lookup).
+
+   :auto (default): fold, until one query shape has run with more than
+   `scalar-fold-limit` distinct scalar tuples. Then that shape stops folding
+   and one plan serves every value (#1107).
+
+   Function-valued bindings always fold — they are invoked in clause position
+   and cannot live in a relation."
+  :auto)
+
+(def ^:const scalar-fold-limit
+  "Number of distinct scalar :in tuples one query shape may fold into its plan
+   (see `*fold-scalar-ins*`) before the shape binds its scalars as relations."
+  8)
+
+;; query form -> set of the distinct scalar tuples seen (at most
+;; scalar-fold-limit of them), or :value-free once the shape passed the limit.
+;; A heuristic only: a lost update delays or repeats the switch, and both
+;; plans give the same result.
+(def ^:private scalar-fold-shapes (volatile! (datahike.lru/lru lru-cache-size)))
+
+(defn- plain-scalar-value?
+  "A value that a 1-row relation joins the same way as a folded constant:
+   it is never a lookup ref, an ident or an entity reference."
+  [v]
+  (or (string? v) (number? v) (boolean? v) (uuid? v) (inst? v)))
+
+(defn- value-slot-only?
+  "True when every scalar :in variable in `scalar-syms` occurs in `where` only
+   as the value of a plain top-level data pattern [?e :attr ?v]. A relation
+   input is sound there. Other uses (predicates, functions, rules, not/or,
+   tx or entity slots, other sources) are not sound on every engine path, so
+   those queries keep folding."
+  [where scalar-syms]
+  (let [syms (set scalar-syms)
+        total (count (filter syms (tree-seq coll? seq where)))
+        in-value-slot (count (for [c where
+                                   :when (and (vector? c)
+                                              (<= 3 (count c) 4)
+                                              (symbol? (nth c 0))
+                                              (not= \$ (first (name (nth c 0))))
+                                              (keyword? (nth c 1))
+                                              (contains? syms (nth c 2)))]
+                               c))]
+    (and (seq syms)
+         (= total in-value-slot))))
+
+(defn- fold-scalar-ins?
+  "Resolve `*fold-scalar-ins*` to a boolean for one call of `query`."
+  [query qin args]
+  (let [fold *fold-scalar-ins*]
+    (if-not (= :auto fold)
+      (boolean fold)
+      (let [scalars (into []
+                          (keep-indexed (fn [i b]
+                                          (when (and (instance? BindScalar b)
+                                                     (instance? Variable (:variable b)))
+                                            [(get-in b [:variable :symbol]) (nth args i ::none)])))
+                          qin)
+            vals (mapv (fn [[_ v]] [v]) scalars)
+            safe? (and (seq scalars)
+                       (every? (fn [[_ v]] (plain-scalar-value? v)) scalars)
+                       (not-any? #(instance? RulesVar (:variable %)) qin)
+                       (every? (fn [[b v]]
+                                 (or (not (and (instance? BindScalar b)
+                                               (instance? SrcVar (:variable b))))
+                                     (instance? DB v)))
+                               (map vector qin args))
+                       (form-memo [::value-slot-only query]
+                                  #(boolean (value-slot-only? (:where query)
+                                                              (map first scalars)))))]
+        (if-not safe?
+          true
+          (let [seen (get @scalar-fold-shapes query nil)]
+            (cond
+              (= :value-free seen) false
+              (contains? seen vals) true
+              (>= (count seen) scalar-fold-limit)
+              (do (vswap! scalar-fold-shapes assoc query :value-free)
+                  false)
+              :else
+              (do (vswap! scalar-fold-shapes assoc query (conj (or seen #{}) vals))
+                  true))))))))
 
 (defn resolve-in [context [binding value]]
   (cond
@@ -4579,7 +4660,9 @@
      (let [{:keys [query args]} (normalize-q-input query inputs)
            {:keys [qfind qin]} (memoized-parse-query query)
            context-in (-> (Context. [] {} built-in-rules {} default-settings nil)
-                          (resolve-ins qin args))
+                          (as-> ctx
+                                (binding [*fold-scalar-ins* (fold-scalar-ins? query qin args)]
+                                  (resolve-ins ctx qin args))))
            ;; SAME source resolution as raw-q*: `$` if present, else the first
            ;; planner-eligible db source. (Previously hardcoded '$, which
            ;; NPE'd for queries whose only source is named, e.g. :in $data.)
@@ -5593,7 +5676,9 @@
         context-in (-> (if stats?
                          (StatContext. [] {} built-in-rules {} [] settings cancel)
                          (Context. [] {} built-in-rules {} settings cancel))
-                       (resolve-ins qin args)
+                       (as-> ctx
+                             (binding [*fold-scalar-ins* (fold-scalar-ins? query qin args)]
+                               (resolve-ins ctx qin args)))
                        ;; When set, bind-by-fn accumulates {fn-sym → invocations}
                        ;; into the threaded context :fn-counts; surfaced as result
                        ;; metadata. (Extra defrecord keys persist via the extmap.)
