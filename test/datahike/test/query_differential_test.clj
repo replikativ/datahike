@@ -551,10 +551,24 @@
    (acyclic) dataset could surface."
   (or (some-> (System/getenv "DATAHIKE_DIFF_CASE_TIMEOUT_MS") parse-long) 5000))
 
-(defn- run-engine [disable? query db args opts]
+(def ^:private input-modes
+  "How a scalar :in value reaches the planner. The answer must not depend on it.
+   :fold is the default (the value is written into the clauses before planning);
+   :relation keeps it a one-row relation; :prepared is :relation plus per-call
+   rebinding and compiled point programs, which is how the PostgreSQL wire server runs."
+  {:fold     {}
+   :relation {#'q/*fold-scalar-ins* false}
+   :prepared {#'q/*fold-scalar-ins* false
+              (requiring-resolve 'datahike.query.execute/*prepared-execution*) true}})
+
+(def ^:private mode-divergences (atom []))
+
+(defn- run-engine
+  ([disable? query db args opts] (run-engine disable? query db args opts :fold))
+  ([disable? query db args opts mode]
   (let [thunk (fn []
                 (try
-                  (binding [q/*disable-planner* disable?]
+                  (with-bindings (assoc (input-modes mode) #'q/*disable-planner* disable?)
                     (let [args' (into [db] (map (fn [a] (if (= ::db2 a) @test-db2 a))) args)]
                       (normalize
                        (if (seq opts)
@@ -568,7 +582,7 @@
       ;; The thread is CPU-bound and will not observe an interrupt, but the run
       ;; must proceed; the case is already reported as a divergence.
       (future-cancel fut))
-    r))
+    r)))
 
 (defn- wrap-db [db temporal]
   (case temporal
@@ -739,6 +753,13 @@
                       db (wrap-db (dataset-db (:dataset spec)) (:temporal spec))
                       base (run-engine true query db args opts)
                       planner (run-engine false query db args opts)
+                      _ (doseq [mode [:relation :prepared]
+                                :let [r (run-engine false query db args opts mode)]
+                                :when (not= r planner)]
+                          (swap! mode-divergences conj
+                                 {:mode mode :query query :args args :opts opts
+                                  :temporal (:temporal spec) :dataset (:dataset spec)
+                                  :fold planner :got r :base base}))
                       oracle (when (not= "off" oracle-mode)
                                (run-oracle query db args))
                       ;; The rebind axis violates ONE law (an output binding
