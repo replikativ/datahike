@@ -175,3 +175,37 @@
                           :where [?l :lk ?k] [?r :rk ?k] [?r :amount ?v _ true]] @conn)))
        (is (nil? (both '[:find (sum ?v) . :with ?r
                          :where [?l :lk ?k] [?r :rk ?k] [?r :amount ?v nil false]] @conn))))))
+
+(deftest a-negation-keeps-its-local-variables-local
+  ;; `?local` occurs only inside the `not`. Restating the literal transaction
+  ;; must leave the clause a plain `not`: as a `not-join` over the body's
+  ;; variables it demanded a binding for `?local` from outside.
+  (let [{:keys [db history tx1 tx2]} (setup)]
+    (doseq [[label d] [["current" db] ["history" history]]]
+      (testing label
+        (is (= #{"a" "b" "c"}
+               (ks db (both (with-tx '[:find ?e :where [?e :x/i 1] (not [?e :x/t ?local TX])] tx1) d))))
+        (is (= #{"b"}
+               (ks db (both (with-tx '[:find ?e :where [?e :x/i 1] (not [?e :x/t ?local TX])] tx2) d))))
+        (is (= #{}
+               (both (with-tx '[:find ?e :where [?e :x/k "a"] (not [?e :x/t ?local TX])] tx2) d)))))))
+
+(deftest an-added-variable-shared-across-slots-and-inputs
+  (let [{:keys [db history]} (setup)
+        a (d/q '[:find ?e . :where [?e :x/k "a"]] db)
+        c (d/q '[:find ?e . :where [?e :x/k "c"]] db)
+        named (fn [result] (into #{} (map (fn [[e p]] [(:x/k (d/entity db e)) p])) result))]
+    (testing "entities from a collection input"
+      (is (= #{["a" true]}
+             (named (both '[:find ?e ?p :in $ [?e ...] :where [?e :x/i _ _ ?p] [?e :x/s _ _ ?p]]
+                          db [a c]))))
+      (is (= #{["a" true] ["c" true]}
+             (named (both '[:find ?e ?p :in $ [?e ...] :where [?e :x/i _ _ ?p] [?e :x/s _ _ ?p]]
+                          history [a c]))))
+      (is (= #{["a" true]}
+             (named (both '[:find ?e ?p :in $ [?e ...] :where [?e :x/i 1] [?e :x/s _ _ ?p]]
+                          db [a c])))))
+    (testing "the variable is also a VALUE of a sibling pattern"
+      ;; x/t 7 is no boolean, so nothing can satisfy both patterns
+      (is (= #{} (both '[:find ?e :where [?e :x/t ?p] [?e :x/s _ _ ?p]] db)))
+      (is (= #{} (both '[:find ?e ?p :where [?e :x/s _ _ ?p] [?e :x/t ?p]] history))))))
