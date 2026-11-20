@@ -372,4 +372,70 @@
          (is (= #{[0 800] [1 800] [2 800]}
                 (q* '[:find ?g (count ?r) :where [?l :j/lk ?k] [?l :j/grp ?g] [?r :j/rk ?k]])))
          (is (= 1200 (count (q* '[:find ?k (count ?r) :where [?l :j/lk ?k] [?r :j/rk ?k]]))))
+         (is (= #{[0 800]}
+                (q* '[:find ?g (count ?r) :where [?l :j/lk ?k] [?l :j/grp ?g]
+                      [(= ?g (quote 0))] [?r :j/rk ?k]])))
          (is (= #{} (q* '[:find (count ?r) :where [?l :j/lk ?k] [?r :j/rk ?k] [(> ?k 99999)]])))))))
+
+(deftest pushed-predicates-keep-the-query's-comparisons
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :schema-flexibility :write :keep-history? true}
+        _ (d/create-database cfg)
+        conn (d/connect cfg)]
+    (d/transact conn [{:db/ident :c/k :db/valueType :db.type/string
+                       :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                      {:db/ident :c/n :db/valueType :db.type/long
+                       :db/cardinality :db.cardinality/one :db/index true}
+                      {:db/ident :c/str :db/valueType :db.type/string
+                       :db/cardinality :db.cardinality/one :db/index true}
+                      {:db/ident :c/kw :db/valueType :db.type/keyword
+                       :db/cardinality :db.cardinality/one :db/index true}
+                      {:db/ident :c/inst :db/valueType :db.type/instant
+                       :db/cardinality :db.cardinality/one :db/index true}
+                      #?(:clj {:db/ident :c/bytes :db/valueType :db.type/bytes
+                               :db/cardinality :db.cardinality/one :db/index true})])
+    (d/transact conn [(merge {:c/k "a" :c/n 3 :c/str "c" :c/kw :c :c/inst #inst "2020-01-03"}
+                             #?(:clj {:c/bytes (byte-array [1 2 3])}))
+                      {:c/k "b" :c/n 1 :c/str "a" :c/kw :a :c/inst #inst "2020-01-01"}])
+    (d/transact conn (vec (for [i (range 4000)] {:c/n (+ 10 i)})))
+    (let [db @conn
+          a (d/q '[:find ?e . :where [?e :c/k "a"]] db)
+          b (d/q '[:find ?e . :where [?e :c/k "b"]] db)
+          big (d/q '[:find ?e . :where [?e :c/n 500]] db)]
+      (doseq [[label d] [["current" db] ["history" (d/history db)]]]
+        (testing label
+          #?(:clj (testing "an array is a value"
+                    (is (= #{[a]} (both '[:find ?e :in $ ?p :where [?e :c/bytes ?v] [(= ?v ?p)]]
+                                        d (byte-array [1 2 3]))))))
+          (testing "`=` tells a long from a double, `==` does not"
+            (is (= #{} (both '[:find ?e :where [?e :c/n ?v] [(= ?v 1.0)]] d)))
+            (is (= #{[b]} (both '[:find ?e :where [?e :c/n ?v] [(== ?v 1.0)]] d))))
+          (testing "the pattern's value is itself an input"
+            (is (= #{[a]} (both '[:find ?e :in $ ?v :where [?e :c/n ?v] [(= ?v 3)]] d 3)))
+            (is (= #{[a]} (both '[:find ?e :in $ ?v :where [?e :c/n ?v] [(> ?v 2)]] d 3)))
+            (is (= #{} (both '[:find ?e :in $ ?v :where [?e :c/n ?v] [(> ?v 3)]] d 3))))
+          (testing "an inclusive bound on entities that are sought one by one"
+            (is (= #{[big]} (both '[:find ?e :in $ [?e ...] :where [?e :c/n ?v] [(>= ?v 10)]]
+                                  d [a b big])))
+            (is (= #{[a] [b]} (both '[:find ?e :in $ [?e ...] :where [?e :c/n ?v] [(<= ?v 3)]]
+                                    d [a b big]))))
+          (testing "two bounds on one side, on values that are not numbers"
+            (is (= #{[a]} (both '[:find ?e :where [?e :c/str ?v] [(>= ?v "a")] [(>= ?v "b")]] d)))
+            (is (= #{[b]} (both '[:find ?e :where [?e :c/kw ?v] [(<= ?v :z)] [(<= ?v :b)]] d)))
+            (is (= #{[a]} (both '[:find ?e :where [?e :c/inst ?v]
+                                  [(> ?v #inst "2019-01-01")] [(> ?v #inst "2020-01-02")]] d)))))))))
+
+(deftest a-required-or-join-variable-bound-by-a-later-clause
+  (let [{:keys [db history]} (setup)]
+    (doseq [[label d] [["current" db] ["history" history]]]
+      (testing label
+        (is (= #{[4]} (both '[:find ?v :where (or-join [[?e] ?v] [?e :x/s ?v]) [?e :x/k "a"]] d)))
+        (is (= #{[4]} (both '[:find ?v :in $ $b :where ($b or-join [[?e] ?v] [?e :x/s ?v])
+                              [?e :x/k "a"]] d d)))
+        (testing "bound by nothing, it is refused"
+          (is (thrown? #?(:clj Exception :cljs js/Error)
+                       (d/q '[:find ?v :where (or-join [[?e] ?v] [?e :x/s ?v])] d))))
+        (testing "a quoted nil default is the nil default"
+          (is (thrown? #?(:clj Exception :cljs js/Error)
+                       (d/q '[:find ?v :where [?e :x/k "b"]
+                              [(get-else $ ?e :x/s (quote nil)) ?v]] d))))))))

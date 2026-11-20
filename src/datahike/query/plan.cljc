@@ -48,8 +48,23 @@
 ;; ---------------------------------------------------------------------------
 ;; Pushdown bound computation
 
-(defn- update-bound [bounds bound-key aggr-fn const-val]
-  (update bounds bound-key (fn [cur] (if (some? cur) (aggr-fn cur const-val) const-val))))
+(defn- update-bound
+  "Tighten one end of the slice. `pick` is `max` or `min`, by `compare` — the
+   values are whatever the attribute holds, and `clojure.core/max` took only
+   numbers: two lower bounds on a string, keyword or instant threw. Values
+   that do not compare leave the bound as it is; every predicate is also
+   checked per datom, so a looser slice only costs time."
+  [bounds bound-key pick const-val]
+  (update bounds bound-key
+          (fn [cur]
+            (if (some? cur)
+              (try
+                (let [c (compare cur const-val)]
+                  (if (= pick max)
+                    (if (neg? c) const-val cur)
+                    (if (pos? c) const-val cur)))
+                (catch #?(:clj Exception :cljs :default) _ cur))
+              const-val))))
 
 (defn pushdown-to-bounds
   "Convert pushdown predicates into tighter datom bounds for index slice.
@@ -68,10 +83,14 @@
        (case op
          >  (-> (update-bound bounds :from-v max const-val)
                 (update :strict-preds (fnil conj []) pred))
-         >= (update-bound bounds :from-v max const-val)
+         ;; kept as a check as well: a path that seeks single entities
+         ;; instead of opening the slice never sees the endpoints
+         >= (-> (update-bound bounds :from-v max const-val)
+                (update :strict-preds (fnil conj []) pred))
          <  (-> (update-bound bounds :to-v min const-val)
                 (update :strict-preds (fnil conj []) pred))
-         <= (update-bound bounds :to-v min const-val)
+         <= (-> (update-bound bounds :to-v min const-val)
+                (update :strict-preds (fnil conj []) pred))
          (= ==)
          (if (or (some? (:from-v bounds)) (some? (:to-v bounds)))
            ;; A second constraint on the same value. The slice keeps the
@@ -81,7 +100,7 @@
            (-> bounds
                (assoc :from-v const-val)
                (assoc :to-v const-val)
-               ;; a later range bound may widen the slice again
+               ;; the index orders 1 and 1.0 alike, `=` tells them apart
                (update :strict-preds (fnil conj []) pred)))
          not= (update bounds :strict-preds (fnil conj []) pred)
          (throw (ex-info "Unhandled op in pushdown-to-bounds — every op in analyze/range-ops must have a case arm here"

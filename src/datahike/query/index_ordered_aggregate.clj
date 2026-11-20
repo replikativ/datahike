@@ -150,6 +150,8 @@
 (defn- supported-predicate? [available-vars {:keys [fn-sym args]}]
   (and (contains? supported-predicates fn-sym)
        (= 2 (count args))
+       ;; a constant, as written: `(quote 0)` would be compared as a list
+       (not-any? coll? args)
        (every? #(or (not (symbol? %)) (contains? available-vars %)) args)
        ;; Bound input vars have already been folded to constants. Restrict this
        ;; path to a single row var and one constant so evaluation stays exact.

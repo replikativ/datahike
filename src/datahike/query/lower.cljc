@@ -203,15 +203,23 @@
   "Plan an OR or OR-JOIN clause. When join-vars? is true, validates and
    includes :join-vars in the op (OR-JOIN semantics)."
   ([db clause-info bound-vars rules]
-   (plan-or-op db clause-info bound-vars rules false))
+   (plan-or-op db clause-info bound-vars rules false nil))
   ([db clause-info bound-vars rules join-vars?]
+   (plan-or-op db clause-info bound-vars rules join-vars? nil))
+  ([db clause-info bound-vars rules join-vars? bindable-vars]
    (let [join-vars (when join-vars?
                      (let [raw (:join-vars clause-info)
                            ;; `(or-join [[?e] ?v] …)`: ?e must be bound on entry
                            required (into #{} (comp (filter sequential?)
                                                     (mapcat analyze/extract-vars))
                                           raw)
-                           missing (into #{} (remove #(contains? bound-vars %)) required)]
+                           ;; Bound on entry, or by a clause still to come:
+                           ;; "required" asks that something binds it, and the
+                           ;; join with that clause gives the same rows
+                           ;; whichever of the two runs first.
+                           missing (into #{} (remove #(or (contains? bound-vars %)
+                                                          (contains? bindable-vars %)))
+                                         required)]
                        (when (seq missing)
                          (throw (ex-info (str "Insufficient bindings: " missing
                                               " not bound in " (:clause clause-info))
@@ -1099,6 +1107,7 @@
         ;; that one and bind nothing here.
         ;; An explicit join exports only what it declares; the
         ;; rest of its body is local to it as well.
+        ;; (Also what an `or-join` may count on for a variable it requires.)
         vars-outside-not (fn [clause]
                            (into bound-vars
                                  (mapcat (fn [ci]
@@ -1331,7 +1340,8 @@
                (instance? datahike.query.ir.LUnion node)
                (let [ci (union->classified node)
                      join-vars? (= :or-join (.-type ^datahike.query.ir.LUnion node))]
-                 (update acc :ops conj (plan-or-op db ci bvc rules join-vars?)))
+                 (update acc :ops conj (plan-or-op db ci bvc rules join-vars?
+                                                   (vars-outside-not (:clause ci)))))
 
                ;; LRuleCall → delegate to plan-rule-op
                (instance? datahike.query.ir.LRuleCall node)
@@ -1367,7 +1377,8 @@
                        :or (update acc :ops conj
                                    (assoc (plan-or-op db inner-ci bvc rules) :source source-sym))
                        :or-join (update acc :ops conj
-                                        (assoc (plan-or-op db inner-ci bvc rules true) :source source-sym))
+                                        (assoc (plan-or-op db inner-ci bvc rules true (vars-outside-not clause))
+                                               :source source-sym))
                        (update acc :ops conj (plan/plan-passthrough-op ci))))
                  ;; Regular passthrough
                    (update acc :ops conj (plan/plan-passthrough-op ci))))

@@ -191,7 +191,9 @@
                            ;; default is rejected at runtime with
                            ;; "get-else: nil default value is not supported".
                            ;; Fall through to LBind so that check still fires.
-                           (some? (nth (:args ci) 3 nil))
+                           (let [d (nth (:args ci) 3 nil)]
+                             (and (some? d)
+                                  (not (and (analyze/quote-form? d) (nil? (second d))))))
                            ;; The optional scan seeks by attribute. One
                            ;; that is still a variable here is bound per
                            ;; row by another clause: the fused scan then

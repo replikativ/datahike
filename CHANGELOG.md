@@ -13,7 +13,9 @@ When something is added, it's typically marked *Experimental*. When the API cont
   branch of a source-prefixed `or`. Two equalities on one indexed value
   (`[(= ?v 3)] [(= ?v 4)]`) answered with the second; `[(= ?v false)]` on an
   indexed boolean returned both values; `[(= ?v (quote foo))]` on an indexed
-  attribute returned nothing. `(count ?r)` over a join driven by a unique
+  attribute returned nothing; `[(= ?v 1.0)]` matched the long `1`; two bounds
+  on one side of a string, keyword or instant value threw; and `>=`/`<=` were
+  dropped for entities passed through `:in` on a history database. `(count ?r)` over a join driven by a unique
   attribute returned `1`, or one count per key, unless the `:find` variables
   named that key or its entity. A transaction passed through `:in` was ignored
   on a pattern sharing its entity with another. `get-else` with a variable or

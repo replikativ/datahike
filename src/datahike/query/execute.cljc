@@ -537,7 +537,10 @@
   [strict-preds datom-field-idx]
   (when (seq strict-preds)
     (fn [^Datom d]
-      (let [dv (case (int datom-field-idx) 0 (.-e d) 1 (.-a d) 2 (.-v d) 3 (.-tx d))]
+      ;; A pushed predicate is about the pattern's VALUE. The caller finds the
+      ;; field by the variable's position, and has none once a prepared query
+      ;; rebound that variable to its input.
+      (let [dv (case (int (or datom-field-idx 2)) 0 (.-e d) 1 (.-a d) 2 (.-v d) 3 (.-tx d))]
         (every? (fn [{:keys [op const-val] :as pred}]
                   (if (nil? const-val)
                     ;; Preserve the ordinary predicate's nil behavior. Numeric
@@ -556,9 +559,12 @@
                       >= (not (neg? (compare dv const-val)))
                       < (< (compare dv const-val) 0)
                       <= (not (pos? (compare dv const-val)))
-                      = (zero? (compare dv const-val))
-                      == (zero? (compare dv const-val))
-                      not= (not= dv const-val)
+                      ;; the query's own equalities, not the index order:
+                      ;; arrays are values and do not `compare`, and
+                      ;; `(= 1 1.0)` is false where `==` is true
+                      = (da/a= dv const-val)
+                      == (and (number? dv) (number? const-val) (== dv const-val))
+                      not= (not (da/a= dv const-val))
                       (throw (ex-info "Unhandled op in build-strict-filter — every op pushdown-to-bounds writes into :strict-preds must have a case arm here"
                                       {:op op :pred pred})))))
                 strict-preds)))))
