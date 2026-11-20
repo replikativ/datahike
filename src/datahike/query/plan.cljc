@@ -696,7 +696,7 @@
                                       (= index :aevt)
                                       (and (= index :avet)
                                            (let [sv (get clause 2)]
-                                             (and (some? sv) (not (analyze/free-var? sv)))))))
+                                             (and (some? sv) (not (symbol? sv)))))))
                         :cljs false)
         ;; The DRIVING scan must be card-one for the sorted merge: it advances
         ;; per entity, so a card-many driver ([?e :tag ?t] promoted to driver

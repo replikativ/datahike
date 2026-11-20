@@ -573,9 +573,9 @@
            (datom emax resolved-a nil txmax)]
     :avet (let [v (get clause 2)
                 from-v (or (:from-v pushdown-bounds)
-                           (when (and (some? v) (not (analyze/free-var? v))) v))
+                           (when (and (some? v) (not (symbol? v))) v))
                 to-v (or (:to-v pushdown-bounds)
-                         (when (and (some? v) (not (analyze/free-var? v))) v))]
+                         (when (and (some? v) (not (symbol? v))) v))]
             [(datom e0 resolved-a from-v tx0)
              (datom emax resolved-a to-v txmax)])))
 
@@ -3623,6 +3623,15 @@
                (direct-group-output-unique? g find-vars temporal))
       requested)))
 
+(defn- ground-value?
+  "Is the value slot of a pattern a ground value to compare with? The rule the
+   planner and the generic executor use everywhere: present and not a symbol.
+   A `?var` binds; any other symbol (`_`, `_x`) and a missing slot (`[?e :a]`)
+   match every value and bind nothing. They are NOT values - comparing stored
+   values with the symbol `_` matches nothing."
+  [x]
+  (and (some? x) (not (symbol? x))))
+
 (defn- try-point-group
   "Point-shape fast path: a single entity group whose (rebound) scan is an
    AVET ground-value seek and whose merges are all card-one same-entity EAVT
@@ -3686,9 +3695,15 @@
                                   var? (and (symbol? mv) (analyze/free-var? mv))]
                               (cond
                                 ;; ground value: existence + equality check
-                                (not var?)
+                                (ground-value? mv)
                                 (when (and md (val-eq? (.-v ^Datom md) mv))
                                   (recur (inc i) binds))
+
+                                ;; no value to compare and nothing to bind
+                                ;; (`_`, or a pattern without a value slot):
+                                ;; the attribute only has to be present
+                                (not var?)
+                                (when md (recur (inc i) binds))
 
                                 ;; missing, non-optional → entity fails
                                 (and (nil? md) (not (:optional? op)))
@@ -4203,7 +4218,7 @@
             free? #(and (symbol? %) (analyze/free-var? %))
             sv-src (cond
                      (free? sv) (when (contains? ck sv) [:const sv])
-                     (some? sv) [:lit sv]
+                     (ground-value? sv) [:lit sv]
                      :else nil)]
         (when (and (keyword? sa) (free? se) (nil? stx) sv-src
                    (:indexed? (:schema-info scan-op))
@@ -4224,7 +4239,11 @@
                                   (and (free? mv) (contains? ck mv))
                                   {:attr ma :mode :cval :var mv}
                                   (free? mv) {:attr ma :mode :bind :var mv}
-                                  (some? mv) {:attr ma :mode :lit :val mv}
+                                  (ground-value? mv) {:attr ma :mode :lit :val mv}
+                                  ;; `_` or no value slot: presence only.
+                                  ;; (An optional merge that binds nothing is
+                                  ;; left to the generic executor.)
+                                  (not (:optional? op)) {:attr ma :mode :present}
                                   :else nil))]
                      (if spec (conj acc spec) (reduced nil))))
                  [] merge-ops)]
@@ -4275,6 +4294,7 @@
                             md (first (di/-slice eavt (datom e attr nil tx0)
                                                  (datom e attr nil txmax) :eavt))]
                         (case mode
+                          :present (when md (recur (inc i) binds))
                           :lit (when (and md (val-eq? (.-v ^Datom md) val))
                                  (recur (inc i) binds))
                           :cval (let [cv (get consts var)]
