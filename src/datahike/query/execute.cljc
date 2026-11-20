@@ -4327,7 +4327,12 @@
         (if (and (not (identical? ::none prog))
                  (pss-instance? (:avet db))
                  (pss-instance? (:eavt db))
-                 #?(:clj (not (:attribute-refs? (dbi/-config db))) :cljs true))
+                 ;; The compiled point program is JVM-only: it was written for and
+                 ;; only ever run by the JVM wire server, and on ClojureScript it
+                 ;; answered #{} for a single-pattern query once prepared execution
+                 ;; became the default. ClojureScript rebinds the plan and runs the
+                 ;; generic direct executor below.
+                 #?(:clj (not (:attribute-refs? (dbi/-config db))) :cljs false))
           (do (check-cancel! cancel)
               ;; A compiled point program applies attached predicates and hash
               ;; dedup only after its scan.  Bound only the already-distinct,

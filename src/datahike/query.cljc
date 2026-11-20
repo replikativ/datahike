@@ -1758,7 +1758,7 @@
    value actually bound.
 
    When true, the value is written into the where clauses before planning, as it was
-   by default until 0.9. The plan cache key then contains the value, so every distinct
+   by default before. The plan cache key then contains the value, so every distinct
    value plans again (0.6-1.0 ms measured, against 0.1-0.2 ms), and a pattern carrying
    a literal is invisible to the execute-time choice of an entity group's driver.
    Kept as an escape hatch while the default settles; bind it only to compare.

@@ -554,7 +554,7 @@
 (def ^:private input-modes
   "How a scalar :in value reaches the planner. The answer must not depend on it.
    :default keeps it a binding (a one-row relation, rebound per call); :fold writes it
-   into the clauses before planning, as the default did until 0.9."
+   into the clauses before planning, as the default did before."
   {:default {}
    :fold    {#'q/*fold-scalar-ins* true
              (requiring-resolve 'datahike.query.execute/*prepared-execution*) false}})
@@ -645,7 +645,7 @@
   ;; the size of its matcher. With `:kind :raise`, a divergence on this axis
   ;; where the planner RAISES is excused, and one where it quietly answers
   ;; differently still fails the build.
-  ;; EMPTY since scalar :in values stay bindings (0.9): the one class listed here,
+  ;; EMPTY since scalar :in values stay bindings: the one class listed here,
   ;; a constant folded into a function's output binding position, existed only
   ;; because the value was written into the clause. See the canary below, which
   ;; now asserts the law instead.

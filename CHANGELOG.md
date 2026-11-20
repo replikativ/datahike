@@ -6,6 +6,35 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **A scalar `:in` value stays a binding; one plan serves every value ([#TODO]).**
+  A scalar input such as `?name` in `:in $ ?name` was written into the `:where`
+  clauses before planning, so the plan cache was keyed by the value and every
+  new value planned again. It now stays a variable bound per call. Measured on
+  300,000 entities with a different value on every call: a lookup by three
+  scalars 0.48 ms → 0.10 ms, a range predicate against an input 0.24 ms →
+  0.13 ms; a repeated value is unchanged (0.07 ms). Inputs that shape the plan
+  are still written in: a function, and a variable in attribute position.
+  `datahike.query/*fold-scalar-ins*` bound to `true` restores the old path for
+  comparison. Supersedes [#1161]; addresses [#1107].
+- **Breaking: a scalar input used inside `or-join` / `not-join` must be declared
+  ([#TODO]).** `(or-join [?e] [?e :name ?x] …)` with `?x` from `:in` used to
+  see the input, because its value had been written into the clause. By the
+  rule those forms state — only the declared variables unify with the rest of
+  the query — `?x` is a fresh variable there, which is how Datomic evaluates
+  it. Such a query is now refused with a message naming the fix:
+  `(or-join [?e ?x] …)`. Plain `or` / `not`, rule bodies, collection inputs and
+  pattern-bound variables are unaffected. Related: [#938].
+- **Queries that answered wrongly with value-free inputs ([#TODO]).** Found
+  while making it the default; until now it was an opt-in mode, the one the
+  PostgreSQL wire server runs in. A predicate against an input combined with a
+  `not-join` returned nothing. An input in attribute position matched every
+  attribute. A predicate between components that named an input raised
+  "Post-filter references unknown var". On the base engine, an `or-join`
+  whose branches use different declared variables raised "Can't sum relations
+  with different attrs" and now answers as the planner and Datomic do. A
+  scalar lookup ref in entity position that resolves to nothing raises on
+  every path, as it did when folded.
+
 - **clj-kondo resolves the `datahike.api` functions ([#1160]).** The exported
   clj-kondo config now has a hook for the macro that defines the API, so
   `d/q` and the other API functions no longer show as unresolved vars in
@@ -1055,6 +1084,9 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1145]: https://github.com/replikativ/datahike/issues/1145
 [#1148]: https://github.com/replikativ/datahike/pull/1148
 [#1160]: https://github.com/replikativ/datahike/pull/1160
+[#1161]: https://github.com/replikativ/datahike/pull/1161
+[#1107]: https://github.com/replikativ/datahike/issues/1107
+[#938]: https://github.com/replikativ/datahike/issues/938
 [#1156]: https://github.com/replikativ/datahike/pull/1156
 [#1155]: https://github.com/replikativ/datahike/issues/1155
 [#1144]: https://github.com/replikativ/datahike/issues/1144
