@@ -2375,6 +2375,39 @@
 ;; ---------------------------------------------------------------------------
 ;; Dispatcher — setup + dispatch to the appropriate path function.
 
+(def ^:private never-value
+  "A merge value no stored value equals."
+  #?(:clj (Object.) :cljs (js-obj)))
+
+(defn- current-db-added
+  "What a fixed `added` slot means for an entity group on a CURRENT database,
+   which holds assertions only. The temporal executors compare the slot per
+   datom; the plain merge loops do not look at it, so a merged
+   `[?e :a ?v _ false]` matched as if the slot were absent.
+
+   - `false` on a required merge: no entity can satisfy the group. The scan is
+     given `false` in its own added slot, which its ground filter compares, so
+     it yields nothing and every downstream array keeps its shape.
+   - `false` on an anti-merge: it never matches, so it excludes nothing. Its
+     value becomes one nothing equals.
+   - `true`: every datom here is an assertion; nothing to do.
+
+   Returns [scan-op merge-ops]."
+  [scan-op merge-ops]
+  (if-not (some #(false? (nth (:clause %) 4 nil)) merge-ops)
+    [scan-op merge-ops]
+    (let [retracted? #(false? (nth (:clause %) 4 nil))
+          impossible? (some #(and (retracted? %) (not (:anti? %))) merge-ops)
+          [e a v tx] (:clause scan-op)]
+      [(if impossible?
+         (assoc scan-op :clause [e a v tx false])
+         scan-op)
+       (mapv (fn [op]
+               (if (and (retracted? op) (:anti? op))
+                 (assoc op :clause (assoc (vec (:clause op)) 2 never-value))
+                 op))
+             merge-ops)])))
+
 (defn- execute-group-direct
   "Execute an entity-group (or single pattern-scan) fused, writing results
    directly into a result list. Computes shared setup, then dispatches to
@@ -2388,7 +2421,10 @@
    collect-set collect-datom-field collect-merge-idx
    max-results
    & {:keys [scan-estimate pipeline temporal cancel]}]
-  (let [{:keys [clause index pushdown-preds]} scan-op
+  (let [[scan-op merge-ops] (if temporal
+                              [scan-op merge-ops]
+                              (current-db-added scan-op merge-ops))
+        {:keys [clause index pushdown-preds]} scan-op
         [e a v tx] clause
         ;; For temporal queries, resolve against the unwrapped origin-db
         origin-db (when temporal (:origin-db temporal))
@@ -4576,6 +4612,8 @@
   "Execute an entity-group as a fused scan, returning a Relation."
   [db scan-op merge-ops context]
   (let [[scan-op merge-ops] (parameterize-entity-group db scan-op merge-ops (:rels context))
+        ;; only ever called on a plain DB (the caller tests for PSS indexes)
+        [scan-op merge-ops] (current-db-added scan-op merge-ops)
         cancel (:cancel context)
         {:keys [clause index pushdown-preds]} scan-op
         [e a v tx] clause

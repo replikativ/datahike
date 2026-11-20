@@ -185,3 +185,38 @@
         (is (= 2 (count (set (d/q {:query '[:find ?e :where [?e :x/m _]] :args [db] :limit 2}))))))
       (is (= 2 (count (vec (both '[:find ?e ?m :where [?e :x/m ?m]] db)))))
       (is (= 1 (count (vec (both '[:find ?e :where [?e :x/m 2]] db))))))))
+
+(deftest a-fixed-added-slot-on-a-history-database
+  ;; History holds retractions: `[?e :a ?v _ false]` beside another pattern on
+  ;; the same entity asks which of THOSE entities had the value retracted. For
+  ;; one release it returned every entity that had ever held the attribute.
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :schema-flexibility :write :keep-history? true}
+        _ (d/create-database cfg)
+        conn (d/connect cfg)
+        _ (d/transact conn [{:db/ident :x/k :db/valueType :db.type/string
+                             :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                            {:db/ident :x/i :db/valueType :db.type/long
+                             :db/cardinality :db.cardinality/one :db/index true}
+                            {:db/ident :x/s :db/valueType :db.type/long
+                             :db/cardinality :db.cardinality/one}])
+        _ (d/transact conn [{:x/k "a" :x/i 1 :x/s 4} {:x/k "b" :x/i 1}
+                            {:x/k "c" :x/i 1 :x/s 9} {:x/k "d" :x/i 2 :x/s 4}])
+        _ (d/transact conn [[:db/retract [:x/k "c"] :x/s 9] {:x/k "d" :x/s 5}])
+        current @conn
+        history (d/history current)
+        ks (fn [result] (into #{} (map #(:x/k (d/entity current (first %)))) result))]
+    (testing "retracted"
+      (is (= #{"c"} (ks (both '[:find ?e :where [?e :x/i 1] [?e :x/s ?v _ false]] history))))
+      (is (= #{"c"} (ks (both '[:find ?e :where [?e :x/i 1] [?e :x/s 9 _ false]] history))))
+      (is (= #{} (both '[:find ?e :where [?e :x/i 1] [?e :x/s 4 _ false]] history)))
+      (is (= #{"d"} (ks (both '[:find ?e :in $ ?i :where [?e :x/i ?i] [?e :x/s 4 _ false]]
+                              history 2)))))
+    (testing "asserted"
+      (is (= #{"a"} (ks (both '[:find ?e :where [?e :x/i 1] [?e :x/s 4 _ true]] history))))
+      (is (= #{"a" "c"} (ks (both '[:find ?e :where [?e :x/i 1] [?e :x/s _ _ true]] history)))))
+    (testing "the same queries on the current database see no retraction"
+      (is (= #{} (both '[:find ?e :where [?e :x/i 1] [?e :x/s ?v _ false]] current)))
+      (is (= #{"a"} (ks (both '[:find ?e :where [?e :x/i 1] [?e :x/s _ _ true]] current))))
+      (is (= #{"a" "b" "c"}
+             (ks (both '[:find ?e :where [?e :x/i 1] (not [?e :x/s _ _ false])] current)))))))
