@@ -178,7 +178,7 @@
                                ch.qos.logback/logback-classic {:mvn/version "1.5.32"}
 
                                ;; secondary index integrations (for testing)
-                               org.replikativ/proximum       {:mvn/version "0.1.42"
+                               org.replikativ/proximum       {:mvn/version "0.1.46"
                                                               :exclusions [org.slf4j/slf4j-simple]}
                                org.replikativ/scriptum       {:mvn/version "0.1.32"}
                                org.replikativ/stratum        {:mvn/version "0.3.84"}
