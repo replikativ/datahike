@@ -1083,6 +1083,18 @@
         bound-vars (.-bound_vars ^datahike.query.ir.LogicalPlan logical-plan)
         classified (.-classified ^datahike.query.ir.LogicalPlan logical-plan)
         all-clause-vars (into bound-vars (mapcat :vars) classified)
+        ;; What a plain `not` may take as bound when its body is planned: the
+        ;; inputs and whatever the OTHER clauses bind. A variable that occurs
+        ;; only inside the negation is bound by the body itself; counted as
+        ;; bound, a predicate on it (`(not [?e :a ?f] [(= ?f ?in)])`) was
+        ;; ordered before the pattern that binds it and never held, so the
+        ;; negation excluded nothing. Another negation's variables are local to
+        ;; that one and bind nothing here.
+        vars-outside-not (fn [clause]
+                           (into bound-vars (mapcat :vars)
+                                 (remove #(or (= clause (:clause %))
+                                              (#{:not :not-join} (:type %)))
+                                         classified)))
         ;; :in vars seed at card 1 (placeholder), overridden by `in-cards` for
         ;; collection/relation bindings. Besides join costing, the scalar card
         ;; lets pushdown analysis retain a value-free prepared parameter as a
@@ -1293,7 +1305,10 @@
                (instance? datahike.query.ir.LAntiJoin node)
                (let [ci (anti-join->classified node)
                      join-vars? (= :not-join (.-type ^datahike.query.ir.LAntiJoin node))
-                     op (plan-not-op db ci all-clause-vars rules join-vars?)]
+                     op (plan-not-op db ci (if join-vars?
+                                             all-clause-vars
+                                             (vars-outside-not (:clause ci)))
+                                     rules join-vars?)]
                  (if join-vars?
                    (update acc :ops conj op)
                    (update acc :not-ops conj op)))
@@ -1327,7 +1342,7 @@
                          inner-ci (analyze/classify-clause inner-clause)
                          inner-ci (assoc inner-ci :source source-sym)]
                      (case (:type inner-ci)
-                       :not (let [op (plan-not-op db inner-ci all-clause-vars rules)]
+                       :not (let [op (plan-not-op db inner-ci (vars-outside-not clause) rules)]
                               (update acc :ops conj (assoc op :source source-sym)))
                        :not-join (let [op (plan-not-op db inner-ci all-clause-vars rules true)]
                                    (update acc :ops conj (assoc op :source source-sym)))
