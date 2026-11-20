@@ -6,12 +6,12 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
-- **A fixed `added` slot on a history database ignored the rest of its pattern ([#TODO]).**
+- **A fixed `added` slot on a history database ignored the rest of its pattern ([#1171]).**
   In 0.8.1931 only, `[?e :x/i 1] [?e :x/s 4 _ false]` on `(d/history db)`
   returned every entity that had ever held `:x/s`, whatever the value and
   whether it was asserted or retracted. It again returns the entities whose
   `:x/s 4` was retracted. Current databases were not affected.
-  (0.8.NNNN, [#TODO])
+  (0.8.NNNN, [#1171])
 
 - **`_` after an indexed lookup matched nothing ([#1168], [#1170]).** Since
   0.8.1930, `[?s :stmt/item ?si] [?s :stmt/status _]` with `?si` from `:in`
@@ -1115,6 +1115,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1167]: https://github.com/replikativ/datahike/pull/1167
 [#1168]: https://github.com/replikativ/datahike/issues/1168
 [#1170]: https://github.com/replikativ/datahike/pull/1170
+[#1171]: https://github.com/replikativ/datahike/pull/1171
 [#1107]: https://github.com/replikativ/datahike/issues/1107
 [#938]: https://github.com/replikativ/datahike/issues/938
 [#1156]: https://github.com/replikativ/datahike/pull/1156
