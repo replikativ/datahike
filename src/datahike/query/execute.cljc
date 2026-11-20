@@ -3588,15 +3588,22 @@
   (let [scan-op (entity-group-scan-op g)
         merge-ops (entity-group-merge-ops g)
         e-var (first (:clause scan-op))
+        a-slot (second (:clause scan-op))
         v-var (nth (:clause scan-op) 2 nil)]
     ;; A card-many merge can multiply one driving row; omitting the entity can
     ;; collapse different entities; omitting a card-many driver's value can
     ;; collapse that entity's several driving rows.
     (or (some #(not (get-in % [:schema-info :card-one?] true)) merge-ops)
         (not (some #{e-var} find-vars))
-        (and (not (get-in scan-op [:schema-info :card-one?] true))
-             (symbol? v-var)
-             (analyze/free-var? v-var)
+        ;; ... unless the value is a literal (one row per entity) or is
+        ;; projected. `_`, `_x` and a missing value slot collapse rows exactly
+        ;; like an unprojected ?var; testing for a ?var alone let
+        ;; `[:find ?e :where [?e :tags _]]` return an entity once per tag.
+        ;; An attribute that is not a keyword (`[?e _ _]`, `[?e]`) has no
+        ;; cardinality to rely on and yields a row per datom.
+        (and (or (not (keyword? a-slot))
+                 (not (get-in scan-op [:schema-info :card-one?] true)))
+             (not (and (some? v-var) (not (symbol? v-var))))
              (not (some #{v-var} find-vars))))))
 
 (defn- direct-group-output-unique?
@@ -3642,7 +3649,7 @@
   [db g emit-vars consts result-list max-results cancel]
   (let [scan-op (entity-group-scan-op g)
         merge-ops (entity-group-merge-ops g)
-        [se sa sv stx] (:clause scan-op)
+        [se sa sv stx sadded] (:clause scan-op)
         avet (:avet db)
         eavt (:eavt db)
         merge-vars (into #{} (comp (map #(get (:clause %) 2))
@@ -3655,16 +3662,20 @@
                          emit-vars)
                  (keyword? sa)
                  (symbol? se) (analyze/free-var? se)
+                 ;; an entity the caller bound is a constraint, not an output:
+                 ;; this path takes the entity from every index hit
+                 (not (and consts (contains? consts se)))
                  (some? sv) (not (symbol? sv))
-                 (nil? stx)
+                 ;; no tx and no added slot: neither is checked here
+                 (nil? stx) (nil? sadded)
                  avet eavt
                  (pss-instance? avet) (pss-instance? eavt)
                  #?(:clj (not (:attribute-refs? (dbi/-config db))) :cljs true)
                  (seq emit-vars)
                  (empty? (get scan-op :pushdown-preds))
                  (every? (fn [op]
-                           (let [[me ma mv mtx] (:clause op)]
-                             (and (= me se) (keyword? ma) (nil? mtx)
+                           (let [[me ma mv mtx madded] (:clause op)]
+                             (and (= me se) (keyword? ma) (nil? mtx) (nil? madded)
                                   (not (:anti? op))
                                   (get-in op [:schema-info :card-one?] false)
                                   (empty? (get op :pushdown-preds))
@@ -4213,21 +4224,26 @@
       (let [g (first ops)
             scan-op (entity-group-scan-op g)
             merge-ops (entity-group-merge-ops g)
-            [se sa sv stx] (:clause scan-op)
+            [se sa sv stx sadded] (:clause scan-op)
             ck (set consts-keys)
             free? #(and (symbol? %) (analyze/free-var? %))
             sv-src (cond
                      (free? sv) (when (contains? ck sv) [:const sv])
                      (ground-value? sv) [:lit sv]
                      :else nil)]
-        (when (and (keyword? sa) (free? se) (nil? stx) sv-src
+        (when (and (keyword? sa) (free? se) (nil? stx) (nil? sadded) sv-src
+                   ;; An entity the caller bound is a constraint. The program
+                   ;; takes the entity from every index hit and never compared
+                   ;; it: `:in $ ?e ?i  [?e :i ?i] [?e :s ?v]` answered with
+                   ;; whichever entities had that ?i.
+                   (not (contains? ck se))
                    (:indexed? (:schema-info scan-op))
                    (empty? (get scan-op :pushdown-preds)))
           (let [merges
                 (reduce
                  (fn [acc op]
-                   (let [[me ma mv mtx] (:clause op)
-                         spec (when (and (= me se) (keyword? ma) (nil? mtx)
+                   (let [[me ma mv mtx madded] (:clause op)
+                         spec (when (and (= me se) (keyword? ma) (nil? mtx) (nil? madded)
                                          (not (:anti? op))
                                          (get-in op [:schema-info :card-one?] false)
                                          (empty? (get op :pushdown-preds)))

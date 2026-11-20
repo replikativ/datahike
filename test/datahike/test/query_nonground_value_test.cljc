@@ -96,3 +96,92 @@
                               db a))))
       (is (some? (both '[:find ?s . :in $ ?si :where [?s :stmt/item ?si] [?s :stmt/status _]]
                        db a))))))
+
+;; ---------------------------------------------------------------------------
+;; Found reviewing the fix above. Each of these the planner answered wrongly.
+
+(defn- x-db
+  "a: k \"a\", i 1, s 4, m #{2 3}, y foo.  b: k \"b\", i 1, y _x.  c: k \"c\", i 1."
+  []
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :schema-flexibility :write :keep-history? false}
+        _ (d/create-database cfg)
+        conn (d/connect cfg)]
+    (d/transact conn [{:db/ident :x/k :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                       :db/unique :db.unique/identity}
+                      {:db/ident :x/i :db/valueType :db.type/long :db/cardinality :db.cardinality/one
+                       :db/index true}
+                      {:db/ident :x/s :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                      {:db/ident :x/m :db/valueType :db.type/long :db/cardinality :db.cardinality/many
+                       :db/index true}
+                      {:db/ident :x/y :db/valueType :db.type/symbol :db/cardinality :db.cardinality/one
+                       :db/index true}])
+    (d/transact conn [{:x/k "a" :x/i 1 :x/s 4 :x/m [2 3] :x/y 'foo}
+                      {:x/k "b" :x/i 1 :x/y '_x}
+                      {:x/k "c" :x/i 1}])
+    @conn))
+
+(defn- names
+  "The :x/k of every entity a query returns in its first column."
+  [db result]
+  (into #{} (map #(:x/k (d/entity db (first %)))) result))
+
+(deftest a-symbol-passed-as-data-is-a-value
+  ;; In a clause `_x` is a blank and `?q` a variable; as an input VALUE they are
+  ;; symbols to compare with what is stored.
+  (let [db (x-db)]
+    (is (= #{"b"} (names db (both '[:find ?e :in $ ?s :where [?e :x/y ?s]] db '_x))))
+    (doseq [sym '[_x _ ?q]]
+      (is (= #{} (both '[:find ?e :in $ ?s :where [?e :x/k "a"] [?e :x/y ?s] [(identity ?e) ?z]]
+                       db sym))
+          (str "a stores foo, not " sym)))
+    (is (= #{"a"} (names db (both '[:find ?e :in $ ?s :where
+                                    [?e :x/k "a"] [?e :x/y ?s] [(identity ?e) ?z]]
+                                  db 'foo))))
+    (testing "in a collection and in a tuple"
+      (is (= #{"b"} (names db (both '[:find ?e :in $ [?s ...] :where [?e :x/y ?s]] db ['_x]))))
+      (is (= #{} (both '[:find ?e :in $ [?s ?k] :where [?e :x/k ?k] [?e :x/y ?s] [(identity ?e) ?z]]
+                       db ['_x "a"]))))))
+
+(deftest an-entity-the-caller-bound-is-a-constraint
+  ;; c has :x/i 1 and no :x/s. The point program took the entity from the index
+  ;; hit and answered with a, which the caller never asked about.
+  (let [db (x-db)
+        a (d/q '[:find ?e . :where [?e :x/k "a"]] db)
+        c (d/q '[:find ?e . :where [?e :x/k "c"]] db)]
+    (is (= #{} (both '[:find ?e :in $ ?e ?i :where [?e :x/i ?i] [?e :x/s _]] db c 1)))
+    (is (= #{} (both '[:find ?e ?v :in $ ?e ?i :where [?e :x/i ?i] [?e :x/s ?v]] db c 1)))
+    (is (= #{} (both '[:find ?e :in $ ?e ?i :where [?e :x/i ?i] [?e :x/s 4]] db c 1)))
+    (is (= #{[a 4]} (both '[:find ?e ?v :in $ ?e ?i :where [?e :x/i ?i] [?e :x/s ?v]] db a 1)))))
+
+(deftest a-fixed-added-slot-is-compared
+  ;; A current database holds assertions only: `false` matches nothing.
+  (let [db (x-db)
+        a (d/q '[:find ?e . :where [?e :x/k "a"]] db)]
+    (doseq [query '[[:find ?e :where [?e :x/i 1] [?e :x/k _ nil false]]
+                    [:find ?e :where [?e :x/i 1 nil false] [?e :x/k _]]
+                    [:find ?e :where [?e :x/i 1] [?e :x/k ?k nil false]]
+                    [:find ?e :where [?e :x/i 1] [?e :x/k _ _ false]]
+                    [:find ?e :where [?e :x/k "a" _ false]]]]
+      (is (= #{} (both query db)) (pr-str query)))
+    (is (= #{} (both (into '[:find ?v :where] [[a :x/s '?v '_ false]]) db)))
+    (is (= #{} (both '[:find ?e :in $ ?i :where [?e :x/i ?i] [?e :x/k _ nil false]] db 1)))
+    (testing "`true` and a negated `false` keep every row"
+      (is (= #{"a"} (names db (both '[:find ?e :where [?e :x/i 1] [?e :x/s _ _ true]] db))))
+      (is (= #{"a" "b" "c"}
+             (names db (both '[:find ?e :where [?e :x/i 1] (not [?e :x/k _ _ false])] db)))))))
+
+(deftest an-ignored-card-many-value-yields-each-entity-once
+  ;; a has two :x/m values. The result is a set, so membership alone hides a
+  ;; second copy of the row: count the rows.
+  (let [db (x-db)]
+    (doseq [query '[[:find ?e :where [?e :x/m _]]
+                    [:find ?e :where [?e :x/m _x]]
+                    [:find ?e :where [?e :x/m]]
+                    [:find ?e :where [?e :x/i 1] [?e :x/m _]]]]
+      (is (= 1 (count (vec (both query db)))) (pr-str query)))
+    (testing "with a limit: the duplicate used to take the second entity's place"
+      (let [db (d/db-with db [{:x/k "d" :x/m [10]}])]
+        (is (= 2 (count (set (d/q {:query '[:find ?e :where [?e :x/m _]] :args [db] :limit 2}))))))
+      (is (= 2 (count (vec (both '[:find ?e ?m :where [?e :x/m ?m]] db)))))
+      (is (= 1 (count (vec (both '[:find ?e :where [?e :x/m 2]] db))))))))
