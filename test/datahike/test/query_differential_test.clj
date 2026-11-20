@@ -564,23 +564,23 @@
 (defn- run-engine
   ([disable? query db args opts] (run-engine disable? query db args opts :default))
   ([disable? query db args opts mode]
-  (let [thunk (fn []
-                (try
-                  (with-bindings (assoc (input-modes mode) #'q/*disable-planner* disable?)
-                    (let [args' (into [db] (map (fn [a] (if (= ::db2 a) @test-db2 a))) args)]
-                      (normalize
-                       (if (seq opts)
+   (let [thunk (fn []
+                 (try
+                   (with-bindings (assoc (input-modes mode) #'q/*disable-planner* disable?)
+                     (let [args' (into [db] (map (fn [a] (if (= ::db2 a) @test-db2 a))) args)]
+                       (normalize
+                        (if (seq opts)
                          ;; map form — the only way to pass :order-by
-                         (d/q (assoc opts :query query :args args'))
-                         (apply d/q query args')))))
-                  (catch Exception _ ::raised)))
-        fut (future (thunk))
-        r (deref fut case-timeout-ms ::timeout)]
-    (when (= r ::timeout)
+                          (d/q (assoc opts :query query :args args'))
+                          (apply d/q query args')))))
+                   (catch Exception _ ::raised)))
+         fut (future (thunk))
+         r (deref fut case-timeout-ms ::timeout)]
+     (when (= r ::timeout)
       ;; The thread is CPU-bound and will not observe an interrupt, but the run
       ;; must proceed; the case is already reported as a divergence.
-      (future-cancel fut))
-    r)))
+       (future-cancel fut))
+     r)))
 
 (defn- wrap-db [db temporal]
   (case temporal

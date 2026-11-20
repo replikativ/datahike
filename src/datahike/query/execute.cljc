@@ -3392,15 +3392,18 @@
                        (let [e (get clause 0) tx (get clause 3)]
                          (and (or (symbol? e) (nil? e) (number? e))
                               (or (symbol? tx) (nil? tx) (number? tx)))))
+         bind-attached
+         (fn [preds]
+           (mapv #(assoc % :clause (subst-clause consts (:clause %))
+                         :args (map (fn [a] (subst-slot consts a)) (:args %)))
+                 preds))
          bind-op
          (fn bind-op [op]
            (case (:op op)
              :entity-group
              (let [scan-op' (bind-pattern-op consts (:scan-op op) true patterns?)
                    merge-ops' (mapv #(bind-pattern-op consts % false patterns?) (:merge-ops op))
-                   preds' (mapv #(assoc % :clause (subst-clause consts (:clause %))
-                                        :args (map (fn [a] (subst-slot consts a)) (:args %)))
-                                (:attached-preds op))
+                   preds' (bind-attached (:attached-preds op))
                    pipeline (:pipeline op)
                    steps' (when pipeline
                             (mapv (fn [step]
@@ -3417,7 +3420,10 @@
              :pattern-scan
              (let [op' (bind-pattern-op consts op true patterns?)]
                (when-not (pattern-ok? (:clause op')) (unsound!))
-               op')
+               ;; a standalone scan carries attached predicates too
+               (cond-> op'
+                 (seq (:attached-preds op))
+                 (assoc :attached-preds (bind-attached (:attached-preds op)))))
 
              :predicate
              (assoc op :clause (subst-clause consts (:clause op))
