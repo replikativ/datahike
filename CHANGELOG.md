@@ -6,6 +6,23 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Negations, pushed-down predicates and a count over a join answered wrongly ([#TODO]).**
+  A plain `not` that compares a variable of its own with one from outside
+  (`(not [?e :s ?f] [(= ?f ?x)])`, `?x` from `:in`) excluded nothing: the
+  predicate ran before the pattern binding `?f`. The same ordering emptied a
+  branch of a source-prefixed `or`. Two equalities on one indexed value
+  (`[(= ?v 3)] [(= ?v 4)]`) answered with the second; `[(= ?v false)]` on an
+  indexed boolean returned both values; `[(= ?v (quote foo))]` on an indexed
+  attribute returned nothing. `(count ?r)` over a join driven by a unique
+  attribute returned `1`, or one count per key, unless the `:find` variables
+  named that key or its entity. A transaction passed through `:in` was ignored
+  on a pattern sharing its entity with another. `get-else` with a variable or
+  quoted attribute, or a destructuring output, dropped rows or threw; a pattern
+  with no attribute beside a variable-attribute one (`[?e] [?e ?a 4]`) threw;
+  `(or-join [[?e] ?v] …)` was refused although `?e` was bound; a recursive
+  rule over patterns fixing `added` ignored it. All were planner-only.
+  (0.8.NNNN, [#TODO])
+
 - **Transaction and `added` slots on patterns that share an entity ([#1172]).**
   Several patterns on one entity are answered by one scan and a seek per
   further pattern, and the seek dropped what a pattern said beyond attribute

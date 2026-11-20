@@ -200,6 +200,11 @@
                            ;; defaulting them.
                            (let [a (nth (:args ci) 2 nil)]
                              (or (keyword? a) (number? a)))
+                           ;; One value into one variable. A destructuring
+                           ;; output (`[?x ?y]` for a tuple attribute) was
+                           ;; planted in the pattern's value slot and
+                           ;; compared as a value.
+                           (symbol? (:binding ci))
                            ;; A VARIABLE default (e.g. `[(get-else $ ?e :a ?d) ?v]`)
                            ;; is not a compile-time constant: it must be resolved
                            ;; per-row from ?d's binding. The fused LOptionalScan

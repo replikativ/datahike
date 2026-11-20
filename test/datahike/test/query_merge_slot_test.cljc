@@ -285,3 +285,91 @@
                                 ['(r ?x ?y) ['?x :y/edge '?z '_ flag] '(r ?z ?y)]])]
           (is (= 1 (count (both '[:find ?y :in $ % ?x :where (r ?x ?y)] db (rules true) bar))))
           (is (= #{} (both '[:find ?y :in $ % ?x :where (r ?x ?y)] db (rules false) bar))))))))
+
+(deftest an-explicit-join-keeps-its-local-variables
+  (let [{:keys [db tx1 tx2]} (setup)
+        a (d/q '[:find ?e . :where [?e :x/k "a"]] db)]
+    (testing "a tx variable the join does not declare is local, whatever :in calls by that name"
+      (is (= #{} (both '[:find ?e :in $ [?t ...] :where [?e :x/k "a"]
+                         (not-join [?e] [?e :x/t _ ?t])] db [tx1])))
+      (is (= #{[a]} (both '[:find ?e :in $ [?t ...] :where [?e :x/k "a"]
+                            (or-join [?e] [?e :x/t _ ?t])] db [tx1]))))
+    (testing "declared, it is the input"
+      (is (= #{[a]} (both '[:find ?e :in $ [?t ...] :where [?e :x/k "a"]
+                            (not-join [?e ?t] [?e :x/t _ ?t])] db [tx1])))
+      (is (= #{} (both '[:find ?e :in $ [?t ...] :where [?e :x/k "a"]
+                         (not-join [?e ?t] [?e :x/t _ ?t])] db [tx2]))))
+    (testing "an or-join's local does not count as bound for a sibling not"
+      (is (= #{} (both '[:find ?e :in $ [?x ...] :where [?e :x/k "a"]
+                         (or-join [?e] [?e :x/s ?f])
+                         (not [?e :x/s ?f] [(= ?f ?x)])] db [4]))))
+    (testing "a source-prefixed or orders a branch like an unprefixed one"
+      (is (= #{[a]} (both '[:find ?e :in $ $b [?x ...] :where [?e :x/k "a"]
+                            ($b or (and [?e :x/s ?f] [(= ?f ?x)]))] db db [4]))))
+    (testing "a required variable of an or-join that is bound"
+      (is (= #{[4]} (both '[:find ?v :in $ ?e :where (or-join [[?e] ?v] [?e :x/s ?v])] db a))))
+    (testing "get-else with a quoted attribute"
+      (is (= #{[4]} (both '[:find ?v :where [?e :x/k "a"] [(get-else $ ?e (quote :x/s) 0) ?v]] db))))))
+
+(deftest predicates-pushed-into-an-index-range
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :schema-flexibility :write :keep-history? true}
+        _ (d/create-database cfg)
+        conn (d/connect cfg)]
+    (d/transact conn [{:db/ident :p/n :db/valueType :db.type/long
+                       :db/cardinality :db.cardinality/one :db/index true}
+                      {:db/ident :p/flag :db/valueType :db.type/boolean
+                       :db/cardinality :db.cardinality/one :db/index true}
+                      {:db/ident :p/sym :db/valueType :db.type/symbol
+                       :db/cardinality :db.cardinality/one :db/index true}
+                      {:db/ident :p/pair :db/valueType :db.type/tuple
+                       :db/tupleTypes [:db.type/long :db.type/long]
+                       :db/cardinality :db.cardinality/one}])
+    (d/transact conn [{:db/id -1 :p/n 3 :p/flag false :p/sym (symbol "?p") :p/pair [4 5]}
+                      {:db/id -2 :p/n 4 :p/flag true :p/sym 'foo}])
+    (let [db @conn
+          n (fn [qq & args] (count (apply both qq db args)))]
+      (testing "two equalities on one value are both required"
+        (is (= 0 (n '[:find ?e :where [?e :p/n ?v] [(= ?v 3)] [(= ?v 4)]])))
+        (is (= 1 (n '[:find ?e :where [?e :p/n ?v] [(= ?v 3)] [(= ?v 3)]])))
+        (is (= 0 (n '[:find ?e :where [?e :p/n ?v] [(= ?v 3)] [(> ?v 3)]])))
+        (is (= 0 (n '[:find ?e :where [?e :p/n ?v] [(> ?v 3)] [(= ?v 3)]])))
+        (is (= 1 (n '[:find ?e :where [?e :p/n ?v] [(>= ?v 3)] [(= ?v 4)]])))
+        (is (= 0 (n '[:find ?e :in $ ?a ?b :where [?e :p/n ?v] [(= ?v ?a)] [(= ?v ?b)]] 3 4))))
+      (testing "false is a bound"
+        (is (= 1 (n '[:find ?e :where [?e :p/flag ?v] [(= ?v false)]])))
+        (is (= 1 (n '[:find ?e :in $ ?b :where [?e :p/flag ?v] [(= ?v ?b)]] false)))
+        (is (= 1 (n '[:find ?e :where [?e :p/flag ?v] [(not= ?v false)]]))))
+      (testing "a quoted symbol that looks like a variable is not the input of that name"
+        (is (= 1 (n '[:find ?e :in $ ?p :where [?e :p/sym ?v] [(= ?v (quote ?p))]] 7))))
+      (testing "get-else destructuring a tuple value"
+        (is (= #{[4 5]} (both '[:find ?x ?y :where [?e :p/n 3] [(get-else $ ?e :p/pair 0) [?x ?y]]]
+                              db)))))))
+
+#?(:clj
+   (deftest count-over-a-join-with-find-variables-that-do-not-identify-the-producer
+     ;; The index-ordered count emits one row per producer key. Without the
+     ;; key or its entity among the :find variables those rows have to be
+     ;; added up; a set had collapsed them.
+     (let [cfg {:store {:backend :memory :id (random-uuid)}
+                :schema-flexibility :write :keep-history? false}
+           _ (d/create-database cfg)
+           conn (d/connect cfg)]
+       (d/transact conn [{:db/ident :j/lk :db/valueType :db.type/long
+                          :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                         {:db/ident :j/grp :db/valueType :db.type/long
+                          :db/cardinality :db.cardinality/one}
+                         {:db/ident :j/rk :db/valueType :db.type/long
+                          :db/cardinality :db.cardinality/one :db/index true}])
+       (d/transact conn (vec (concat (for [i (range 1200)] {:j/lk i :j/grp (mod i 3)})
+                                     (for [i (range 2400)] {:j/rk (quot i 2)}))))
+       (let [db @conn
+             q* (fn [qq] (let [p (d/q qq db)
+                               r (binding [q/*disable-planner* true] (d/q qq db))]
+                           (is (= (set r) (set p)))
+                           (set p)))]
+         (is (= #{[2400]} (q* '[:find (count ?r) :where [?l :j/lk ?k] [?r :j/rk ?k]])))
+         (is (= #{[0 800] [1 800] [2 800]}
+                (q* '[:find ?g (count ?r) :where [?l :j/lk ?k] [?l :j/grp ?g] [?r :j/rk ?k]])))
+         (is (= 1200 (count (q* '[:find ?k (count ?r) :where [?l :j/lk ?k] [?r :j/rk ?k]]))))
+         (is (= #{} (q* '[:find (count ?r) :where [?l :j/lk ?k] [?r :j/rk ?k] [(> ?k 99999)]])))))))

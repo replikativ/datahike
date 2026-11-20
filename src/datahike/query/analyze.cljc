@@ -234,7 +234,13 @@
             [var-sym const-val]
             (cond
               (nil? var-sym) [nil nil]
-              (quote-form? const-val) [var-sym (second const-val)]
+              ;; A quoted SYMBOL stays out of the bounds: there a symbol is
+              ;; a parameter's name, and `(quote ?p)` was rebound to the
+              ;; input `?p`.
+              (quote-form? const-val) (if (or (symbol? (second const-val))
+                                              (coll? (second const-val)))
+                                        [nil nil]
+                                        [var-sym (second const-val)])
               (free-var? const-val) [var-sym const-val]
               (or (symbol? const-val) (seq? const-val)) [nil nil]
               :else [var-sym const-val])]

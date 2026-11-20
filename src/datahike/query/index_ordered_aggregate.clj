@@ -199,7 +199,9 @@
         consumer-datoms (vec (index-attr-datoms db consumer-join-op :avet))
         pn (count producer-datoms)
         cn (count consumer-datoms)
-        ^HashSet out (HashSet.)]
+        ;; a LIST: one row per producer key, and rows of different keys that
+        ;; look alike are still separate rows for the caller to add up
+        ^java.util.ArrayList out (java.util.ArrayList.)]
     (loop [pi 0 ci 0]
       (if (or (>= pi pn) (>= ci cn))
         (vec out)
@@ -387,8 +389,26 @@
                      (every? #(supported-predicate? right-vars %)
                              (group-predicates right-group)))
             (if count-supported?
-              (execute-count db find-elements cancel
-                             left-group right-group left-ops right-ops
-                             left-join-op right-join-op join-var)
+              (let [rows (execute-count db find-elements cancel
+                                        left-group right-group left-ops right-ops
+                                        left-join-op right-join-op join-var)]
+                ;; One row per producer key. That IS the grouping only when
+                ;; the :find variables identify the producer; otherwise rows
+                ;; of several producers fall into one group and their counts
+                ;; add up — `(count ?r)` alone answered `1` per key, which a
+                ;; result set then collapsed to a single 1.
+                (if (some #{left-e join-var} group-vars)
+                  rows
+                  (let [agg-idx (long (first (keep-indexed
+                                              (fn [i el] (when (instance? Aggregate el) i))
+                                              find-elements)))
+                        order (java.util.ArrayList.)
+                        totals (java.util.HashMap.)]
+                    (doseq [row rows]
+                      (let [k (assoc row agg-idx nil)]
+                        (when-not (.containsKey totals k) (.add order k))
+                        (.put totals k (+ (long (.getOrDefault totals k 0))
+                                          (long (nth row agg-idx))))))
+                    (mapv #(assoc % agg-idx (.get totals %)) order))))
               (execute-sum db cancel left-group right-group left-ops right-ops
                            left-join-op right-join-op join-var aggregate-var sum-side))))))))
