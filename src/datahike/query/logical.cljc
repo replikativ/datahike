@@ -58,7 +58,7 @@
             ;; scan: the second such pattern on an entity gets a group of its
             ;; own, joined to the first on the entity.
             (let [a (second (:clause scan))]
-              (and (symbol? a)
+              (and (or (nil? a) (symbol? a))
                    (let [k [e-var source]
                          taken? (contains? @var-attr-groups k)]
                      (vswap! var-attr-groups conj k)
@@ -192,6 +192,14 @@
                            ;; "get-else: nil default value is not supported".
                            ;; Fall through to LBind so that check still fires.
                            (some? (nth (:args ci) 3 nil))
+                           ;; The optional scan seeks by attribute. One
+                           ;; that is still a variable here is bound per
+                           ;; row by another clause: the fused scan then
+                           ;; had nothing to seek and dropped the entities
+                           ;; that lack the attribute instead of
+                           ;; defaulting them.
+                           (let [a (nth (:args ci) 2 nil)]
+                             (and (some? a) (not (symbol? a))))
                            ;; A VARIABLE default (e.g. `[(get-else $ ?e :a ?d) ?v]`)
                            ;; is not a compile-time constant: it must be resolved
                            ;; per-row from ?d's binding. The fused LOptionalScan

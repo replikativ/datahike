@@ -798,6 +798,9 @@
                             ;; also what makes the ground-argument-position test
                             ;; at the seed site meaningful.
                             (when (and clause
+                                       ;; the edge shortcut reads e, a and v
+                                       (nil? (nth clause 3 nil))
+                                       (nil? (nth clause 4 nil))
                                        (:ref? sinfo)
                                        (= [e v] (vec head-vars)))
                               a)))))))]

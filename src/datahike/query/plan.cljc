@@ -1002,7 +1002,7 @@
                                ;; The second such pattern on an entity gets a
                                ;; group of its own (see logical/entity-group-key).
                                (let [a (second (:clause op))]
-                                 (and (symbol? a)
+                                 (and (or (nil? a) (symbol? a))
                                       (let [k [e-var (:source op)]
                                             taken? (contains? @var-attr-groups k)]
                                         (vswap! var-attr-groups conj k)

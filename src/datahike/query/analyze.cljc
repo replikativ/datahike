@@ -225,7 +225,19 @@
               ;; DIFFERENT value per row — a collection binding, an earlier
               ;; pattern's variable, an enclosing scope's — which is precisely
               ;; what one index bound cannot express.
-              :else nil)]
+              :else nil)
+            ;; The other operand reaches an index bound VERBATIM, so it has to
+            ;; be a value by then. `(quote foo)` is the value `foo`: left as the
+            ;; list, an AVET slice sought the list and found nothing. A bare
+            ;; symbol or a nested call is not a value at all; declining leaves
+            ;; the predicate to be evaluated as written.
+            [var-sym const-val]
+            (cond
+              (nil? var-sym) [nil nil]
+              (quote-form? const-val) [var-sym (second const-val)]
+              (free-var? const-val) [var-sym const-val]
+              (or (symbol? const-val) (seq? const-val)) [nil nil]
+              :else [var-sym const-val])]
         (when var-sym
           ;; Find pattern clauses where var-sym is the value variable
           (some (fn [pi]

@@ -209,3 +209,79 @@
       ;; x/t 7 is no boolean, so nothing can satisfy both patterns
       (is (= #{} (both '[:find ?e :where [?e :x/t ?p] [?e :x/s _ _ ?p]] db)))
       (is (= #{} (both '[:find ?e ?p :where [?e :x/s _ _ ?p] [?e :x/t ?p]] history))))))
+
+(deftest a-transaction-from-an-input-on-a-second-pattern-is-compared
+  ;; Like the literal, in every input form. Beside a unique lookup the pattern
+  ;; is never the one driving the scan.
+  (let [{:keys [db history tx1 tx2]} (setup)
+        a (d/q '[:find ?e . :where [?e :x/k "a"]] db)]
+    (doseq [[label d] [["current" db] ["history" history]]]
+      (testing label
+        (is (= #{} (both '[:find ?e :in $ ?t :where [?e :x/k "a"] [?e :x/t _ ?t]] d tx1)))
+        (is (= #{"a"} (ks db (both '[:find ?e :in $ ?t :where [?e :x/k "a"] [?e :x/t _ ?t]] d tx2))))
+        (is (= #{} (both '[:find ?v :in $ ?e ?t :where [?e :x/i ?v] [?e :x/t _ ?t]] d a tx1)))
+        (is (= #{[1]} (both '[:find ?v :in $ ?e ?t :where [?e :x/i ?v] [?e :x/t _ ?t]] d a tx2)))
+        (testing "collection, tuple and relation inputs"
+          (is (= #{} (both '[:find ?e :in $ [?t ...] :where [?e :x/k "a"] [?e :x/t _ ?t]] d [tx1])))
+          (is (= #{"a"} (ks db (both '[:find ?e :in $ [?t ...] :where [?e :x/k "a"] [?e :x/t _ ?t]]
+                                     d [tx1 tx2]))))
+          (is (= #{} (both '[:find ?e :in $ [?t ?u] :where [?e :x/k "a"] [?e :x/t _ ?t]] d [tx1 0])))
+          (is (= #{"a"} (ks db (both '[:find ?e :in $ [[?t ?u]] :where [?e :x/k "a"] [?e :x/t _ ?t]]
+                                     d [[tx1 0] [tx2 1]])))))
+        (testing "under not"
+          (is (= #{"a"} (ks db (both '[:find ?e :in $ ?t :where [?e :x/k "a"] (not [?e :x/t _ ?t])]
+                                     d tx1))))
+          (is (= #{} (both '[:find ?e :in $ ?t :where [?e :x/k "a"] (not [?e :x/t _ ?t])] d tx2))))))))
+
+(deftest a-negation-compares-its-own-variable-with-an-input
+  ;; `?f` is bound by the negation's pattern. Counted as bound beforehand, the
+  ;; predicate ran first, never held, and the negation excluded nothing.
+  (let [{:keys [db history]} (setup)]
+    (is (= #{"b" "c"} (ks db (both '[:find ?e :in $ ?x :where [?e :x/i 1]
+                                     (not [?e :x/s ?f] [(= ?f ?x)])] db 4))))
+    (is (= #{"a" "b" "c"} (ks db (both '[:find ?e :in $ ?x :where [?e :x/i 1]
+                                         (not [?e :x/s ?f] [(= ?f ?x)])] db 5))))
+    (is (= #{"b" "c"} (ks db (both '[:find ?e :in $ [?x ...] :where [?e :x/i 1]
+                                     (not [?e :x/s ?f] [(= ?f ?x)])] db [4]))))
+    (is (= #{"b"} (ks db (both '[:find ?e :in $ ?x :where [?e :x/i 1]
+                                 (not [?e :x/s ?f] [(>= ?f ?x)])] history 4))))
+    (testing "two negations do not share their local variables"
+      (is (= #{"b"} (ks db (both '[:find ?e :in $ ?x ?y :where [?e :x/i 1]
+                                   (not [?e :x/s ?f] [(= ?f ?x)])
+                                   (not [?e :x/t ?f] [(= ?f ?y)])] db 4 7)))))))
+
+(deftest a-pattern-without-an-attribute-and-get-else-with-a-variable-one
+  (let [{:keys [db history]} (setup)]
+    (doseq [[label d] [["current" db] ["history" history]]]
+      (testing label
+        (is (contains? (ks db (both '[:find ?e :where [?e] [?e ?a 4]] d)) "a"))
+        (is (= #{[0]} (both '[:find ?v :in $ ?a :where [?e :x/k "b"] [(get-else $ ?e ?a 0) ?v]]
+                            d :x/s)))))
+    (is (= #{["a" 4] ["b" 0] ["c" 0]}
+           (into #{} (map (fn [[e v]] [(:x/k (d/entity db e)) v]))
+                 (both '[:find ?e ?v :where [?e :x/i 1] [?x :db/ident ?a] [(= ?a :x/s)]
+                         [(get-else $ ?e ?a 0) ?v]] db))))))
+
+(deftest a-quoted-symbol-compared-with-an-indexed-value
+  ;; The quote form reached the index bound as a list.
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :schema-flexibility :write :keep-history? false}
+        _ (d/create-database cfg)
+        conn (d/connect cfg)]
+    (d/transact conn [{:db/ident :y/idx :db/valueType :db.type/symbol
+                       :db/cardinality :db.cardinality/one :db/index true}
+                      {:db/ident :y/plain :db/valueType :db.type/symbol
+                       :db/cardinality :db.cardinality/one}
+                      {:db/ident :y/edge :db/valueType :db.type/ref
+                       :db/cardinality :db.cardinality/one}])
+    (d/transact conn [{:db/id -1 :y/idx 'foo :y/plain 'foo} {:db/id -2 :y/idx 'bar :y/plain 'bar :y/edge -1}])
+    (let [db @conn]
+      (is (= 1 (count (both '[:find ?e :where [?e :y/idx ?s] [(= ?s (quote foo))]] db))))
+      (is (= 1 (count (both '[:find ?e :where [?e :y/idx ?s] [(= (quote bar) ?s)]] db))))
+      (is (= 1 (count (both '[:find ?e :where [?e :y/plain ?s] [(= ?s (quote foo))]] db))))
+      (testing "a recursive rule over patterns that fix `added`"
+        (let [bar (d/q '[:find ?e . :where [?e :y/idx ?s] [(= ?s (quote bar))]] db)
+              rules (fn [flag] [['(r ?x ?y) ['?x :y/edge '?y '_ flag]]
+                                ['(r ?x ?y) ['?x :y/edge '?z '_ flag] '(r ?z ?y)]])]
+          (is (= 1 (count (both '[:find ?y :in $ % ?x :where (r ?x ?y)] db (rules true) bar))))
+          (is (= #{} (both '[:find ?y :in $ % ?x :where (r ?x ?y)] db (rules false) bar))))))))
