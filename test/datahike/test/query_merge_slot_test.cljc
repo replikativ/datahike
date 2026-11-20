@@ -254,7 +254,8 @@
   (let [{:keys [db history]} (setup)]
     (doseq [[label d] [["current" db] ["history" history]]]
       (testing label
-        (is (contains? (ks db (both '[:find ?e :where [?e] [?e ?a 4]] d)) "a"))
+        (is (= (if (= label "history") #{"a" "d"} #{"a"})
+               (ks db (both '[:find ?e :where [?e] [?e ?a 4]] d))))
         (is (= #{[0]} (both '[:find ?v :in $ ?a :where [?e :x/k "b"] [(get-else $ ?e ?a 0) ?v]]
                             d :x/s)))))
     (is (= #{["a" 4] ["b" 0] ["c" 0]}
@@ -275,15 +276,17 @@
                       {:db/ident :y/edge :db/valueType :db.type/ref
                        :db/cardinality :db.cardinality/one}])
     (d/transact conn [{:db/id -1 :y/idx 'foo :y/plain 'foo} {:db/id -2 :y/idx 'bar :y/plain 'bar :y/edge -1}])
-    (let [db @conn]
-      (is (= 1 (count (both '[:find ?e :where [?e :y/idx ?s] [(= ?s (quote foo))]] db))))
-      (is (= 1 (count (both '[:find ?e :where [?e :y/idx ?s] [(= (quote bar) ?s)]] db))))
-      (is (= 1 (count (both '[:find ?e :where [?e :y/plain ?s] [(= ?s (quote foo))]] db))))
+    (let [db @conn
+          by-sym (fn [sym] (d/q '[:find ?e . :in $ ?s :where [?e :y/plain ?s]] db sym))
+          foo (by-sym 'foo)
+          bar (by-sym 'bar)]
+      (is (= #{[foo]} (both '[:find ?e :where [?e :y/idx ?s] [(= ?s (quote foo))]] db)))
+      (is (= #{[bar]} (both '[:find ?e :where [?e :y/idx ?s] [(= (quote bar) ?s)]] db)))
+      (is (= #{[foo]} (both '[:find ?e :where [?e :y/plain ?s] [(= ?s (quote foo))]] db)))
       (testing "a recursive rule over patterns that fix `added`"
-        (let [bar (d/q '[:find ?e . :where [?e :y/idx ?s] [(= ?s (quote bar))]] db)
-              rules (fn [flag] [['(r ?x ?y) ['?x :y/edge '?y '_ flag]]
+        (let [rules (fn [flag] [['(r ?x ?y) ['?x :y/edge '?y '_ flag]]
                                 ['(r ?x ?y) ['?x :y/edge '?z '_ flag] '(r ?z ?y)]])]
-          (is (= 1 (count (both '[:find ?y :in $ % ?x :where (r ?x ?y)] db (rules true) bar))))
+          (is (= #{[foo]} (both '[:find ?y :in $ % ?x :where (r ?x ?y)] db (rules true) bar)))
           (is (= #{} (both '[:find ?y :in $ % ?x :where (r ?x ?y)] db (rules false) bar))))))))
 
 (deftest an-explicit-join-keeps-its-local-variables
@@ -328,20 +331,22 @@
     (d/transact conn [{:db/id -1 :p/n 3 :p/flag false :p/sym (symbol "?p") :p/pair [4 5]}
                       {:db/id -2 :p/n 4 :p/flag true :p/sym 'foo}])
     (let [db @conn
-          n (fn [qq & args] (count (apply both qq db args)))]
+          ;; the :p/n of every entity found
+          n (fn [qq & args] (into #{} (map (fn [[e]] (:p/n (d/entity db e))))
+                                  (apply both qq db args)))]
       (testing "two equalities on one value are both required"
-        (is (= 0 (n '[:find ?e :where [?e :p/n ?v] [(= ?v 3)] [(= ?v 4)]])))
-        (is (= 1 (n '[:find ?e :where [?e :p/n ?v] [(= ?v 3)] [(= ?v 3)]])))
-        (is (= 0 (n '[:find ?e :where [?e :p/n ?v] [(= ?v 3)] [(> ?v 3)]])))
-        (is (= 0 (n '[:find ?e :where [?e :p/n ?v] [(> ?v 3)] [(= ?v 3)]])))
-        (is (= 1 (n '[:find ?e :where [?e :p/n ?v] [(>= ?v 3)] [(= ?v 4)]])))
-        (is (= 0 (n '[:find ?e :in $ ?a ?b :where [?e :p/n ?v] [(= ?v ?a)] [(= ?v ?b)]] 3 4))))
+        (is (= #{} (n '[:find ?e :where [?e :p/n ?v] [(= ?v 3)] [(= ?v 4)]])))
+        (is (= #{3} (n '[:find ?e :where [?e :p/n ?v] [(= ?v 3)] [(= ?v 3)]])))
+        (is (= #{} (n '[:find ?e :where [?e :p/n ?v] [(= ?v 3)] [(> ?v 3)]])))
+        (is (= #{} (n '[:find ?e :where [?e :p/n ?v] [(> ?v 3)] [(= ?v 3)]])))
+        (is (= #{4} (n '[:find ?e :where [?e :p/n ?v] [(>= ?v 3)] [(= ?v 4)]])))
+        (is (= #{} (n '[:find ?e :in $ ?a ?b :where [?e :p/n ?v] [(= ?v ?a)] [(= ?v ?b)]] 3 4))))
       (testing "false is a bound"
-        (is (= 1 (n '[:find ?e :where [?e :p/flag ?v] [(= ?v false)]])))
-        (is (= 1 (n '[:find ?e :in $ ?b :where [?e :p/flag ?v] [(= ?v ?b)]] false)))
-        (is (= 1 (n '[:find ?e :where [?e :p/flag ?v] [(not= ?v false)]]))))
+        (is (= #{3} (n '[:find ?e :where [?e :p/flag ?v] [(= ?v false)]])))
+        (is (= #{3} (n '[:find ?e :in $ ?b :where [?e :p/flag ?v] [(= ?v ?b)]] false)))
+        (is (= #{4} (n '[:find ?e :where [?e :p/flag ?v] [(not= ?v false)]]))))
       (testing "a quoted symbol that looks like a variable is not the input of that name"
-        (is (= 1 (n '[:find ?e :in $ ?p :where [?e :p/sym ?v] [(= ?v (quote ?p))]] 7))))
+        (is (= #{3} (n '[:find ?e :in $ ?p :where [?e :p/sym ?v] [(= ?v (quote ?p))]] 7))))
       (testing "get-else destructuring a tuple value"
         (is (= #{[4 5]} (both '[:find ?x ?y :where [?e :p/n 3] [(get-else $ ?e :p/pair 0) [?x ?y]]]
                               db)))))))
@@ -366,7 +371,8 @@
        (let [db @conn
              q* (fn [qq] (let [p (d/q qq db)
                                r (binding [q/*disable-planner* true] (d/q qq db))]
-                           (is (= (set r) (set p)))
+                           (is (= (frequencies r) (frequencies p)))
+                           (is (= (count p) (count (set p))) "no row twice")
                            (set p)))]
          (is (= #{[2400]} (q* '[:find (count ?r) :where [?l :j/lk ?k] [?r :j/rk ?k]])))
          (is (= #{[0 800] [1 800] [2 800]}
