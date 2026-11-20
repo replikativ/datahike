@@ -38,7 +38,9 @@
     (with-redefs [dqe/probe-driven-iterable (fn [index resolved-a probe-set field]
                                               (swap! seen conj resolved-a)
                                               (orig index resolved-a probe-set field))]
-      (let [r (f)] {:result r :attrs @seen}))))
+      ;; the planner is what is under test: bound on explicitly so the tier that runs the
+      ;; suite with DATAHIKE_QUERY_PLANNER=false still exercises it
+      (let [r (binding [dq/*disable-planner* false] (f))] {:result r :attrs @seen}))))
 
 (deftest a-selective-scan-keeps-its-slot-against-a-broad-value-probe
   (let [[cfg conn] (fresh-db)
