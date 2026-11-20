@@ -1767,6 +1767,10 @@
    live in a relation."
   false)
 
+(def ^:dynamic ^:private *structural-input-vars*
+  "Scalar :in vars that must be folded whatever *fold-scalar-ins* says; see resolve-ins."
+  #{})
+
 (defn resolve-in [context [binding value]]
   (cond
     (and (instance? BindScalar binding)
@@ -1779,7 +1783,8 @@
     (update context :rules merge (parse-rules value))
     (and (instance? BindScalar binding)
          (instance? Variable (:variable binding)))
-    (if (or *fold-scalar-ins* (fn? value))
+    (if (or *fold-scalar-ins* (fn? value)
+            (contains? *structural-input-vars* (get-in binding [:variable :symbol])))
       (assoc-in context [:consts (get-in binding [:variable :symbol])] value)
       (update context :rels conj (in->rel binding value)))
 
@@ -1804,8 +1809,35 @@
     :else
     (update context :rels conj (in->rel binding value))))
 
-(defn resolve-ins [context bindings values]
-  (reduce resolve-in context (zipmap bindings values)))
+(defn- attribute-position-vars
+  "The variables that stand in ATTRIBUTE position of a data pattern anywhere in `where`."
+  [where]
+  (let [found (volatile! #{})
+        src? (fn [x] (and (symbol? x) (= \$ (first (name x)))))]
+    (letfn [(walk [form]
+              (cond
+                (and (vector? form) (seq form) (not (sequential? (first form))))
+                (let [form (if (src? (first form)) (subvec form 1) form)
+                      a (second form)]
+                  (when (and (symbol? a) (= \? (first (name a)))) (vswap! found conj a)))
+
+                (and (seq? form) (= 'quote (first form))) nil
+                (sequential? form) (run! walk form)))]
+      (run! walk where))
+    @found))
+
+(defn resolve-ins
+  "Bind the :in values. With `where`, a scalar input that names an ATTRIBUTE stays part
+   of the query's structure — written into the clauses, as a function-valued input is —
+   because the plan depends on which attribute it is: its type, its cardinality, the
+   index that serves it. Every other scalar is a value and stays a binding."
+  ([context bindings values] (resolve-ins context bindings values nil))
+  ([context bindings values where]
+   (binding [*structural-input-vars*
+             (if (seq where)
+               (form-memo [::attribute-vars where] #(attribute-position-vars where))
+               #{})]
+     (reduce resolve-in context (zipmap bindings values)))))
 
 ;; Dynamic vars *lookup-attrs* and *implicit-source* are defined in datahike.query.relation
 ;; Use rel/*lookup-attrs* and rel/*implicit-source* directly.
@@ -3863,8 +3895,12 @@
    docstring). Resolved lazily on the JVM to keep the load order the rest
    of this namespace uses for the execute namespace."
   []
-  #?(:clj (deref (deref prepared-execution-var))
-     :cljs execute/*prepared-execution*))
+  ;; Value-free inputs are ALWAYS executed prepared: without the per-call rebinding a
+  ;; pushed-down predicate keeps the input's symbol where its value belongs and the
+  ;; query answers wrongly, so that combination is not selectable.
+  (or (not *fold-scalar-ins*)
+      #?(:clj (deref (deref prepared-execution-var))
+         :cljs execute/*prepared-execution*)))
 
 (defn- clauses-have-lookup-candidates?
   "Structure-only pre-scan: could `resolve-pattern-lookup-refs` change anything
@@ -4725,7 +4761,7 @@
      (let [{:keys [query args]} (normalize-q-input query inputs)
            {:keys [qfind qin]} (memoized-parse-query query)
            context-in (-> (Context. [] {} built-in-rules {} default-settings nil)
-                          (resolve-ins qin args))
+                          (resolve-ins qin args (:where query)))
            ;; SAME source resolution as raw-q*: `$` if present, else the first
            ;; planner-eligible db source. (Previously hardcoded '$, which
            ;; NPE'd for queries whose only source is named, e.g. :in $data.)
@@ -5524,10 +5560,12 @@
                                 (if (and (symbol? a)
                                          (analyze/free-var? a))
                                   (let [idx (get var->idx a)]
-                                    (when (nil? idx)
+                                    (cond
+                                      idx (fn [t] (nth t idx))
+                                      (contains? consts a) (constantly (get consts a))
+                                      :else
                                       (throw (ex-info (str "Post-filter references unknown var: " a)
-                                                      {:clause pred-clause})))
-                                    (fn [t] (nth t idx)))
+                                                      {:clause pred-clause}))))
                                   (constantly a)))
                               args)]
         (into #{} (filter (fn [t]
@@ -5661,16 +5699,20 @@
                          :cljs execute/singleton-rel-consts)
                       (:rels context-in)))
         plan (if (seq rel-consts)
-               (or (#?(:clj (requiring-resolve
-                             'datahike.query.execute/bind-plan-consts)
-                       :cljs execute/bind-plan-consts)
-                    ;; The relations stay in the context below, so the patterns
-                    ;; keep their variables: the fused scan seeks and prices a
-                    ;; bound pattern through its variable (see bind-plan-consts).
-                    ;; ClojureScript has no probe-driven scan, so there a
-                    ;; substituted literal is still the only way to a point seek.
-                    plan rel-consts #?(:clj {:patterns? false} :cljs nil))
-                   plan)
+               (let [bind #?(:clj (requiring-resolve
+                                   'datahike.query.execute/bind-plan-consts)
+                             :cljs execute/bind-plan-consts)]
+                 ;; The relations stay in the context below, so the patterns
+                 ;; keep their variables: the fused scan seeks and prices a
+                 ;; bound pattern through its variable (see bind-plan-consts).
+                 ;; ClojureScript has no probe-driven scan, so there a
+                 ;; substituted literal is still the only way to a point seek —
+                 ;; tried first, and where that cannot be done soundly the
+                 ;; variable-keeping rebinding, which always can, takes over.
+                 ;; There is no third case: an unbound plan is a wrong answer.
+                 #?(:clj (bind plan rel-consts {:patterns? false})
+                    :cljs (or (bind plan rel-consts nil)
+                              (bind plan rel-consts {:patterns? false}))))
                plan)
         exec-direct-rel #?(:clj (requiring-resolve 'datahike.query.execute/execute-plan-direct-rel)
                            :cljs execute/execute-plan-direct-rel)
@@ -5744,7 +5786,7 @@
         context-in (-> (if stats?
                          (StatContext. [] {} built-in-rules {} [] settings cancel)
                          (Context. [] {} built-in-rules {} settings cancel))
-                       (resolve-ins qin args)
+                       (resolve-ins qin args (:where query))
                        ;; When set, bind-by-fn accumulates {fn-sym → invocations}
                        ;; into the threaded context :fn-counts; surfaced as result
                        ;; metadata. (Extra defrecord keys persist via the extmap.)
@@ -5900,8 +5942,20 @@
                             components extended-find)
                            wide-vars (vec (mapcat :vars sub-results))
                            merged    (cartesian-merge sub-results wide-vars)
+                           ;; A scalar :in is a constant here whichever way it is
+                           ;; bound: folded into :consts, or kept as a one-row
+                           ;; relation. No component produces it, so a post-filter or
+                           ;; a find var naming it reads its value from this map.
+                           input-consts
+                           (if (seq (:rels context-in))
+                             (merge (#?(:clj (requiring-resolve
+                                              'datahike.query.execute/singleton-rel-consts)
+                                        :cljs execute/singleton-rel-consts)
+                                     (:rels context-in))
+                                    (:consts context-in))
+                             (:consts context-in))
                            filtered  (apply-post-filters merged wide-vars post-filters
-                                                         (:consts context-in))
+                                                         input-consts)
                            ;; Project wide tuples back to the user's find-var order.
                            ;; A find var bound by a scalar :in is produced by NO
                            ;; component — the components are exactly the clause
@@ -5911,7 +5965,7 @@
                            ;; of `nth`.
                            wide->find
                            (let [idx (into {} (map-indexed (fn [i v] [v i])) wide-vars)
-                                 consts (:consts context-in)]
+                                 consts input-consts]
                              (mapv (fn [v]
                                      (if-let [i (get idx v)]
                                        [::slot i]
@@ -5974,10 +6028,30 @@
             ;; 2. Aggregate fast paths (ordered primary, secondary, or PSS scan)
               (let [ta (when *profile?* #?(:clj (System/nanoTime) :cljs 0))
                     has-aggs? (some #(instance? Aggregate %) find-elements)
-                    aggregate-fast-eligible? (and has-aggs?
-                                                  (not (some #(instance? Pull %) find-elements))
-                                                  (empty? (:rels context-in))
-                                                  (not lookup-ref-reverse-map))
+                    ;; The aggregate fast paths read every grounding from the plan
+                    ;; itself and take no input relation. A scalar :in kept as a
+                    ;; one-row relation is rebound into the plan for them — the same
+                    ;; per-call rebinding the prepared executor does; a collection
+                    ;; input, an input that is also a find var, or a plan the
+                    ;; rebinding cannot reach soundly, leaves the query to the
+                    ;; relation path as before.
+                    agg-plan (when (and has-aggs?
+                                        (not (some #(instance? Pull %) find-elements))
+                                        (not lookup-ref-reverse-map))
+                               (if (empty? (:rels context-in))
+                                 plan
+                                 (when-some [rc (not-empty
+                                                 (#?(:clj (requiring-resolve
+                                                           'datahike.query.execute/single-tuple-rel-consts)
+                                                     :cljs execute/single-tuple-rel-consts)
+                                                  (:rels context-in)))]
+                                   ;; an input the query RETURNS must stay a column
+                                   (when-not (some #(contains? rc %) all-vars)
+                                     (#?(:clj (requiring-resolve
+                                               'datahike.query.execute/bind-plan-consts)
+                                         :cljs execute/bind-plan-consts)
+                                      plan rc)))))
+                    aggregate-fast-eligible? (some? agg-plan)
                     columnar-eligible? (and aggregate-fast-eligible?
                                             (instance? FindRel qfind)
                                             (not qwith))
@@ -5986,13 +6060,13 @@
                     (when aggregate-fast-eligible?
                       #?(:clj (when-not stats?
                                 (ioa/execute
-                                 plan db find-elements qwith (:cancel context-in)))
+                                 agg-plan db find-elements qwith (:cancel context-in)))
                          :cljs nil))
                     columnar-result
                     (or ordered-result
                         (when columnar-eligible?
-                          #?(:clj (or (try-secondary-index-aggregate db plan find-elements)
-                                      (try-columnar-aggregate plan db find-elements (:cancel context-in)))
+                          #?(:clj (or (try-secondary-index-aggregate db agg-plan find-elements)
+                                      (try-columnar-aggregate agg-plan db find-elements (:cancel context-in)))
                              :cljs nil)))
                     tc (when *profile?* #?(:clj (System/nanoTime) :cljs 0))]
                 (if columnar-result
@@ -6069,7 +6143,7 @@
                          context-in (-> (Context. [] {} built-in-rules {}
                                                   (merge default-settings nil)
                                                   qcancel/*cancel*)
-                                        (resolve-ins qin args))
+                                        (resolve-ins qin args (:where query)))
                          _ (qcancel/check!)
                          clauses (substitute-consts-with-lookup-refs db (:where query) (:consts context-in))
                          bound-vars (context-bound-vars context-in)

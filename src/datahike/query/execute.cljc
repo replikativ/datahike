@@ -3282,13 +3282,16 @@
     target-vars))
 
 (def ^:dynamic *prepared-execution*
-  "Master switch for the prepared-execution machinery (value-free plan
-   reuse for parameterized queries: single-tuple-rel absorption, per-call
-   plan rebinding, compiled point programs, and the point fast path inside
-   the fused executor). Default FALSE — every path behaves exactly as it
-   did before this machinery existed. Parameterized-workload servers (the
-   pgwire surrogate) bind it true together with *fold-scalar-ins* false."
-  false)
+  "The execution side of value-free scalar inputs (datahike.query/*fold-scalar-ins*
+   false): a scalar/tuple :in binding kept as a one-row relation is absorbed as a
+   per-call constant — per-call plan rebinding, compiled point programs, the point fast
+   path inside the fused executor. Default TRUE, together with value-free inputs.
+
+   The two belong together. A value-free plan executed WITHOUT this rebinding leaves a
+   pushed-down predicate holding the input's symbol where its value belongs, and
+   `[?e :age ?v] [(= ?v ?in)]` answers nothing. Bind false only alongside
+   *fold-scalar-ins* true, to compare with the folded path."
+  true)
 
 ;; ---------------------------------------------------------------------------
 ;; Prepared-plan rebinding: plans are cached value-free (scalar :in vars stay
@@ -3373,6 +3376,16 @@
   ([plan consts] (bind-plan-consts plan consts nil))
   ([plan consts {:keys [patterns?] :or {patterns? true}}]
    (let [sound? (volatile! true)
+         ;; With the patterns left alone the caller's context still holds every
+         ;; input relation, so nothing here can be out of reach: an op this
+         ;; function cannot rewrite (a not-join sub-plan, a function writing
+         ;; into an input var) simply reads the relation, as it always did. The
+         ;; rebinding is then TOTAL — it must be, because the pushdown bounds it
+         ;; fills in have no other source: a plan handed back unbound keeps the
+         ;; input's SYMBOL as an index bound and answers nothing
+         ;; (`[?e :age ?v] [(< ?v ?in)] (not-join [?e] …)` returned #{}).
+         total? (not patterns?)
+         unsound! (fn [] (when-not total? (vreset! sound? false)))
          pattern-ok? (fn [clause]
                       ;; e and tx slots must stay symbols or numbers — idents /
                       ;; lookup-refs are resolved on the relation path only.
@@ -3397,13 +3410,13 @@
                                   (:steps pipeline)))]
                (when-not (and (pattern-ok? (:clause scan-op'))
                               (every? #(pattern-ok? (:clause %)) merge-ops'))
-                 (vreset! sound? false))
+                 (unsound!))
                (cond-> (assoc op :scan-op scan-op' :merge-ops merge-ops' :attached-preds preds')
                  pipeline (assoc :pipeline (assoc pipeline :steps steps'))))
 
              :pattern-scan
              (let [op' (bind-pattern-op consts op true patterns?)]
-               (when-not (pattern-ok? (:clause op')) (vreset! sound? false))
+               (when-not (pattern-ok? (:clause op')) (unsound!))
                op')
 
              :predicate
@@ -3412,13 +3425,14 @@
 
              :function
              (let [binding-vars (filter analyze/free-var? (analyze/extract-vars (:binding op)))]
-               (when (some #(contains? consts %) binding-vars)
-                 (vreset! sound? false))
-               (assoc op :clause (subst-clause consts (:clause op))
-                      :args (map #(subst-slot consts %) (:args op))))
+               (if (some #(contains? consts %) binding-vars)
+                 ;; the output unifies with an input: only the relation can do that
+                 (do (unsound!) op)
+                 (assoc op :clause (subst-clause consts (:clause op))
+                        :args (map #(subst-slot consts %) (:args op)))))
 
              :not-join
-             (do (vreset! sound? false) op)
+             (do (unsound!) op)
 
              op))
          ops' (mapv bind-op (:ops plan))]
