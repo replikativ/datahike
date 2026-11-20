@@ -996,15 +996,6 @@
         groups (group-by (fn [op]
                            (let [e-var (first (:clause op))]
                              (cond
-                               ;; A pattern that fixes the `added` slot
-                               ;; (`[?e :a ?v _ false]`) stays a scan of its
-                               ;; own: a scan filters on it, a merge into
-                               ;; another pattern's entity group never looked
-                               ;; at the slot and matched as if it were absent.
-                               (let [added (nth (:clause op) 4 nil)]
-                                 (and (some? added) (not (symbol? added))))
-                               [(symbol (str "_anon_" (swap! blank-counter inc))) (:source op)]
-
                                (analyze/free-var? e-var)
                                [e-var (:source op)]
                                ;; Blank _ symbol — each gets unique group
@@ -1031,9 +1022,6 @@
                       ;; can't share the same EAVT index.
                       (nil? (:source (first sub-ops)))
                       (nil? (:source not-op))
-                      ;; an anti-merge does not look at the `added` slot either
-                      (let [added (nth (:clause (first sub-ops)) 4 nil)]
-                        (or (nil? added) (symbol? added)))
                       (let [e-var (first (:clause (first sub-ops)))]
                         (and (analyze/free-var? e-var)
                              (contains? groups [e-var nil]))))
