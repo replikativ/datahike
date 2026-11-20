@@ -4074,6 +4074,70 @@
   [b]
   (if (and (sequential? b) (sequential? (first b))) (vec b) [b]))
 
+;; ---------------------------------------------------------------------------
+;; A scalar :in var inside an or-join / not-join that does not declare it
+;;
+;; `(or-join [?e] …)` and `(not-join [?e] …)` unify ONLY the declared vars with
+;; the surrounding query; every other var in the body is local to it. That holds
+;; for a var bound by a pattern and for a collection input, and it is Datomic's
+;; rule for a scalar input as well. For years it did not hold here for a scalar:
+;; its value was written into the clause text before anything looked at scopes,
+;; so it reached into every body regardless of the declared list —
+;;
+;;   [:find ?e :in $ ?x :where [?e :kind "k1"] (or-join [?e] [?e :name ?x] [?e :group ?x])]
+;;
+;; meant "name or group IS ?x" with the value folded, and means "has a name or a
+;; group" under the rule (and in Datomic, and with the value bound as a relation).
+;; The two readings give different answers, silently. So this shape is REFUSED
+;; rather than quietly given either meaning: the fix is one symbol, and an answer
+;; that changes without notice is worse than a query that does not run.
+
+(defn- undeclared-scoped-inputs
+  "Scalar :in vars used inside an or-join / not-join body whose declared var list
+   omits them, as [{:var ?x :clause (or-join [?e] …)} …]; nil when there are none.
+   `inputs` is the set of scalar input var symbols."
+  [where inputs]
+  (when (seq inputs)
+    (let [found (volatile! [])
+          join? (fn [h] (and (symbol? h) (contains? #{"or-join" "not-join"} (name h))))
+          src?  (fn [x] (and (symbol? x) (= \$ (first (name x)))))]
+      (letfn [(walk [form visible scope]
+                (cond
+                  (and (seq? form) (seq form))
+                  (let [inner (if (and (src? (first form)) (join? (second form))) (rest form) form)
+                        h (first inner)]
+                    (cond
+                      ;; a quoted form is data: its vars are its own
+                      (= 'quote h) nil
+                      (join? h)
+                      (let [declared (into #{} (filter symbol?) (flatten (second inner)))
+                            vis (into #{} (filter declared) visible)]
+                        (doseq [c (nnext inner)] (walk c vis inner)))
+                      :else (doseq [c form] (walk c visible scope))))
+
+                  (or (vector? form) (seq? form) (set? form) (map? form))
+                  (doseq [c form] (walk c visible scope))
+
+                  (and scope (symbol? form) (contains? inputs form) (not (contains? visible form)))
+                  (vswap! found conj {:var form :clause scope})))]
+        (doseq [c where] (walk c inputs nil)))
+      (not-empty (vec (distinct @found))))))
+
+(defn- validate-scoped-inputs
+  "Raise for the first scalar :in var used undeclared inside an or-join / not-join.
+   `fn-valued` are the inputs bound to functions: those are called, not unified, and
+   stay visible everywhere."
+  [where inputs fn-valued]
+  (when-let [[{v :var clause :clause}] (seq (remove #(contains? fn-valued (:var %))
+                                                    (form-memo [::scoped-inputs where inputs]
+                                                               #(or (undeclared-scoped-inputs where inputs) []))))]
+    (let [[h vars] (if (and (symbol? (first clause)) (= \$ (first (name (first clause)))))
+                     (rest clause) clause)]
+      (log/raise v " is bound by :in but not declared in (" h " " vars " …). "
+                 "Inside that body it is a new variable, not the input. "
+                 "Declare it: (" h " " (conj (vec vars) v) " …)."
+                 {:error :query/where :form clause :vars #{v}}))))
+
 (defn- validate-clause-bindings
   "Raise if a predicate references a var nothing can bind, or a negation
    references no bindable var at all — the contract the base engine's
@@ -5640,6 +5704,16 @@
         ;; query is judged once with the bindings the user supplied.
         ;; Memoized on [where bound-var-set]: the check either raises or
         ;; passes, and both are pure functions of form + binding shape.
+        ;; Both engines, and before anything is folded: see `undeclared-scoped-inputs`.
+        _ (let [pairs (map vector qin args)
+                scalar? (fn [[b _]] (and (instance? BindScalar b) (instance? Variable (:variable b))))
+                inputs (form-memo [::scalar-inputs qin]
+                                  #(into #{} (comp (filter scalar?) (map (fn [[b _]] (get-in b [:variable :symbol])))) pairs))]
+            (when (seq inputs)
+              (validate-scoped-inputs (:where query) inputs
+                                      (into #{} (comp (filter scalar?) (filter (fn [[_ v]] (fn? v)))
+                                                      (map (fn [[b _]] (get-in b [:variable :symbol]))))
+                                            pairs))))
         _ (when use-planner?
             (let [bv (context-bound-vars context-in)]
               (form-memo [::validated (:where query) bv]
