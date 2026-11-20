@@ -4199,20 +4199,14 @@
         (doseq [c where] (walk c inputs nil)))
       (not-empty (vec (distinct @found))))))
 
-(defn- validate-scoped-inputs
-  "Raise for the first scalar :in var used undeclared inside an or-join / not-join.
-   `fn-valued` are the inputs bound to functions: those are called, not unified, and
-   stay visible everywhere."
-  [where inputs fn-valued]
-  (when-let [[{v :var clause :clause}] (seq (remove #(contains? fn-valued (:var %))
-                                                    (form-memo [::scoped-inputs where inputs]
-                                                               #(or (undeclared-scoped-inputs where inputs) []))))]
-    (let [[h vars] (if (and (symbol? (first clause)) (= \$ (first (name (first clause)))))
-                     (rest clause) clause)]
-      (log/raise v " is bound by :in but not declared in (" h " " vars " …). "
-                 "Inside that body it is a new variable, not the input. "
-                 "Declare it: (" h " " (conj (vec vars) v) " …)."
-                 {:error :query/where :form clause :vars #{v}}))))
+(defn- raise-undeclared-scoped-input!
+  [{v :var clause :clause}]
+  (let [[h vars] (if (and (symbol? (first clause)) (= \$ (first (name (first clause)))))
+                   (rest clause) clause)]
+    (log/raise v " is bound by :in but not declared in (" h " " vars " …). "
+               "Inside that body it is a new variable, not the input. "
+               "Declare it: (" h " " (conj (vec vars) v) " …)."
+               {:error :query/where :form clause :vars #{v}})))
 
 ;; ---------------------------------------------------------------------------
 ;; A scalar :in lookup ref in ENTITY position resolves or raises
@@ -4245,16 +4239,50 @@
       (doseq [c where] (walk c '$)))
     @found))
 
-(defn- resolve-entity-inputs-strictly!
-  "Raise, exactly as the folded path does, for a scalar :in lookup ref used as an entity
-   that the source it is used against cannot resolve."
-  [where sources scalar-pairs]
-  (doseq [[sym v] scalar-pairs
-          :when (lookup-ref-value? v)
-          src (form-memo [::entity-sources where sym] #(entity-position-sources where sym))
-          :let [db (get sources src)]
-          :when (dbu/db? db)]
-    (dbu/entid-strict db v)))
+(defn- scalar-input-shape
+  "What the per-call input checks need, computed once per query form: the scalar :in
+   vars with their argument positions, any that an or-join / not-join body uses without
+   declaring, and for each var the sources in whose patterns it is the entity."
+  [where qin]
+  (let [scalars (into [] (keep-indexed
+                          (fn [i b]
+                            (when (and (instance? BindScalar b) (instance? Variable (:variable b)))
+                              [i (get-in b [:variable :symbol])])))
+                      qin)]
+    {:scalars scalars
+     :undeclared (when (seq scalars)
+                   (vec (undeclared-scoped-inputs where (into #{} (map second) scalars))))
+     :entity-sources (into {} (keep (fn [[_ sym]]
+                                      (when-let [srcs (seq (entity-position-sources where sym))]
+                                        [sym srcs])))
+                           scalars)}))
+
+(defn- check-scalar-inputs!
+  "The two checks every scalar :in value gets, on both engines and before anything is
+   folded: it is not used undeclared inside an or-join / not-join (see
+   `undeclared-scoped-inputs`), and as a lookup ref in entity position it resolves, or
+   raises exactly as the folded path does."
+  [where qin args sources]
+  (let [{:keys [scalars undeclared entity-sources]}
+        (form-memo [::scalar-input-shape where qin] #(scalar-input-shape where qin))]
+    (when (seq scalars)
+      (let [args (vec args)]
+        ;; a function-valued input is called, not unified: it stays visible everywhere
+        (when (seq undeclared)
+          (when-let [u (first (remove (fn [{v :var}]
+                                        (some (fn [[i sym]] (and (= sym v) (fn? (nth args i nil))))
+                                              scalars))
+                                      undeclared))]
+            (raise-undeclared-scoped-input! u)))
+        ;; the fold resolves these itself, and raises
+        (when (and (not *fold-scalar-ins*) (seq entity-sources))
+          (doseq [[i sym] scalars
+                  :let [v (nth args i nil)]
+                  :when (lookup-ref-value? v)
+                  src (get entity-sources sym)
+                  :let [db (get sources src)]
+                  :when (dbu/db? db)]
+            (dbu/entid-strict db v)))))))
 
 (defn- validate-clause-bindings
   "Raise if a predicate references a var nothing can bind, or a negation
@@ -5829,20 +5857,7 @@
         ;; Memoized on [where bound-var-set]: the check either raises or
         ;; passes, and both are pure functions of form + binding shape.
         ;; Both engines, and before anything is folded: see `undeclared-scoped-inputs`.
-        _ (let [pairs (map vector qin args)
-                scalar? (fn [[b _]] (and (instance? BindScalar b) (instance? Variable (:variable b))))
-                inputs (form-memo [::scalar-inputs qin]
-                                  #(into #{} (comp (filter scalar?) (map (fn [[b _]] (get-in b [:variable :symbol])))) pairs))]
-            (when (seq inputs)
-              (validate-scoped-inputs (:where query) inputs
-                                      (into #{} (comp (filter scalar?) (filter (fn [[_ v]] (fn? v)))
-                                                      (map (fn [[b _]] (get-in b [:variable :symbol]))))
-                                            pairs))
-              ;; the fold resolves these itself, and raises
-              (when-not *fold-scalar-ins*
-                (resolve-entity-inputs-strictly!
-                 (:where query) (:sources context-in)
-                 (into [] (comp (filter scalar?) (map (fn [[b v]] [(get-in b [:variable :symbol]) v]))) pairs)))))
+        _ (check-scalar-inputs! (:where query) qin args (:sources context-in))
         _ (when use-planner?
             (let [bv (context-bound-vars context-in)]
               (form-memo [::validated (:where query) bv]
