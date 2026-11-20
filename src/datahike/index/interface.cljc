@@ -134,6 +134,22 @@
 
 (defmethod with-storage :default [_index-name index _storage] index)
 
+(defmulti ensure-root-count!
+  "Make `index` know its element count if it does not, and return nil. A no-op for an
+   index that knows it, and for index types that keep no cached counts.
+
+   Called once, when a connection with a local writer loads its database. It exists for
+   stores written before persistent-sorted-set 0.5.146, where a write after a reconnect
+   could store an index root with an unknown count (#1108): the planner then estimated
+   from heuristics for that store from then on. The count is computed here once, and the
+   writer's next transaction stores the root with it.
+
+   Not called for readers or historical commits: they could never store the result and
+   would pay for it on every load."
+  (fn [index-name _index] index-name))
+
+(defmethod ensure-root-count! :default [_index-name _index] nil)
+
 ;; Default handlers for missing index implementations
 
 (defn- hitchhiker-tree-missing-error []

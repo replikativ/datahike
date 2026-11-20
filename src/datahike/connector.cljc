@@ -430,6 +430,19 @@
                            conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]
                        (swap! (:wrapped-atom conn) assoc :writer
                               (w/create-writer (:writer config) conn))
+                     ;; A store written before persistent-sorted-set 0.5.146 can hold
+                     ;; index roots with an unknown count (#1108). Give them back
+                     ;; here, once, where the result can be stored: only a local
+                     ;; writer's next transaction writes the roots. See
+                     ;; `dii/ensure-root-count!` for why this costs a healthy store
+                     ;; nothing.
+                       (when (= :self (get-in config [:writer :backend] :self))
+                         (let [db @(:wrapped-atom conn)
+                               index (:index config)]
+                           (doseq [k [:eavt :aevt :avet :temporal-eavt :temporal-aevt :temporal-avet]
+                                   :let [ix (get db k)]
+                                   :when ix]
+                             (dii/ensure-root-count! index ix))))
                      ;; Recovery: every :building index is reconstructed from
                      ;; the primary index. Its stored key-map, if any was written
                      ;; by an older release, is deliberately ignored by
