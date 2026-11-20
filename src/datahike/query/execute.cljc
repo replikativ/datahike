@@ -3440,6 +3440,14 @@
              :not-join
              (do (unsound!) op)
 
+             ;; A recursive rule decides at EXECUTION whether it can run demand-
+             ;; driven: it needs a ground call argument to seed the magic set
+             ;; (`compute-magic-info`). An input left as a variable there made
+             ;; `(reaches ?start ?b)` compute the whole closure and filter it
+             ;; afterwards — quadratic, and out of memory on a 4000-node graph.
+             :recursive-rule
+             (assoc op :call-args (mapv #(subst-slot consts %) (:call-args op)))
+
              op))
          ops' (mapv bind-op (:ops plan))]
      (when @sound?
