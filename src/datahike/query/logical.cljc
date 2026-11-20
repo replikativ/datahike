@@ -52,7 +52,12 @@
   [scan blank-counter]
   (let [e-var  (:e scan)
         source (:source scan)]
-    (if (blank-var? e-var)
+    (if (or (blank-var? e-var)
+            ;; A pattern that fixes the `added` slot (`[?e :a ?v _ false]`)
+            ;; stays a scan of its own: a scan filters on that slot, a merge
+            ;; into another pattern's group never looked at it.
+            (let [added (nth (:clause scan) 4 nil)]
+              (and (some? added) (not (symbol? added)))))
       [(symbol (str "_anon_" (swap! blank-counter inc))) source]
       [e-var source])))
 
@@ -91,6 +96,9 @@
          (let [sub-ci (analyze/classify-clause (first (:sub-clauses ci)))]
            (and (= :pattern (:type sub-ci))
                 (analyze/free-var? (:e sub-ci))
+                ;; an anti-merge does not look at the `added` slot
+                (let [added (nth (:clause sub-ci) 4 nil)]
+                  (or (nil? added) (symbol? added)))
                 (contains? scan-groups [(:e sub-ci) nil])
                 (anti-fold-vars-local? sub-ci source-idx bound-vars
                                        var->clause-idxs))))))

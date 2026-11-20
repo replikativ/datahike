@@ -6,6 +6,24 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **`_` after an indexed lookup matched nothing ([#1168], [#1170]).** Since
+  0.8.1930, `[?s :stmt/item ?si] [?s :stmt/status _]` with `?si` from `:in`
+  (or written into the query) returned no rows when `:stmt/item` is indexed and
+  `:stmt/status` is cardinality one: the point-lookup fast path compared the
+  stored value with the symbol `_`. The same held for `_x` and for a pattern
+  without a value slot, `[?s :stmt/status]`. All three now only require the
+  attribute to be present, as they do everywhere else in the engine.
+- **Wrong answers around an indexed lookup ([#1170]).** Found reviewing the
+  fix above; each is the planner answering differently from the data. An
+  entity passed through `:in` was ignored by the point lookup:
+  `:in $ ?e ?i … [?e :i ?i] [?e :s ?v]` returned whichever entities had that
+  `?i` (since 0.8.1930). A symbol passed as an input *value* was read as a
+  blank or a variable. A pattern fixing the `added` slot
+  (`[?e :a ?v _ false]`) matched as if the slot were absent when it was merged
+  with another pattern on the same entity, and in the reference engine's point
+  lookup. `[:find ?e :where [?e :tags _]]` on a cardinality-many attribute
+  returned an entity once per value, which under `:limit` displaced other
+  entities.
 - **A scalar `:in` value stays a binding; one plan serves every value ([#1167]).**
   A scalar input such as `?name` in `:in $ ?name` was written into the `:where`
   clauses before planning, so the plan cache was keyed by the value and every
@@ -1088,6 +1106,8 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1160]: https://github.com/replikativ/datahike/pull/1160
 [#1161]: https://github.com/replikativ/datahike/pull/1161
 [#1167]: https://github.com/replikativ/datahike/pull/1167
+[#1168]: https://github.com/replikativ/datahike/issues/1168
+[#1170]: https://github.com/replikativ/datahike/pull/1170
 [#1107]: https://github.com/replikativ/datahike/issues/1107
 [#938]: https://github.com/replikativ/datahike/issues/938
 [#1156]: https://github.com/replikativ/datahike/pull/1156

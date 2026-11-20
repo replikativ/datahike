@@ -3140,7 +3140,12 @@
     (let [[e a v] pattern1
           tx (get pattern1 3)
           a-ground? (or (keyword? a) (number? a))
-          tx-free? (or (nil? tx) (symbol? tx))]
+          added (get pattern1 4)
+          ;; The lookup reports whatever datom it finds as an assertion. A
+          ;; pattern that fixes the `added` slot is left to the general search,
+          ;; which compares it.
+          tx-free? (and (or (nil? tx) (symbol? tx))
+                        (or (nil? added) (symbol? added)))]
       (cond
         ;; [e a ?v] — lookup on EAVT with EA comparator
         (and (number? e) a-ground? (symbol? v) tx-free?
@@ -5806,6 +5811,18 @@
       (post-process-result deduped context-in context-out query qfind find-elements
                            result-arity order-spec offset limit stats? qreturnmaps))))
 
+(defn- symbol-valued-input?
+  "Does any input carry a symbol as data: as a scalar, in a collection, or in a
+   tuple or relation row?"
+  [args]
+  (let [in? (fn in? [depth x]
+              (cond
+                (symbol? x) true
+                (and (pos? (long depth)) (or (sequential? x) (set? x)))
+                (reduce (fn [_ y] (if (in? (dec (long depth)) y) (reduced true) false)) false x)
+                :else false))]
+    (boolean (some #(in? 2 %) args))))
+
 (defn- raw-q* [{:keys [query args offset limit order-by stats? count-fns? settings cancel] :as _query-map}]
   (let [t0 (when *profile?* #?(:clj (System/nanoTime) :cljs (* 1000 (.getTime (js/Date.)))))
         settings (merge default-settings settings)
@@ -5836,6 +5853,13 @@
         multi-source? (> (count (:sources context-in)) 1)
         use-planner? (and (not *disable-planner*)
                           (not stats?)
+                          ;; A symbol passed as DATA (a :db.type/symbol value) is
+                          ;; left to the reference engine. The planner writes
+                          ;; input values into clauses when it rebinds a plan, and
+                          ;; in a clause a symbol is a variable or a blank: `_x`
+                          ;; as a value matched everything, `?q` became a
+                          ;; variable.
+                          (not (symbol-valued-input? args))
                           (some? primary-db)
                           (dbu/db? primary-db)
                           (planner-eligible-db? primary-db))
