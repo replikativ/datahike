@@ -6,7 +6,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
-- **A scalar `:in` value stays a binding; one plan serves every value ([#TODO]).**
+- **A scalar `:in` value stays a binding; one plan serves every value ([#1167]).**
   A scalar input such as `?name` in `:in $ ?name` was written into the `:where`
   clauses before planning, so the plan cache was keyed by the value and every
   new value planned again. It now stays a variable bound per call. Measured on
@@ -17,14 +17,14 @@ When something is added, it's typically marked *Experimental*. When the API cont
   `datahike.query/*fold-scalar-ins*` bound to `true` restores the old path for
   comparison. Supersedes [#1161]; addresses [#1107].
 - **Breaking: a scalar input used inside `or-join` / `not-join` must be declared
-  ([#TODO]).** `(or-join [?e] [?e :name ?x] …)` with `?x` from `:in` used to
+  ([#1167]).** `(or-join [?e] [?e :name ?x] …)` with `?x` from `:in` used to
   see the input, because its value had been written into the clause. By the
   rule those forms state — only the declared variables unify with the rest of
   the query — `?x` is a fresh variable there, which is how Datomic evaluates
   it. Such a query is now refused with a message naming the fix:
   `(or-join [?e ?x] …)`. Plain `or` / `not`, rule bodies, collection inputs and
   pattern-bound variables are unaffected. Related: [#938].
-- **Queries that answered wrongly with value-free inputs ([#TODO]).** Found
+- **Queries that answered wrongly with value-free inputs ([#1167]).** Found
   while making it the default; until now it was an opt-in mode, the one the
   PostgreSQL wire server runs in. A predicate against an input combined with a
   `not-join` returned nothing. An input in attribute position matched every
@@ -1086,6 +1086,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1148]: https://github.com/replikativ/datahike/pull/1148
 [#1160]: https://github.com/replikativ/datahike/pull/1160
 [#1161]: https://github.com/replikativ/datahike/pull/1161
+[#1167]: https://github.com/replikativ/datahike/pull/1167
 [#1107]: https://github.com/replikativ/datahike/issues/1107
 [#938]: https://github.com/replikativ/datahike/issues/938
 [#1156]: https://github.com/replikativ/datahike/pull/1156
