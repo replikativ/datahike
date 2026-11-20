@@ -41,7 +41,10 @@
       (let [r (f)] {:result r :attrs @seen}))))
 
 (defn- prepared [q db & args]
-  (binding [dq/*fold-scalar-ins* false dqe/*prepared-execution* true dq/*query-result-cache?* false]
+  ;; the planner is what is under test: bound on explicitly so the tier that runs the
+  ;; suite with DATAHIKE_QUERY_PLANNER=false still exercises it
+  (binding [dq/*disable-planner* false
+            dq/*fold-scalar-ins* false dqe/*prepared-execution* true dq/*query-result-cache?* false]
     (apply d/q q db args)))
 
 (defn- reference [q db & args]

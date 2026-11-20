@@ -3372,58 +3372,58 @@
    mode against 0.2 ms with the variables kept."
   ([plan consts] (bind-plan-consts plan consts nil))
   ([plan consts {:keys [patterns?] :or {patterns? true}}]
-  (let [sound? (volatile! true)
-        pattern-ok? (fn [clause]
+   (let [sound? (volatile! true)
+         pattern-ok? (fn [clause]
                       ;; e and tx slots must stay symbols or numbers — idents /
                       ;; lookup-refs are resolved on the relation path only.
-                      (let [e (get clause 0) tx (get clause 3)]
-                        (and (or (symbol? e) (nil? e) (number? e))
-                             (or (symbol? tx) (nil? tx) (number? tx)))))
-        bind-op
-        (fn bind-op [op]
-          (case (:op op)
-            :entity-group
-            (let [scan-op' (bind-pattern-op consts (:scan-op op) true patterns?)
-                  merge-ops' (mapv #(bind-pattern-op consts % false patterns?) (:merge-ops op))
-                  preds' (mapv #(assoc % :clause (subst-clause consts (:clause %))
-                                       :args (map (fn [a] (subst-slot consts a)) (:args %)))
-                               (:attached-preds op))
-                  pipeline (:pipeline op)
-                  steps' (when pipeline
-                           (mapv (fn [step]
-                                   (cond-> (bind-pattern-op consts step false patterns?)
-                                     (:index step)
-                                     (assoc :index (:index scan-op'))))
-                                 (:steps pipeline)))]
-              (when-not (and (pattern-ok? (:clause scan-op'))
-                             (every? #(pattern-ok? (:clause %)) merge-ops'))
-                (vreset! sound? false))
-              (cond-> (assoc op :scan-op scan-op' :merge-ops merge-ops' :attached-preds preds')
-                pipeline (assoc :pipeline (assoc pipeline :steps steps'))))
+                       (let [e (get clause 0) tx (get clause 3)]
+                         (and (or (symbol? e) (nil? e) (number? e))
+                              (or (symbol? tx) (nil? tx) (number? tx)))))
+         bind-op
+         (fn bind-op [op]
+           (case (:op op)
+             :entity-group
+             (let [scan-op' (bind-pattern-op consts (:scan-op op) true patterns?)
+                   merge-ops' (mapv #(bind-pattern-op consts % false patterns?) (:merge-ops op))
+                   preds' (mapv #(assoc % :clause (subst-clause consts (:clause %))
+                                        :args (map (fn [a] (subst-slot consts a)) (:args %)))
+                                (:attached-preds op))
+                   pipeline (:pipeline op)
+                   steps' (when pipeline
+                            (mapv (fn [step]
+                                    (cond-> (bind-pattern-op consts step false patterns?)
+                                      (:index step)
+                                      (assoc :index (:index scan-op'))))
+                                  (:steps pipeline)))]
+               (when-not (and (pattern-ok? (:clause scan-op'))
+                              (every? #(pattern-ok? (:clause %)) merge-ops'))
+                 (vreset! sound? false))
+               (cond-> (assoc op :scan-op scan-op' :merge-ops merge-ops' :attached-preds preds')
+                 pipeline (assoc :pipeline (assoc pipeline :steps steps'))))
 
-            :pattern-scan
-            (let [op' (bind-pattern-op consts op true patterns?)]
-              (when-not (pattern-ok? (:clause op')) (vreset! sound? false))
-              op')
+             :pattern-scan
+             (let [op' (bind-pattern-op consts op true patterns?)]
+               (when-not (pattern-ok? (:clause op')) (vreset! sound? false))
+               op')
 
-            :predicate
-            (assoc op :clause (subst-clause consts (:clause op))
-                   :args (map #(subst-slot consts %) (:args op)))
+             :predicate
+             (assoc op :clause (subst-clause consts (:clause op))
+                    :args (map #(subst-slot consts %) (:args op)))
 
-            :function
-            (let [binding-vars (filter analyze/free-var? (analyze/extract-vars (:binding op)))]
-              (when (some #(contains? consts %) binding-vars)
-                (vreset! sound? false))
-              (assoc op :clause (subst-clause consts (:clause op))
-                     :args (map #(subst-slot consts %) (:args op))))
+             :function
+             (let [binding-vars (filter analyze/free-var? (analyze/extract-vars (:binding op)))]
+               (when (some #(contains? consts %) binding-vars)
+                 (vreset! sound? false))
+               (assoc op :clause (subst-clause consts (:clause op))
+                      :args (map #(subst-slot consts %) (:args op))))
 
-            :not-join
-            (do (vreset! sound? false) op)
+             :not-join
+             (do (vreset! sound? false) op)
 
-            op))
-        ops' (mapv bind-op (:ops plan))]
-    (when @sound?
-      (assoc plan :ops ops')))))
+             op))
+         ops' (mapv bind-op (:ops plan))]
+     (when @sound?
+       (assoc plan :ops ops')))))
 
 (defn single-tuple-rel-consts
   "When every rel binds exactly one tuple (scalar/tuple :in bindings kept as
