@@ -323,19 +323,19 @@
    (or
     (shared-added-var? clauses)
     (some (fn [clause]
-           (cond
-             (constant-output-clause? clause) true
-             (blank-rule-call? clause) true
-             (repeated-var-rule-call? clause) true
-             (source-prefixed-clause? clause) (pattern-needs-rewrite? (vec (rest clause)))
-             (data-pattern-clause? clause)    (pattern-needs-rewrite? clause)
-             (and (seq? clause) (#{'not 'and 'or} (first clause)))
-             (where-needs-normalization? (rest clause))
+            (cond
+              (constant-output-clause? clause) true
+              (blank-rule-call? clause) true
+              (repeated-var-rule-call? clause) true
+              (source-prefixed-clause? clause) (pattern-needs-rewrite? (vec (rest clause)))
+              (data-pattern-clause? clause)    (pattern-needs-rewrite? clause)
+              (and (seq? clause) (#{'not 'and 'or} (first clause)))
+              (where-needs-normalization? (rest clause))
              ;; `(not-join [vars] body…)` / `(or-join [vars] branches…)` — the
              ;; second element is the declared var vector, not a clause.
-             (and (seq? clause) (#{'not-join 'or-join} (first clause)))
-             (where-needs-normalization? (drop 2 clause))
-             :else false))
+              (and (seq? clause) (#{'not-join 'or-join} (first clause)))
+              (where-needs-normalization? (drop 2 clause))
+              :else false))
           clauses))))
 
 (defn- fresh-var-fn
