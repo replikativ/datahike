@@ -6,6 +6,20 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Transaction and `added` slots on patterns that share an entity ([#1172]).**
+  Several patterns on one entity are answered by one scan and a seek per
+  further pattern, and the seek dropped what a pattern said beyond attribute
+  and value. A literal transaction on such a pattern was ignored
+  (`[?e :k "a"] [?e :t _ 536870914]`, also under `not`); an `added` variable
+  shared by two patterns was not unified on a history database; two patterns
+  with a variable attribute on one entity (`[?e ?a 1] [?e ?b 4]`), or one under
+  `not`, raised a NullPointerException; and the index-ordered and
+  secondary-index aggregates read neither slot. A `not` with a local variable
+  on a history database raised too when the entity came from a collection
+  input. Separately, on an `as-of` or `since` database `[?e :a v _ true]`
+  returned a value the view no longer holds when the planner was not used.
+  (0.8.NNNN, [#1172])
+
 - **A fixed `added` slot on a history database ignored the rest of its pattern ([#1171]).**
   In 0.8.1931 only, `[?e :x/i 1] [?e :x/s 4 _ false]` on `(d/history db)`
   returned every entity that had ever held `:x/s`, whatever the value and
@@ -1116,6 +1130,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1168]: https://github.com/replikativ/datahike/issues/1168
 [#1170]: https://github.com/replikativ/datahike/pull/1170
 [#1171]: https://github.com/replikativ/datahike/pull/1171
+[#1172]: https://github.com/replikativ/datahike/pull/1172
 [#1107]: https://github.com/replikativ/datahike/issues/1107
 [#938]: https://github.com/replikativ/datahike/issues/938
 [#1156]: https://github.com/replikativ/datahike/pull/1156

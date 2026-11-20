@@ -314,25 +314,29 @@
   (let [args (rule-call-args clause)]
     (boolean (and (next args) (repeated-var-pattern? args)))))
 
+(declare added-vars-to-separate pattern-needs-rewrite?)
+
 (defn- where-needs-normalization?
   "Cheap pre-scan for repeated pattern vars, constant outputs and blank rule calls."
   [clauses]
   (boolean
-   (some (fn [clause]
-           (cond
-             (constant-output-clause? clause) true
-             (blank-rule-call? clause) true
-             (repeated-var-rule-call? clause) true
-             (source-prefixed-clause? clause) (repeated-var-pattern? (vec (rest clause)))
-             (data-pattern-clause? clause)    (repeated-var-pattern? clause)
-             (and (seq? clause) (#{'not 'and 'or} (first clause)))
-             (where-needs-normalization? (rest clause))
+   (or
+    (some? (added-vars-to-separate clauses))
+    (some (fn [clause]
+            (cond
+              (constant-output-clause? clause) true
+              (blank-rule-call? clause) true
+              (repeated-var-rule-call? clause) true
+              (source-prefixed-clause? clause) (pattern-needs-rewrite? (vec (rest clause)))
+              (data-pattern-clause? clause)    (pattern-needs-rewrite? clause)
+              (and (seq? clause) (#{'not 'and 'or} (first clause)))
+              (where-needs-normalization? (rest clause))
              ;; `(not-join [vars] body…)` / `(or-join [vars] branches…)` — the
              ;; second element is the declared var vector, not a clause.
-             (and (seq? clause) (#{'not-join 'or-join} (first clause)))
-             (where-needs-normalization? (drop 2 clause))
-             :else false))
-         clauses)))
+              (and (seq? clause) (#{'not-join 'or-join} (first clause)))
+              (where-needs-normalization? (drop 2 clause))
+              :else false))
+          clauses))))
 
 (defn- fresh-var-fn
   "Deterministic fresh-variable generator that never collides with a symbol
@@ -362,6 +366,97 @@
                                           (recur (inc i) seen (conj out nv)
                                                  (conj preds [(list '= x nv)])))
             :else                       (recur (inc i) (conj seen x) (conj out x) preds)))))))
+
+;; The fourth and fifth slots of a pattern — transaction and `added` — are
+;; honoured by a pattern that DRIVES a scan, but the planner's merge of several
+;; patterns on one entity only unifies VARIABLES in the transaction slot. A
+;; literal transaction on a merged pattern (`[?e :k "a"] [?e :t _ 536870914]`)
+;; was not compared at all, and an `added` variable shared by two patterns
+;; (`[?e :a _ _ ?op] [?e :b _ _ ?op]`) was not unified, so on a history
+;; database an assertion paired with a retraction. Both are restated here as a
+;; variable plus an equality, a shape every path already evaluates.
+
+(def ^:private ^:dynamic *slot-rewrites?*
+  "False while asking what the OTHER rewrites alone would do to a clause."
+  true)
+
+(defn- literal-tx-pattern?
+  [pattern]
+  (and *slot-rewrites?*
+       (> (count pattern) 3)
+       (number? (nth pattern 3))
+       ;; `[r ?a ?b ?c 5]` is a rule call spelled as a vector
+       (nil? (rule-call-args pattern))))
+
+(defn- rewrite-literal-tx
+  "`[?e :a ?v 123]` → `[[?e :a ?v ?tx] [[(= ?tx 123)]]]`."
+  [pattern fresh!]
+  (let [v (fresh! '?__tx)]
+    [(assoc (vec pattern) 3 v) [[(list '= v (nth pattern 3))]]]))
+
+(defn- pattern-needs-rewrite? [pattern]
+  (or (repeated-var-pattern? pattern) (literal-tx-pattern? pattern)))
+
+(defn- rewrite-pattern
+  "Returns `[pattern' extra-clauses]`."
+  [pattern fresh!]
+  (let [[p preds] (if (repeated-var-pattern? pattern)
+                    (rewrite-repeated-pattern pattern fresh!)
+                    [pattern []])]
+    (if (literal-tx-pattern? p)
+      (let [[p' tx-preds] (rewrite-literal-tx p fresh!)]
+        [p' (into (vec preds) tx-preds)])
+      [p preds])))
+
+(defn- pattern-added-var
+  "The free variable in the `added` slot of a data pattern clause, else nil."
+  [clause]
+  (when (and (vector? clause) (nil? (rule-call-args clause)))
+    (let [off (if (source-prefixed-clause? clause) 1 0)]
+      (when (and (data-pattern-clause? (if (zero? off) clause (subvec clause 1)))
+                 (> (count clause) (+ 4 off)))
+        (let [x (nth clause (+ 4 off))]
+          (when (analyze/free-var? x) x))))))
+
+(defn- pattern-other-vars
+  "Free variables in the e, a, v and tx slots of a data pattern clause."
+  [clause]
+  (when (and (vector? clause) (nil? (rule-call-args clause)))
+    (let [off (if (source-prefixed-clause? clause) 1 0)]
+      (when (data-pattern-clause? (if (zero? off) clause (subvec clause 1)))
+        (filter analyze/free-var? (take 4 (drop off clause)))))))
+
+(defn- added-vars-to-separate
+  "The `added` variables of this conjunction that a sibling pattern also
+   names: in its own `added` slot, or in any other slot (`[?e :flag ?p]
+   [?e :b _ _ ?p]`). Nil when there are none."
+  [clauses]
+  (when *slot-rewrites?*
+    (let [added (keep pattern-added-var clauses)]
+      (when (seq added)
+        (let [elsewhere (into #{} (mapcat pattern-other-vars) clauses)
+              repeated (into #{} (keep (fn [[v n]] (when (> n 1) v))) (frequencies added))
+              vs (into #{} (filter #(or (elsewhere %) (repeated %))) added)]
+          (when (seq vs) {:vars vs :elsewhere elsewhere}))))))
+
+(defn- separate-shared-added-vars
+  "Give such a pattern its own `added` variable, equal to the shared one. The
+   first pattern keeps the name unless another slot of a sibling binds it."
+  [clauses fresh!]
+  (if-let [{:keys [vars elsewhere]} (added-vars-to-separate clauses)]
+    (first
+     (reduce (fn [[out seen] clause]
+               (let [v (pattern-added-var clause)]
+                 (cond
+                   (or (nil? v) (not (vars v))) [(conj out clause) seen]
+                   (or (elsewhere v) (seen v))
+                   (let [nv (fresh! v)
+                         off (if (source-prefixed-clause? clause) 1 0)]
+                     [(conj out (assoc clause (+ 4 off) nv) [(list '= v nv)]) seen])
+                   :else [(conj out clause) (conj seen v)])))
+             [[] #{}]
+             clauses))
+    clauses))
 
 (defn- clause-free-vars
   "Free variables mentioned anywhere in `form`. Used to promote a plain `or` to
@@ -433,14 +528,14 @@
 
     (source-prefixed-clause? clause)
     (let [pattern (vec (rest clause))]
-      (if (and (data-pattern-clause? pattern) (repeated-var-pattern? pattern))
-        (let [[pattern' preds] (rewrite-repeated-pattern pattern fresh!)]
+      (if (and (data-pattern-clause? pattern) (pattern-needs-rewrite? pattern))
+        (let [[pattern' preds] (rewrite-pattern pattern fresh!)]
           (cons (into [(first clause)] pattern') preds))
         [clause]))
 
     (data-pattern-clause? clause)
-    (if (repeated-var-pattern? clause)
-      (let [[pattern' preds] (rewrite-repeated-pattern clause fresh!)]
+    (if (pattern-needs-rewrite? clause)
+      (let [[pattern' preds] (rewrite-pattern clause fresh!)]
         (cons pattern' preds))
       [clause])
 
@@ -452,8 +547,15 @@
     (and (seq? clause) (= 'not (first clause)))
     (let [body (rest clause)
           rewritten (normalize-where-clauses body fresh!)]
-      (if (= (vec body) rewritten)
-        [clause]
+      (cond
+        (= (vec body) rewritten) [clause]
+        ;; Only a transaction or `added` slot was restated: the fresh variable
+        ;; occurs nowhere outside, so the clause stays a plain `not` and keeps
+        ;; its rule that a variable local to it need not be bound.
+        (= (vec body) (binding [*slot-rewrites?* false]
+                        (normalize-where-clauses body (fresh-var-fn #{}))))
+        [(cons 'not rewritten)]
+        :else
         [(concat (list 'not-join (vec (clause-free-vars body))) rewritten)]))
 
     ;; `(not-join [vars] body…)`: the body is a CONJUNCTION, so the rewritten
@@ -485,7 +587,8 @@
     :else [clause]))
 
 (defn- normalize-where-clauses [clauses fresh!]
-  (into [] (mapcat #(normalize-where-clause % fresh!)) clauses))
+  (into [] (mapcat #(normalize-where-clause % fresh!))
+        (separate-shared-added-vars clauses fresh!)))
 
 (defn- query-var? [x]
   (and (symbol? x) (= \? (first (name x)))))
@@ -4947,6 +5050,13 @@
   (let [ops (:ops plan)
         sub-ops (plan-sub-ops plan)]
     (and (every? #(#{:entity-group :pattern-scan :predicate} (:op %)) ops)
+         ;; a sub-op becomes a constraint on its attribute's column and value:
+         ;; a transaction or `added` slot has no column to be compared with
+         (not-any? (fn [op]
+                     (let [c (:clause op)]
+                       (and (vector? c)
+                            (or (some? (nth c 3 nil)) (some? (nth c 4 nil))))))
+                   sub-ops)
          (not-any? (fn [op]
                      (some (fn [k] (let [v (get op k)]
                                      (if (coll? v) (seq v) (some? v))))

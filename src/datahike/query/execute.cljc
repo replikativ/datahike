@@ -4674,7 +4674,15 @@
                     new-tx? (boolean (and binds? (some? mtx) (symbol? mtx) (analyze/free-var? mtx)
                                           (not (contains? attrs mtx))))
                     attrs (cond-> attrs new-tx? (assoc mtx (inc idx)))
-                    idx (cond-> idx new-tx? inc)]
+                    idx (cond-> idx new-tx? inc)
+                    ;; This executor runs on a current database, where every
+                    ;; datom is an assertion: a merge's `added` variable reads
+                    ;; the scan's flag (tuple slot 4), which is always true.
+                    madded (get c 4)
+                    attrs (cond-> attrs
+                            (and binds? (symbol? madded) (analyze/free-var? madded)
+                                 (not (contains? attrs madded)))
+                            (assoc madded 4))]
                 (recur (inc i) attrs idx (conj! ev new-v?) (conj! et new-tx?))))))
 
         ;; Check for entity-filter from upstream secondary index searches
@@ -4849,7 +4857,11 @@
         ;; joins — reference those clause vars, so the fused tuples must carry them.
         find-vars   (vec (distinct (filter #(and (symbol? %) (analyze/free-var? %))
                                            (concat scan-clause
-                                                   (mapcat :clause merge-ops)))))
+                                                   ;; an anti-merge binds nothing:
+                                                   ;; its variables are local to
+                                                   ;; the negation and it leaves
+                                                   ;; no datom to read them from
+                                                   (mapcat :clause (remove :anti? merge-ops))))))
         ;; A group with no free var at all — every position ground, typically
         ;; after the :in fold — is a pure EXISTENCE test. The fused scan emits
         ;; one tuple per emitted var, so with none it emitted nothing whether
@@ -6676,6 +6688,8 @@
                                           (let [next-op (nth all-ops j)]
                                             (if (and (= :pattern-scan (:op next-op))
                                                      (= :lookup (:join-method next-op))
+                                                     ;; a merge seeks by attribute
+                                                     (plan/can-be-merge? next-op)
                                                      (= e-var (first (:clause next-op)))
                                                ;; Only fuse ops on the same source
                                                      (= op-source (:source next-op)))
