@@ -254,24 +254,32 @@
               (contains? filtered-tx-ids
                          (datom-tx d))))))
 
-(defn post-process-datoms [datoms db context]
-  (let [xform (dbi/context-xform context)
-        time-pred (dbi/context-time-pred context)]
-    (cond
+(defn post-process-datoms
+  "`added`, when given, keeps the datoms of an ASSEMBLED view (as-of, since)
+   whose flag equals it. It runs after assembly and before the context's own
+   transform, which may turn datoms into rows of the caller's choosing."
+  ([datoms db context] (post-process-datoms datoms db context nil))
+  ([datoms db context added]
+   (let [xform (dbi/context-xform context)
+         xform (if (some? added)
+                 (dbi/nil-comp (filter (fn [d] (= (boolean added) (boolean (datom-added d))))) xform)
+                 xform)
+         time-pred (dbi/context-time-pred context)]
+     (cond
 
-      time-pred
-      (let [time-xform (temporal-datom-filter datoms time-pred db)]
-        (if (dbi/context-historical? context)
-          (into [] (dbi/nil-comp time-xform xform) datoms)
-          (->> datoms
-               (transduce time-xform
-                          (group-by-step (fn [^Datom datom]
-                                           [(.-e datom) (.-a datom)])))
-               (into [] (dbi/nil-comp (assemble-datoms-xform db) xform)))))
+       time-pred
+       (let [time-xform (temporal-datom-filter datoms time-pred db)]
+         (if (dbi/context-historical? context)
+           (into [] (dbi/nil-comp time-xform xform) datoms)
+           (->> datoms
+                (transduce time-xform
+                           (group-by-step (fn [^Datom datom]
+                                            [(.-e datom) (.-a datom)])))
+                (into [] (dbi/nil-comp (assemble-datoms-xform db) xform)))))
 
-      xform (into [] xform datoms)
+       xform (into [] xform datoms)
 
-      :else datoms)))
+       :else datoms))))
 
 ;; A DB deliberately does not implement IEditableCollection. `transient` must
 ;; return an ITransientAssociative, and `into`/`merge` transient any editable
@@ -331,31 +339,21 @@
    first removed the retractions the assembly needs, so `[?e :a 9 _ true]`
    answered with a value the view no longer contains."
   [pattern context]
-  (and (some? (nth pattern 4 nil))
+  (and (boolean? (nth pattern 4 nil))
        (some? (dbi/context-time-pred context))
        (not (dbi/context-historical? context))))
 
-(defn- filter-assembled-by-added
-  "Post-processing may already have turned datoms into `[e a v tx added]` rows."
-  [pattern rows]
-  (let [want (boolean (nth pattern 4))]
-    (filterv (fn [row]
-               (= want (boolean (if (vector? row) (nth row 4) (datom-added row)))))
-             rows)))
-
 (defn contextual-search [db pattern context]
   (if (added-after-assembly? pattern context)
-    (->> (post-process-datoms ((contextual-search-fn context) db (assoc (vec pattern) 4 nil))
-                              db context)
-         (filter-assembled-by-added pattern))
+    (post-process-datoms ((contextual-search-fn context) db (assoc (vec pattern) 4 nil))
+                         db context (nth pattern 4))
     (-> ((contextual-search-fn context) db pattern)
         (post-process-datoms db context))))
 
 (defn contextual-batch-search [db pattern-mask batch-fn context]
   (if (added-after-assembly? pattern-mask context)
-    (->> (post-process-datoms ((contextual-search-fn context) db (assoc (vec pattern-mask) 4 nil) batch-fn)
-                              db context)
-         (filter-assembled-by-added pattern-mask))
+    (post-process-datoms ((contextual-search-fn context) db (assoc (vec pattern-mask) 4 nil) batch-fn)
+                         db context (nth pattern-mask 4))
     (-> ((contextual-search-fn context) db pattern-mask batch-fn)
         (post-process-datoms db context))))
 

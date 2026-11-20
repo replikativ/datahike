@@ -314,14 +314,14 @@
   (let [args (rule-call-args clause)]
     (boolean (and (next args) (repeated-var-pattern? args)))))
 
-(declare shared-added-var? pattern-needs-rewrite?)
+(declare added-vars-to-separate pattern-needs-rewrite?)
 
 (defn- where-needs-normalization?
   "Cheap pre-scan for repeated pattern vars, constant outputs and blank rule calls."
   [clauses]
   (boolean
    (or
-    (shared-added-var? clauses)
+    (some? (added-vars-to-separate clauses))
     (some (fn [clause]
             (cond
               (constant-output-clause? clause) true
@@ -376,9 +376,14 @@
 ;; database an assertion paired with a retraction. Both are restated here as a
 ;; variable plus an equality, a shape every path already evaluates.
 
+(def ^:private ^:dynamic *slot-rewrites?*
+  "False while asking what the OTHER rewrites alone would do to a clause."
+  true)
+
 (defn- literal-tx-pattern?
   [pattern]
-  (and (> (count pattern) 3)
+  (and *slot-rewrites?*
+       (> (count pattern) 3)
        (number? (nth pattern 3))
        ;; `[r ?a ?b ?c 5]` is a rule call spelled as a vector
        (nil? (rule-call-args pattern))))
@@ -413,34 +418,45 @@
         (let [x (nth clause (+ 4 off))]
           (when (analyze/free-var? x) x))))))
 
-(defn- shared-added-var?
-  "Do two sibling patterns of this conjunction name one variable in `added`?"
+(defn- pattern-other-vars
+  "Free variables in the e, a, v and tx slots of a data pattern clause."
+  [clause]
+  (when (and (vector? clause) (nil? (rule-call-args clause)))
+    (let [off (if (source-prefixed-clause? clause) 1 0)]
+      (when (data-pattern-clause? (if (zero? off) clause (subvec clause 1)))
+        (filter analyze/free-var? (take 4 (drop off clause)))))))
+
+(defn- added-vars-to-separate
+  "The `added` variables of this conjunction that a sibling pattern also
+   names: in its own `added` slot, or in any other slot (`[?e :flag ?p]
+   [?e :b _ _ ?p]`). Nil when there are none."
   [clauses]
-  (loop [cs (seq clauses) seen #{}]
-    (if-not cs
-      false
-      (let [v (pattern-added-var (first cs))]
-        (cond (nil? v) (recur (next cs) seen)
-              (contains? seen v) true
-              :else (recur (next cs) (conj seen v)))))))
+  (when *slot-rewrites?*
+    (let [added (keep pattern-added-var clauses)]
+      (when (seq added)
+        (let [elsewhere (into #{} (mapcat pattern-other-vars) clauses)
+              repeated (into #{} (keep (fn [[v n]] (when (> n 1) v))) (frequencies added))
+              vs (into #{} (filter #(or (elsewhere %) (repeated %))) added)]
+          (when (seq vs) {:vars vs :elsewhere elsewhere}))))))
 
 (defn- separate-shared-added-vars
-  "Give every later sibling pattern its own `added` variable, equal to the first."
+  "Give such a pattern its own `added` variable, equal to the shared one. The
+   first pattern keeps the name unless another slot of a sibling binds it."
   [clauses fresh!]
-  (if-not (shared-added-var? clauses)
-    clauses
+  (if-let [{:keys [vars elsewhere]} (added-vars-to-separate clauses)]
     (first
      (reduce (fn [[out seen] clause]
                (let [v (pattern-added-var clause)]
                  (cond
-                   (nil? v) [(conj out clause) seen]
-                   (contains? seen v)
+                   (or (nil? v) (not (vars v))) [(conj out clause) seen]
+                   (or (elsewhere v) (seen v))
                    (let [nv (fresh! v)
                          off (if (source-prefixed-clause? clause) 1 0)]
                      [(conj out (assoc clause (+ 4 off) nv) [(list '= v nv)]) seen])
                    :else [(conj out clause) (conj seen v)])))
              [[] #{}]
-             clauses))))
+             clauses))
+    clauses))
 
 (defn- clause-free-vars
   "Free variables mentioned anywhere in `form`. Used to promote a plain `or` to
@@ -531,8 +547,15 @@
     (and (seq? clause) (= 'not (first clause)))
     (let [body (rest clause)
           rewritten (normalize-where-clauses body fresh!)]
-      (if (= (vec body) rewritten)
-        [clause]
+      (cond
+        (= (vec body) rewritten) [clause]
+        ;; Only a transaction or `added` slot was restated: the fresh variable
+        ;; occurs nowhere outside, so the clause stays a plain `not` and keeps
+        ;; its rule that a variable local to it need not be bound.
+        (= (vec body) (binding [*slot-rewrites?* false]
+                        (normalize-where-clauses body (fresh-var-fn #{}))))
+        [(cons 'not rewritten)]
+        :else
         [(concat (list 'not-join (vec (clause-free-vars body))) rewritten)]))
 
     ;; `(not-join [vars] body…)`: the body is a CONJUNCTION, so the rewritten

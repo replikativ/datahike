@@ -4674,7 +4674,15 @@
                     new-tx? (boolean (and binds? (some? mtx) (symbol? mtx) (analyze/free-var? mtx)
                                           (not (contains? attrs mtx))))
                     attrs (cond-> attrs new-tx? (assoc mtx (inc idx)))
-                    idx (cond-> idx new-tx? inc)]
+                    idx (cond-> idx new-tx? inc)
+                    ;; This executor runs on a current database, where every
+                    ;; datom is an assertion: a merge's `added` variable reads
+                    ;; the scan's flag (tuple slot 4), which is always true.
+                    madded (get c 4)
+                    attrs (cond-> attrs
+                            (and binds? (symbol? madded) (analyze/free-var? madded)
+                                 (not (contains? attrs madded)))
+                            (assoc madded 4))]
                 (recur (inc i) attrs idx (conj! ev new-v?) (conj! et new-tx?))))))
 
         ;; Check for entity-filter from upstream secondary index searches
