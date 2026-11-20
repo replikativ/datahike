@@ -6,6 +6,11 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **A `_` value in a merged pattern no longer empties the result ([#1168]).**
+  `[:find ?s :in $ ?si :where [?s :stmt/item ?si] [?s :stmt/status _]]` returned
+  `#{}` since [#1167], and so did the same query with the value written into the
+  clause. The point-lookup fast paths read `_` as a ground value and compared every
+  stored value with the symbol. `_` now only requires that the attribute is present.
 - **A scalar `:in` value stays a binding; one plan serves every value ([#1167]).**
   A scalar input such as `?name` in `:in $ ?name` was written into the `:where`
   clauses before planning, so the plan cache was keyed by the value and every
@@ -1088,6 +1093,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1160]: https://github.com/replikativ/datahike/pull/1160
 [#1161]: https://github.com/replikativ/datahike/pull/1161
 [#1167]: https://github.com/replikativ/datahike/pull/1167
+[#1168]: https://github.com/replikativ/datahike/issues/1168
 [#1107]: https://github.com/replikativ/datahike/issues/1107
 [#938]: https://github.com/replikativ/datahike/issues/938
 [#1156]: https://github.com/replikativ/datahike/pull/1156

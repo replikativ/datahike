@@ -3623,6 +3623,12 @@
                (direct-group-output-unique? g find-vars temporal))
       requested)))
 
+(defn- wildcard?
+  "The `_` placeholder. In a value slot it matches any value, binds nothing and
+   compares with nothing: it is not a ground value."
+  [x]
+  (= '_ x))
+
 (defn- try-point-group
   "Point-shape fast path: a single entity group whose (rebound) scan is an
    AVET ground-value seek and whose merges are all card-one same-entity EAVT
@@ -3685,6 +3691,10 @@
                                                        (datom e ma nil txmax) :eavt))
                                   var? (and (symbol? mv) (analyze/free-var? mv))]
                               (cond
+                                ;; `_`: existence only, nothing to bind or compare
+                                (wildcard? mv)
+                                (when md (recur (inc i) binds))
+
                                 ;; ground value: existence + equality check
                                 (not var?)
                                 (when (and md (val-eq? (.-v ^Datom md) mv))
@@ -4203,6 +4213,7 @@
             free? #(and (symbol? %) (analyze/free-var? %))
             sv-src (cond
                      (free? sv) (when (contains? ck sv) [:const sv])
+                     (wildcard? sv) nil
                      (some? sv) [:lit sv]
                      :else nil)]
         (when (and (keyword? sa) (free? se) (nil? stx) sv-src
@@ -4224,6 +4235,7 @@
                                   (and (free? mv) (contains? ck mv))
                                   {:attr ma :mode :cval :var mv}
                                   (free? mv) {:attr ma :mode :bind :var mv}
+                                  (wildcard? mv) {:attr ma :mode :present}
                                   (some? mv) {:attr ma :mode :lit :val mv}
                                   :else nil))]
                      (if spec (conj acc spec) (reduced nil))))
@@ -4275,6 +4287,7 @@
                             md (first (di/-slice eavt (datom e attr nil tx0)
                                                  (datom e attr nil txmax) :eavt))]
                         (case mode
+                          :present (when md (recur (inc i) binds))
                           :lit (when (and md (val-eq? (.-v ^Datom md) val))
                                  (recur (inc i) binds))
                           :cval (let [cv (get consts var)]
