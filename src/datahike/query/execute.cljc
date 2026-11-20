@@ -572,10 +572,10 @@
     :aevt [(datom e0 resolved-a nil tx0)
            (datom emax resolved-a nil txmax)]
     :avet (let [v (get clause 2)
-                from-v (or (:from-v pushdown-bounds)
-                           (when (and (some? v) (not (symbol? v))) v))
-                to-v (or (:to-v pushdown-bounds)
-                         (when (and (some? v) (not (symbol? v))) v))]
+                ;; `some?`, not truthiness: `false` is a bound
+                clause-v (when (and (some? v) (not (symbol? v))) v)
+                from-v (if (some? (:from-v pushdown-bounds)) (:from-v pushdown-bounds) clause-v)
+                to-v (if (some? (:to-v pushdown-bounds)) (:to-v pushdown-bounds) clause-v)]
             [(datom e0 resolved-a from-v tx0)
              (datom emax resolved-a to-v txmax)])))
 

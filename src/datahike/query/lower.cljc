@@ -206,13 +206,17 @@
    (plan-or-op db clause-info bound-vars rules false))
   ([db clause-info bound-vars rules join-vars?]
    (let [join-vars (when join-vars?
-                     (let [raw (:join-vars clause-info)]
-                       (when (some sequential? raw)
-                         (throw (ex-info (str "Insufficient bindings: "
-                                              (into #{} (mapcat analyze/extract-vars) raw)
+                     (let [raw (:join-vars clause-info)
+                           ;; `(or-join [[?e] ?v] …)`: ?e must be bound on entry
+                           required (into #{} (comp (filter sequential?)
+                                                    (mapcat analyze/extract-vars))
+                                          raw)
+                           missing (into #{} (remove #(contains? bound-vars %)) required)]
+                       (when (seq missing)
+                         (throw (ex-info (str "Insufficient bindings: " missing
                                               " not bound in " (:clause clause-info))
                                          {:error :query/where :form (:clause clause-info)})))
-                       (set raw)))
+                       (into #{} (filter analyze/free-var?) (tree-seq coll? seq raw))))
          sub-plans (normalize-and-plan-branches db (:branches clause-info) bound-vars rules)
          total-est (reduce + 0 (keep (fn [p] (some :estimated-card (:ops p))) sub-plans))]
      (cond-> {:op (if join-vars? :or-join :or)
@@ -1093,8 +1097,15 @@
         ;; ordered before the pattern that binds it and never held, so the
         ;; negation excluded nothing. Another negation's variables are local to
         ;; that one and bind nothing here.
+        ;; An explicit join exports only what it declares; the
+        ;; rest of its body is local to it as well.
         vars-outside-not (fn [clause]
-                           (into bound-vars (mapcat :vars)
+                           (into bound-vars
+                                 (mapcat (fn [ci]
+                                           (if (= :or-join (:type ci))
+                                             (filter analyze/free-var?
+                                                     (tree-seq coll? seq (:join-vars ci)))
+                                             (:vars ci))))
                                  (remove #(or (= clause (:clause %))
                                               (#{:not :not-join} (:type %)))
                                          classified)))
@@ -1349,10 +1360,14 @@
                               (update acc :ops conj (assoc op :source source-sym)))
                        :not-join (let [op (plan-not-op db inner-ci all-clause-vars rules true)]
                                    (update acc :ops conj (assoc op :source source-sym)))
+                       ;; like the unprefixed forms: what is bound SO FAR.
+                       ;; With every variable of every clause counted as
+                       ;; bound, a predicate in a branch ran before the
+                       ;; pattern binding its operand and emptied the branch.
                        :or (update acc :ops conj
-                                   (assoc (plan-or-op db inner-ci all-clause-vars rules) :source source-sym))
+                                   (assoc (plan-or-op db inner-ci bvc rules) :source source-sym))
                        :or-join (update acc :ops conj
-                                        (assoc (plan-or-op db inner-ci all-clause-vars rules true) :source source-sym))
+                                        (assoc (plan-or-op db inner-ci bvc rules true) :source source-sym))
                        (update acc :ops conj (plan/plan-passthrough-op ci))))
                  ;; Regular passthrough
                    (update acc :ops conj (plan/plan-passthrough-op ci))))

@@ -316,6 +316,17 @@
 
 (declare added-vars-to-separate pattern-needs-rewrite?)
 
+(def ^:private ^:dynamic *input-vars*
+  "The variables the query's `:in` binds, while its `:where` is normalized."
+  #{})
+
+(defn- declared-input-vars
+  "The inputs an explicit join lets into its body: those its variable vector
+   declares. Any other variable of the body is local to it, whatever `:in`
+   calls by the same name."
+  [join-vars]
+  (into #{} (filter *input-vars*) (tree-seq coll? seq join-vars)))
+
 (defn- where-needs-normalization?
   "Cheap pre-scan for repeated pattern vars, constant outputs and blank rule calls."
   [clauses]
@@ -334,7 +345,8 @@
              ;; `(not-join [vars] body…)` / `(or-join [vars] branches…)` — the
              ;; second element is the declared var vector, not a clause.
               (and (seq? clause) (#{'not-join 'or-join} (first clause)))
-              (where-needs-normalization? (drop 2 clause))
+              (binding [*input-vars* (declared-input-vars (second clause))]
+                (where-needs-normalization? (drop 2 clause)))
               :else false))
           clauses))))
 
@@ -379,10 +391,6 @@
 (def ^:private ^:dynamic *slot-rewrites?*
   "False while asking what the OTHER rewrites alone would do to a clause."
   true)
-
-(def ^:private ^:dynamic *input-vars*
-  "The variables the query's `:in` binds, while its `:where` is normalized."
-  #{})
 
 (defn- literal-tx-pattern?
   "Is the transaction slot fixed from outside the pattern: a literal, or a
@@ -572,7 +580,8 @@
     ;; it.
     (and (seq? clause) (= 'not-join (first clause)))
     [(concat (take 2 clause)
-             (normalize-where-clauses (drop 2 clause) fresh!))]
+             (binding [*input-vars* (declared-input-vars (second clause))]
+               (doall (normalize-where-clauses (drop 2 clause) fresh!))))]
 
     ;; `(or-join [vars] branches…)`: every element after the vector is a separate
     ;; BRANCH, so a rewritten branch must stay ONE form — appending the equality
@@ -580,7 +589,8 @@
     ;; matches strictly more than the user asked for.
     (and (seq? clause) (= 'or-join (first clause)))
     [(concat (take 2 clause)
-             (map #(normalize-branch % fresh!) (drop 2 clause)))]
+             (binding [*input-vars* (declared-input-vars (second clause))]
+               (mapv #(normalize-branch % fresh!) (drop 2 clause))))]
 
     ;; A plain `or` becomes an `or-join` over the free vars it already had, so
     ;; the fresh variable stays inside its branch instead of joining the set

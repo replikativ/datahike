@@ -199,7 +199,7 @@
                            ;; that lack the attribute instead of
                            ;; defaulting them.
                            (let [a (nth (:args ci) 2 nil)]
-                             (and (some? a) (not (symbol? a))))
+                             (or (keyword? a) (number? a)))
                            ;; A VARIABLE default (e.g. `[(get-else $ ?e :a ?d) ?v]`)
                            ;; is not a compile-time constant: it must be resolved
                            ;; per-row from ?d's binding. The fused LOptionalScan

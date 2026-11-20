@@ -49,7 +49,7 @@
 ;; Pushdown bound computation
 
 (defn- update-bound [bounds bound-key aggr-fn const-val]
-  (update bounds bound-key (fn [cur] (if cur (aggr-fn cur const-val) const-val))))
+  (update bounds bound-key (fn [cur] (if (some? cur) (aggr-fn cur const-val) const-val))))
 
 (defn pushdown-to-bounds
   "Convert pushdown predicates into tighter datom bounds for index slice.
@@ -72,12 +72,17 @@
          <  (-> (update-bound bounds :to-v min const-val)
                 (update :strict-preds (fnil conj []) pred))
          <= (update-bound bounds :to-v min const-val)
-         =  (-> bounds
-                (assoc :from-v const-val)
-                (assoc :to-v const-val))
-         == (-> bounds
-                (assoc :from-v const-val)
-                (assoc :to-v const-val))
+         (= ==)
+         (if (or (some? (:from-v bounds)) (some? (:to-v bounds)))
+           ;; A second constraint on the same value. The slice keeps the
+           ;; bounds it has and this one is checked per datom: overwriting
+           ;; them made `[(= ?v 3)] [(= ?v 4)]` answer with the 4s.
+           (update bounds :strict-preds (fnil conj []) pred)
+           (-> bounds
+               (assoc :from-v const-val)
+               (assoc :to-v const-val)
+               ;; a later range bound may widen the slice again
+               (update :strict-preds (fnil conj []) pred)))
          not= (update bounds :strict-preds (fnil conj []) pred)
          (throw (ex-info "Unhandled op in pushdown-to-bounds — every op in analyze/range-ops must have a case arm here"
                          {:op op :pred pred})))))
