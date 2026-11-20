@@ -10,9 +10,10 @@ When something is added, it's typically marked *Experimental*. When the API cont
   A scalar input such as `?name` in `:in $ ?name` was written into the `:where`
   clauses before planning, so the plan cache was keyed by the value and every
   new value planned again. It now stays a variable bound per call. Measured on
-  300,000 entities with a different value on every call: a lookup by three
-  scalars 0.48 ms → 0.10 ms, a range predicate against an input 0.24 ms →
-  0.13 ms; a repeated value is unchanged (0.07 ms). Inputs that shape the plan
+  300,000 entities with a different value on every call, three runs: a lookup
+  by three scalars 0.44–0.65 ms → 0.18–0.19 ms, the same lookup beside a
+  collection input 0.72–0.98 ms → 0.26–0.43 ms. A range predicate against an
+  input and a repeated value are unchanged. Inputs that shape the plan
   are still written in: a function, and a variable in attribute position.
   `datahike.query/*fold-scalar-ins*` bound to `true` restores the old path for
   comparison. Supersedes [#1161]; addresses [#1107].
