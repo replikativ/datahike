@@ -2445,6 +2445,42 @@
       ;; every branch was a column-less FALSE: the disjunction holds for no row
       :else (prod-rel-empty))))
 
+(defn- outer-values-rel
+  "The values the enclosing context binds `v` to, as a one-column relation; nil when it
+   binds none."
+  [context v]
+  (if (contains? (:consts context) v)
+    (rel/->Relation {v 0} [[(get (:consts context) v)]])
+    (when-some [r (some #(when (contains? (:attrs %) v) %) (:rels context))]
+      (let [g (getter-fn (:attrs r) v)]
+        (rel/->Relation {v 0} (into [] (comp (map g) (distinct) (map vector)) (:tuples r)))))))
+
+(defn- align-branch-rels
+  "Give every branch relation of an `or-join` the same columns before they are unioned.
+
+   A branch need not mention every declared var: `(or-join [?e ?x] [?e :name ?x]
+   [?e :group \"g1\"])` constrains `?x` in its first branch only. The second branch then
+   holds for EVERY value the surrounding query binds `?x` to, so its relation is extended
+   with those values. Without this the two branches had different columns and the union
+   raised \"Can't sum relations with different attrs\" — while the planner and Datomic
+   answer the query. A var no branch-external binding exists for is left alone and the
+   union still raises: nothing says what it ranges over."
+  [context rels]
+  (let [with-columns (remove #(empty? (:attrs %)) rels)
+        all-vars (into #{} (mapcat #(keys (:attrs %))) with-columns)]
+    (if (every? #(= all-vars (set (keys (:attrs %)))) with-columns)
+      rels
+      (map (fn [r]
+             (if (empty? (:attrs r))
+               r
+               (reduce (fn [r v]
+                         (if-some [outer (outer-values-rel context v)]
+                           (hash-join r outer)
+                           r))
+                       r
+                       (remove (set (keys (:attrs r))) all-vars))))
+           rels))))
+
 (defn- join-rels
   "Join a set of relations into one. The unit relation (no columns, one empty
    tuple) is the identity, so an EMPTY set joins to it — which is what every
@@ -3197,7 +3233,8 @@
                               (resolve-clause %)
                               (limit-context vars))
                          branches)
-           branch-rel (union-branch-rels (map #(join-rels (:rels %)) contexts))]
+           branch-rel (union-branch-rels
+                       (align-branch-rels context (map #(join-rels (:rels %)) contexts)))]
        (cond-> (if branch-rel (update context :rels collapse-rels branch-rel) context)
          (:stats context) (assoc :tmp-stats {:type :or-join
                                              :branches (mapv #(-> % :stats first) contexts)})))

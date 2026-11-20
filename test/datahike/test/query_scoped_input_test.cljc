@@ -73,6 +73,14 @@
                                (or-join [?e] [?e :item/name ?g] [?e :item/kind ?g])] [] 20]
                [:collection-input '[:find ?e :in $ [?x ...] :where [?e :item/kind "k1"]
                                     (or-join [?e] [?e :item/name ?x] [?e :item/group ?x])] [["g1" "g2"]] 20]
+               ;; a declared var that only ONE branch uses: the other branch holds for every
+               ;; value the query binds it to (the relational engine used to refuse this)
+               [:one-branch-scalar '[:find ?e :in $ ?x :where [?e :item/kind "k1"]
+                                     (or-join [?e ?x] [?e :item/name ?x] [?e :item/group "g1"])] ["n1"] 6]
+               [:one-branch-collection '[:find ?e ?x :in $ [?x ...] :where [?e :item/kind "k1"]
+                                         (or-join [?e ?x] [?e :item/name ?x] [?e :item/group "g1"])] [["n1" "n4"]] 13]
+               [:one-branch-pattern-var '[:find ?e ?g :where [?e :item/kind "k1"] [?e :item/group ?g]
+                                          (or-join [?e ?g] [?e :item/name ?g] [?e :item/name "n1"])] [] 2]
                ;; a function is called, not unified: it stays visible in every body
                [:function-input '[:find ?e :in $ ?f :where [?e :item/group "g1"]
                                   (not-join [?e] [?e :item/kind ?k] [(?f ?k)])] [(fn [k] (= k "k1"))] 10]]
