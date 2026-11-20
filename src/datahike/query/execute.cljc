@@ -3327,20 +3327,23 @@
       (assoc op :index :avet)
       op)))
 
-(defn- bind-pattern-op [consts op scan?]
+(defn- bind-pattern-op
+  "`patterns?` false leaves the pattern clause alone and binds only the pushdown
+   bounds — see `bind-plan-consts`."
+  [consts op scan? patterns?]
   (let [bind-pushdown
         (fn [pred]
           (cond-> (update pred :const-val #(subst-slot consts %))
             (:pred-clause pred)
             (update :pred-clause #(subst-clause consts %))))
         op (cond-> op
-             (:clause op)
+             (and patterns? (:clause op))
              (assoc :clause (subst-clause consts (:clause op)))
 
              (seq (:pushdown-preds op))
              (update :pushdown-preds
                      #(mapv bind-pushdown %)))]
-    (if scan? (upgrade-scan-index op) op)))
+    (if (and scan? patterns?) (upgrade-scan-index op) op)))
 
 (defn bind-plan-consts
   "Rebind a cached value-free plan with per-call constants: substitute `consts`
@@ -3349,60 +3352,78 @@
    Returns the rebound plan, or nil when the plan contains ops the rebinding
    cannot reach soundly (not-join sub-plans, a function whose output var is
    itself a const, a const landing in an e/tx slot as a non-number) — callers
-   fall back to the relation path."
-  [plan consts]
-  (let [sound? (volatile! true)
-        pattern-ok? (fn [clause]
+   fall back to the relation path.
+
+   `{:patterns? false}` is for a caller that KEEPS the input relations in its
+   context (the relation fallback): there the pattern clauses stay in variable
+   form and only what cannot read a relation is bound — pushdown bounds, which
+   reach an index comparator, and predicate/function arguments.
+
+   A variable in a pattern is not a loss there, it is the information the
+   executor runs on. `execute-fused-scan-rel` finds a bound value through the
+   VARIABLE in the clause (`pattern-probe-set`) and from it both seeks the index
+   and prices the pattern when it re-chooses the group's driver
+   (`parameterize-entity-group`). Substituting the value turned the pattern into
+   a literal the scorer cannot see, so it fell back to the cached plan's
+   value-free estimate — the whole attribute — and any pattern that still had a
+   variable looked cheaper. Measured on 300k entities, `:in $ ?name ?group
+   [?kind ...]`: the name scan (15 rows) was substituted, priced at 300,000 and
+   displaced by the two-kind probe (100,000 rows): 63 ms a query in prepared
+   mode against 0.2 ms with the variables kept."
+  ([plan consts] (bind-plan-consts plan consts nil))
+  ([plan consts {:keys [patterns?] :or {patterns? true}}]
+   (let [sound? (volatile! true)
+         pattern-ok? (fn [clause]
                       ;; e and tx slots must stay symbols or numbers — idents /
                       ;; lookup-refs are resolved on the relation path only.
-                      (let [e (get clause 0) tx (get clause 3)]
-                        (and (or (symbol? e) (nil? e) (number? e))
-                             (or (symbol? tx) (nil? tx) (number? tx)))))
-        bind-op
-        (fn bind-op [op]
-          (case (:op op)
-            :entity-group
-            (let [scan-op' (bind-pattern-op consts (:scan-op op) true)
-                  merge-ops' (mapv #(bind-pattern-op consts % false) (:merge-ops op))
-                  preds' (mapv #(assoc % :clause (subst-clause consts (:clause %))
-                                       :args (map (fn [a] (subst-slot consts a)) (:args %)))
-                               (:attached-preds op))
-                  pipeline (:pipeline op)
-                  steps' (when pipeline
-                           (mapv (fn [step]
-                                   (cond-> (bind-pattern-op consts step false)
-                                     (:index step)
-                                     (assoc :index (:index scan-op'))))
-                                 (:steps pipeline)))]
-              (when-not (and (pattern-ok? (:clause scan-op'))
-                             (every? #(pattern-ok? (:clause %)) merge-ops'))
-                (vreset! sound? false))
-              (cond-> (assoc op :scan-op scan-op' :merge-ops merge-ops' :attached-preds preds')
-                pipeline (assoc :pipeline (assoc pipeline :steps steps'))))
+                       (let [e (get clause 0) tx (get clause 3)]
+                         (and (or (symbol? e) (nil? e) (number? e))
+                              (or (symbol? tx) (nil? tx) (number? tx)))))
+         bind-op
+         (fn bind-op [op]
+           (case (:op op)
+             :entity-group
+             (let [scan-op' (bind-pattern-op consts (:scan-op op) true patterns?)
+                   merge-ops' (mapv #(bind-pattern-op consts % false patterns?) (:merge-ops op))
+                   preds' (mapv #(assoc % :clause (subst-clause consts (:clause %))
+                                        :args (map (fn [a] (subst-slot consts a)) (:args %)))
+                                (:attached-preds op))
+                   pipeline (:pipeline op)
+                   steps' (when pipeline
+                            (mapv (fn [step]
+                                    (cond-> (bind-pattern-op consts step false patterns?)
+                                      (:index step)
+                                      (assoc :index (:index scan-op'))))
+                                  (:steps pipeline)))]
+               (when-not (and (pattern-ok? (:clause scan-op'))
+                              (every? #(pattern-ok? (:clause %)) merge-ops'))
+                 (vreset! sound? false))
+               (cond-> (assoc op :scan-op scan-op' :merge-ops merge-ops' :attached-preds preds')
+                 pipeline (assoc :pipeline (assoc pipeline :steps steps'))))
 
-            :pattern-scan
-            (let [op' (bind-pattern-op consts op true)]
-              (when-not (pattern-ok? (:clause op')) (vreset! sound? false))
-              op')
+             :pattern-scan
+             (let [op' (bind-pattern-op consts op true patterns?)]
+               (when-not (pattern-ok? (:clause op')) (vreset! sound? false))
+               op')
 
-            :predicate
-            (assoc op :clause (subst-clause consts (:clause op))
-                   :args (map #(subst-slot consts %) (:args op)))
+             :predicate
+             (assoc op :clause (subst-clause consts (:clause op))
+                    :args (map #(subst-slot consts %) (:args op)))
 
-            :function
-            (let [binding-vars (filter analyze/free-var? (analyze/extract-vars (:binding op)))]
-              (when (some #(contains? consts %) binding-vars)
-                (vreset! sound? false))
-              (assoc op :clause (subst-clause consts (:clause op))
-                     :args (map #(subst-slot consts %) (:args op))))
+             :function
+             (let [binding-vars (filter analyze/free-var? (analyze/extract-vars (:binding op)))]
+               (when (some #(contains? consts %) binding-vars)
+                 (vreset! sound? false))
+               (assoc op :clause (subst-clause consts (:clause op))
+                      :args (map #(subst-slot consts %) (:args op))))
 
-            :not-join
-            (do (vreset! sound? false) op)
+             :not-join
+             (do (vreset! sound? false) op)
 
-            op))
-        ops' (mapv bind-op (:ops plan))]
-    (when @sound?
-      (assoc plan :ops ops'))))
+             op))
+         ops' (mapv bind-op (:ops plan))]
+     (when @sound?
+       (assoc plan :ops ops')))))
 
 (defn single-tuple-rel-consts
   "When every rel binds exactly one tuple (scalar/tuple :in bindings kept as

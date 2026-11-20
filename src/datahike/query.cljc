@@ -5518,7 +5518,12 @@
                (or (#?(:clj (requiring-resolve
                              'datahike.query.execute/bind-plan-consts)
                        :cljs execute/bind-plan-consts)
-                    plan rel-consts)
+                    ;; The relations stay in the context below, so the patterns
+                    ;; keep their variables: the fused scan seeks and prices a
+                    ;; bound pattern through its variable (see bind-plan-consts).
+                    ;; ClojureScript has no probe-driven scan, so there a
+                    ;; substituted literal is still the only way to a point seek.
+                    plan rel-consts #?(:clj {:patterns? false} :cljs nil))
                    plan)
                plan)
         exec-direct-rel #?(:clj (requiring-resolve 'datahike.query.execute/execute-plan-direct-rel)
