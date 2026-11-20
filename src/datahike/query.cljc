@@ -1752,17 +1752,20 @@
               (map #(in->rel %1 %2) (:bindings binding) coll)))))
 
 (def ^:dynamic *fold-scalar-ins*
-  "When true (default), a scalar :in binding becomes a constant folded
-   into the where clauses before planning: plans specialize on the value
-   (best for one-off queries and value-dependent estimates), but the
-   plan cache then misses for every distinct value. Bind false for
-   parameterized workloads that repeat one query SHAPE with varying
-   scalars (SQL prepared statements): the scalar binds as a 1-row
-   relation instead, the clauses stay in var form, and the plan cache
-   hits across values (measured ~4x faster novel-value dispatch on an
-   indexed point lookup). Function-valued bindings always fold — they
-   are invoked in clause position and cannot live in a relation."
-  true)
+  "When FALSE (the default), a scalar :in binding stays a binding: it becomes a one-row
+   relation, the where clauses keep the variable, and one cached plan serves every
+   value. The executor seeks and prices the pattern through that variable, from the
+   value actually bound.
+
+   When true, the value is written into the where clauses before planning, as it was
+   by default until 0.9. The plan cache key then contains the value, so every distinct
+   value plans again (0.6-1.0 ms measured, against 0.1-0.2 ms), and a pattern carrying
+   a literal is invisible to the execute-time choice of an entity group's driver.
+   Kept as an escape hatch while the default settles; bind it only to compare.
+
+   Function-valued bindings always fold: they are called in clause position and cannot
+   live in a relation."
+  false)
 
 (defn resolve-in [context [binding value]]
   (cond
@@ -4175,6 +4178,48 @@
                  "Declare it: (" h " " (conj (vec vars) v) " …)."
                  {:error :query/where :form clause :vars #{v}}))))
 
+;; ---------------------------------------------------------------------------
+;; A scalar :in lookup ref in ENTITY position resolves or raises
+;;
+;; With the value folded into the clauses, a lookup ref that names no entity raises
+;; ("Nothing found for entity id …"), as it does in Datomic. Bound as a relation it
+;; was resolved leniently — `resolved-lookup-ref-eid` leaves what it cannot resolve
+;; alone, because a two-element vector in a relation need not be a lookup ref at all —
+;; and the query quietly returned nothing. For a scalar used as an ENTITY there is no
+;; such doubt, so the two ways of binding it must agree.
+
+(defn- entity-position-sources
+  "The source symbols (`$` for the default) in whose data patterns `sym` is the entity."
+  [where sym]
+  (let [found (volatile! #{})
+        src? (fn [x] (and (symbol? x) (= \$ (first (name x)))))]
+    (letfn [(walk [form src]
+              (cond
+                (and (vector? form) (seq form) (not (sequential? (first form))))
+                (let [[src form] (if (src? (first form)) [(first form) (subvec form 1)] [src form])]
+                  (when (= sym (first form)) (vswap! found conj src)))
+
+                (and (seq? form) (seq form))
+                (cond
+                  (= 'quote (first form)) nil
+                  (src? (first form)) (doseq [c (rest form)] (walk c (first form)))
+                  :else (doseq [c (rest form)] (walk c src)))
+
+                (sequential? form) (doseq [c form] (walk c src))))]
+      (doseq [c where] (walk c '$)))
+    @found))
+
+(defn- resolve-entity-inputs-strictly!
+  "Raise, exactly as the folded path does, for a scalar :in lookup ref used as an entity
+   that the source it is used against cannot resolve."
+  [where sources scalar-pairs]
+  (doseq [[sym v] scalar-pairs
+          :when (lookup-ref-value? v)
+          src (form-memo [::entity-sources where sym] #(entity-position-sources where sym))
+          :let [db (get sources src)]
+          :when (dbu/db? db)]
+    (dbu/entid-strict db v)))
+
 (defn- validate-clause-bindings
   "Raise if a predicate references a var nothing can bind, or a negation
    references no bindable var at all — the contract the base engine's
@@ -5750,7 +5795,12 @@
               (validate-scoped-inputs (:where query) inputs
                                       (into #{} (comp (filter scalar?) (filter (fn [[_ v]] (fn? v)))
                                                       (map (fn [[b _]] (get-in b [:variable :symbol]))))
-                                            pairs))))
+                                            pairs))
+              ;; the fold resolves these itself, and raises
+              (when-not *fold-scalar-ins*
+                (resolve-entity-inputs-strictly!
+                 (:where query) (:sources context-in)
+                 (into [] (comp (filter scalar?) (map (fn [[b v]] [(get-in b [:variable :symbol]) v]))) pairs)))))
         _ (when use-planner?
             (let [bv (context-bound-vars context-in)]
               (form-memo [::validated (:where query) bv]

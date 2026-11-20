@@ -753,13 +753,23 @@
                       db (wrap-db (dataset-db (:dataset spec)) (:temporal spec))
                       base (run-engine true query db args opts)
                       planner (run-engine false query db args opts)
-                      _ (doseq [mode [:relation :prepared]
-                                :let [r (run-engine false query db args opts mode)]
-                                :when (not= r planner)]
-                          (swap! mode-divergences conj
-                                 {:mode mode :query query :args args :opts opts
-                                  :temporal (:temporal spec) :dataset (:dataset spec)
-                                  :fold planner :got r :base base}))
+                      ;; INPUT MODE: how a scalar :in value reaches the planner cannot
+                      ;; change an answer. Not asserted on the rebind axis, where the
+                      ;; modes differ for the catalogued reason: with the value folded
+                      ;; in, `[(f ?n) ?n]` has a CONSTANT as its binding target and
+                      ;; raises, while a value kept as a binding unifies — the law.
+                      _ (when-not (:rebind? spec)
+                          (doseq [mode [:fold :relation :prepared]
+                                  :let [r (run-engine false query db args opts mode)]]
+                            (when (not= r planner)
+                              (swap! mode-divergences conj {:mode mode :query query :args args}))
+                            (is (= planner r)
+                                (str "the answer depends on the scalar input mode " mode
+                                     " — " (pr-str query) " args " (pr-str args)
+                                     " opts " (pr-str opts) " temporal " (:temporal spec)
+                                     " dataset " (:dataset spec)
+                                     "\n  default: " (pr-str planner)
+                                     "\n  " mode ": " (pr-str r)))))
                       oracle (when (not= "off" oracle-mode)
                                (run-oracle query db args))
                       ;; The rebind axis violates ONE law (an output binding
