@@ -335,11 +335,19 @@
        (some? (dbi/context-time-pred context))
        (not (dbi/context-historical? context))))
 
+(defn- filter-assembled-by-added
+  "Post-processing may already have turned datoms into `[e a v tx added]` rows."
+  [pattern rows]
+  (let [want (boolean (nth pattern 4))]
+    (filterv (fn [row]
+               (= want (boolean (if (vector? row) (nth row 4) (datom-added row)))))
+             rows)))
+
 (defn contextual-search [db pattern context]
   (if (added-after-assembly? pattern context)
     (->> (post-process-datoms ((contextual-search-fn context) db (assoc (vec pattern) 4 nil))
                               db context)
-         (dbs/filter-by-added pattern))
+         (filter-assembled-by-added pattern))
     (-> ((contextual-search-fn context) db pattern)
         (post-process-datoms db context))))
 
@@ -347,7 +355,7 @@
   (if (added-after-assembly? pattern-mask context)
     (->> (post-process-datoms ((contextual-search-fn context) db (assoc (vec pattern-mask) 4 nil) batch-fn)
                               db context)
-         (dbs/filter-by-added pattern-mask))
+         (filter-assembled-by-added pattern-mask))
     (-> ((contextual-search-fn context) db pattern-mask batch-fn)
         (post-process-datoms db context))))
 
