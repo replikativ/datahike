@@ -380,11 +380,19 @@
   "False while asking what the OTHER rewrites alone would do to a clause."
   true)
 
+(def ^:private ^:dynamic *input-vars*
+  "The variables the query's `:in` binds, while its `:where` is normalized."
+  #{})
+
 (defn- literal-tx-pattern?
+  "Is the transaction slot fixed from outside the pattern: a literal, or a
+   variable bound by `:in`? A merged pattern compares its transaction with
+   variables its GROUP binds; an input is not one of them."
   [pattern]
   (and *slot-rewrites?*
        (> (count pattern) 3)
-       (number? (nth pattern 3))
+       (let [tx (nth pattern 3)]
+         (or (number? tx) (contains? *input-vars* tx)))
        ;; `[r ?a ?b ?c 5]` is a rule call spelled as a vector
        (nil? (rule-call-args pattern))))
 
@@ -706,11 +714,13 @@
    and result caches are not perturbed for queries this does not affect."
   [query]
   (let [where (:where query)]
-    (if (and (seq where) (where-needs-normalization? where))
-      (let [taken  (into #{} (filter symbol?) (tree-seq coll? seq query))
-            fresh! (fresh-var-fn taken)]
-        (assoc query :where (normalize-where-clauses where fresh!)))
-      query)))
+    (binding [*input-vars* (into #{} (filter analyze/free-var?)
+                                 (tree-seq coll? seq (:in query)))]
+      (if (and (seq where) (where-needs-normalization? where))
+        (let [taken  (into #{} (filter symbol?) (tree-seq coll? seq query))
+              fresh! (fresh-var-fn taken)]
+          (assoc query :where (normalize-where-clauses where fresh!)))
+        query))))
 
 (defn- normalize-rules-in-args
   "Apply `normalize-rule-bodies` to whichever argument is bound to `%`."
