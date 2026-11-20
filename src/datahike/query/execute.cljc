@@ -3282,13 +3282,16 @@
     target-vars))
 
 (def ^:dynamic *prepared-execution*
-  "Master switch for the prepared-execution machinery (value-free plan
-   reuse for parameterized queries: single-tuple-rel absorption, per-call
-   plan rebinding, compiled point programs, and the point fast path inside
-   the fused executor). Default FALSE — every path behaves exactly as it
-   did before this machinery existed. Parameterized-workload servers (the
-   pgwire surrogate) bind it true together with *fold-scalar-ins* false."
-  false)
+  "The execution side of value-free scalar inputs (datahike.query/*fold-scalar-ins*
+   false): a scalar/tuple :in binding kept as a one-row relation is absorbed as a
+   per-call constant — per-call plan rebinding, compiled point programs, the point fast
+   path inside the fused executor. Default TRUE, together with value-free inputs.
+
+   The two belong together. A value-free plan executed WITHOUT this rebinding leaves a
+   pushed-down predicate holding the input's symbol where its value belongs, and
+   `[?e :age ?v] [(= ?v ?in)]` answers nothing. Bind false only alongside
+   *fold-scalar-ins* true, to compare with the folded path."
+  true)
 
 ;; ---------------------------------------------------------------------------
 ;; Prepared-plan rebinding: plans are cached value-free (scalar :in vars stay
@@ -3373,21 +3376,34 @@
   ([plan consts] (bind-plan-consts plan consts nil))
   ([plan consts {:keys [patterns?] :or {patterns? true}}]
    (let [sound? (volatile! true)
+         ;; With the patterns left alone the caller's context still holds every
+         ;; input relation, so nothing here can be out of reach: an op this
+         ;; function cannot rewrite (a not-join sub-plan, a function writing
+         ;; into an input var) simply reads the relation, as it always did. The
+         ;; rebinding is then TOTAL — it must be, because the pushdown bounds it
+         ;; fills in have no other source: a plan handed back unbound keeps the
+         ;; input's SYMBOL as an index bound and answers nothing
+         ;; (`[?e :age ?v] [(< ?v ?in)] (not-join [?e] …)` returned #{}).
+         total? (not patterns?)
+         unsound! (fn [] (when-not total? (vreset! sound? false)))
          pattern-ok? (fn [clause]
                       ;; e and tx slots must stay symbols or numbers — idents /
                       ;; lookup-refs are resolved on the relation path only.
                        (let [e (get clause 0) tx (get clause 3)]
                          (and (or (symbol? e) (nil? e) (number? e))
                               (or (symbol? tx) (nil? tx) (number? tx)))))
+         bind-attached
+         (fn [preds]
+           (mapv #(assoc % :clause (subst-clause consts (:clause %))
+                         :args (map (fn [a] (subst-slot consts a)) (:args %)))
+                 preds))
          bind-op
          (fn bind-op [op]
            (case (:op op)
              :entity-group
              (let [scan-op' (bind-pattern-op consts (:scan-op op) true patterns?)
                    merge-ops' (mapv #(bind-pattern-op consts % false patterns?) (:merge-ops op))
-                   preds' (mapv #(assoc % :clause (subst-clause consts (:clause %))
-                                        :args (map (fn [a] (subst-slot consts a)) (:args %)))
-                                (:attached-preds op))
+                   preds' (bind-attached (:attached-preds op))
                    pipeline (:pipeline op)
                    steps' (when pipeline
                             (mapv (fn [step]
@@ -3397,14 +3413,17 @@
                                   (:steps pipeline)))]
                (when-not (and (pattern-ok? (:clause scan-op'))
                               (every? #(pattern-ok? (:clause %)) merge-ops'))
-                 (vreset! sound? false))
+                 (unsound!))
                (cond-> (assoc op :scan-op scan-op' :merge-ops merge-ops' :attached-preds preds')
                  pipeline (assoc :pipeline (assoc pipeline :steps steps'))))
 
              :pattern-scan
              (let [op' (bind-pattern-op consts op true patterns?)]
-               (when-not (pattern-ok? (:clause op')) (vreset! sound? false))
-               op')
+               (when-not (pattern-ok? (:clause op')) (unsound!))
+               ;; a standalone scan carries attached predicates too
+               (cond-> op'
+                 (seq (:attached-preds op))
+                 (assoc :attached-preds (bind-attached (:attached-preds op)))))
 
              :predicate
              (assoc op :clause (subst-clause consts (:clause op))
@@ -3412,13 +3431,22 @@
 
              :function
              (let [binding-vars (filter analyze/free-var? (analyze/extract-vars (:binding op)))]
-               (when (some #(contains? consts %) binding-vars)
-                 (vreset! sound? false))
-               (assoc op :clause (subst-clause consts (:clause op))
-                      :args (map #(subst-slot consts %) (:args op))))
+               (if (some #(contains? consts %) binding-vars)
+                 ;; the output unifies with an input: only the relation can do that
+                 (do (unsound!) op)
+                 (assoc op :clause (subst-clause consts (:clause op))
+                        :args (map #(subst-slot consts %) (:args op)))))
 
              :not-join
-             (do (vreset! sound? false) op)
+             (do (unsound!) op)
+
+             ;; A recursive rule decides at EXECUTION whether it can run demand-
+             ;; driven: it needs a ground call argument to seed the magic set
+             ;; (`compute-magic-info`). An input left as a variable there made
+             ;; `(reaches ?start ?b)` compute the whole closure and filter it
+             ;; afterwards — quadratic, and out of memory on a 4000-node graph.
+             :recursive-rule
+             (assoc op :call-args (mapv #(subst-slot consts %) (:call-args op)))
 
              op))
          ops' (mapv bind-op (:ops plan))]
@@ -4307,7 +4335,12 @@
         (if (and (not (identical? ::none prog))
                  (pss-instance? (:avet db))
                  (pss-instance? (:eavt db))
-                 #?(:clj (not (:attribute-refs? (dbi/-config db))) :cljs true))
+                 ;; The compiled point program is JVM-only: it was written for and
+                 ;; only ever run by the JVM wire server, and on ClojureScript it
+                 ;; answered #{} for a single-pattern query once prepared execution
+                 ;; became the default. ClojureScript rebinds the plan and runs the
+                 ;; generic direct executor below.
+                 #?(:clj (not (:attribute-refs? (dbi/-config db))) :cljs false))
           (do (check-cancel! cancel)
               ;; A compiled point program applies attached predicates and hash
               ;; dedup only after its scan.  Bound only the already-distinct,

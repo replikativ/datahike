@@ -134,7 +134,11 @@
 (deftest ordered-count-aggregate-is-differentially-correct
   (doseq [[label inputs selected?]
           [[:partial-filter [250 9] true]
-           [:empty-filter [250 -1] false]
+           ;; The bound is a per-call value, so the plan — and with it the choice
+           ;; of this path — no longer depends on whether the filter matches
+           ;; anything. (A folded -1 used to price the scan at zero rows and
+           ;; produce a different plan.) The answer is what is asserted.
+           [:empty-filter [250 -1] true]
            [:full-filter [250 19] true]
            [:empty-producer-range [2000 19] true]]]
     (testing (name label)
