@@ -3,6 +3,8 @@
    #?(:cljs [cljs.test    :as t :refer-macros [is deftest testing]]
       :clj  [clojure.test :as t :refer        [is deftest testing]])
    [datahike.api :as d]
+   #?(:clj [datahike.index.interface :as di])
+   #?(:clj [org.replikativ.persistent-sorted-set :as psset])
    [datahike.migrate.fs :as fs]))
 
 (defn test-store [cfg]
@@ -134,6 +136,97 @@
                "exactly one :name + one :age datom per entity (no stale buffered-replace duplicate)")
            (d/release conn))
          (d/delete-database cfg)))))
+
+#?(:clj
+   (deftest test-subtree-counts-survive-reconnect-and-write
+     ;; #1108: after a reconnect, the first write left the root of each index with
+     ;; an unknown subtree count, and `has-subtree-counts?` stayed false from then
+     ;; on. The planner then used heuristic estimates for the whole store.
+     (let [cfg {:store {:backend :file
+                        :path (fs/temp-store-path! "dh-subtree-counts")
+                        :id #uuid "d1ffb000-0000-0000-0000-000000001108"}
+                :schema-flexibility :read :keep-history? false :allow-unsafe-config true
+                :index :datahike.index/persistent-set
+                :index-config {:branching-factor 8}}
+           write! (fn [conn i]
+                    (d/transact conn (vec (for [j (range 250)]
+                                            {:k (+ (* i 250) j) :v (str "x" j)}))))
+           counts? (fn [conn]
+                     (let [db @conn]
+                       (every? #(di/-has-subtree-counts? (get db %)) [:eavt :aevt :avet])))]
+       (d/delete-database cfg)
+       (d/create-database cfg)
+       (let [conn (atom (d/connect cfg))]
+         (dotimes [i 10] (write! @conn i))
+         (is (counts? @conn) "counts known after the first connection")
+         (dotimes [round 3]
+           (d/release @conn)
+           (reset! conn (d/connect cfg))
+           (is (counts? @conn) "counts known after a read-only reconnect")
+           (write! @conn (+ 10 round))
+           (is (counts? @conn) (str "counts known after reconnect " (inc round) " and a write"))
+           (write! @conn (+ 20 round))
+           (is (counts? @conn) "counts known after a second write"))
+         (is (= (count (d/datoms @@conn :eavt)) (di/-count (:eavt @@conn)))
+             "the datom count agrees with the index count")
+         (let [pset (:eavt @@conn)
+               ds (vec (d/datoms @@conn :eavt))]
+           (is (= (count ds) (psset/count-slice pset nil nil))
+               "count-slice over the whole index agrees with the datoms")
+           (is (= 2901 (psset/count-slice pset (nth ds 100) (nth ds 3000)))
+               "count-slice over a range agrees with the datoms"))
+         (d/release @conn)
+         (d/delete-database cfg)))))
+
+#?(:clj
+   (deftest test-writer-connect-repairs-unknown-root-counts
+     ;; A store written before persistent-sorted-set 0.5.146 can hold index roots whose
+     ;; count is unknown, in the root node and in the index header alike (#1108). The
+     ;; library no longer produces that state, so it is produced here by erasing both
+     ;; caches before a write. A connection with a local writer must give the counts
+     ;; back, and its next transaction must store them.
+     (let [cfg {:store {:backend :file
+                        :path (fs/temp-store-path! "dh-subtree-counts-repair")
+                        :id #uuid "d1ffb000-0000-0000-0000-000000001109"}
+                :schema-flexibility :read :keep-history? false :allow-unsafe-config true
+                :index :datahike.index/persistent-set
+                :index-config {:branching-factor 8}}
+           ixs [:eavt :aevt :avet]
+           write! (fn [conn i]
+                    (d/transact conn (vec (for [j (range 250)]
+                                            {:k (+ (* i 250) j) :v (str "x" j)}))))
+           counts? (fn [conn] (let [db @conn] (every? #(di/-has-subtree-counts? (get db %)) ixs)))
+           header-counts (fn [conn]
+                           (let [db @conn]
+                             (mapv #(.-_count ^org.replikativ.persistent_sorted_set.PersistentSortedSet (get db %)) ixs)))
+           erase! (fn [conn]
+                    (doseq [k ixs
+                            :let [^org.replikativ.persistent_sorted_set.PersistentSortedSet p (get @conn k)]]
+                      ;; a single-leaf index (AVET here) has nothing to lose
+                      (when (instance? org.replikativ.persistent_sorted_set.Branch (.root p))
+                        (set! (.-_count p) (int -1))
+                        (set! (.-_subtreeCount ^org.replikativ.persistent_sorted_set.Branch (.root p)) -1))))]
+       (d/delete-database cfg)
+       (d/create-database cfg)
+       (let [conn (d/connect cfg)]
+         (dotimes [i 10] (write! conn i))
+         (erase! conn)
+         (write! conn 10)
+         (is (not (counts? conn)) "precondition: the store was written with unknown root counts")
+         (d/release conn))
+       (let [conn (d/connect cfg)]
+         (is (counts? conn) "a writer's connect gives the roots their counts back")
+         (is (= (count (d/datoms @conn :eavt)) (di/-count (:eavt @conn))) "and they are the true ones")
+         (write! conn 11)
+         (is (counts? conn))
+         (d/release conn))
+       (let [conn (d/connect cfg)]
+         (is (every? #(>= (long %) 0) (header-counts conn))
+             "after one transaction the counts are stored: the next connect has nothing to repair")
+         (is (counts? conn))
+         (is (= (count (d/datoms @conn :eavt)) (di/-count (:eavt @conn))))
+         (d/release conn))
+       (d/delete-database cfg))))
 
 #?(:clj
    (deftest test-detached-root-count-after-reopen
