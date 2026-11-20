@@ -5027,6 +5027,13 @@
   (let [ops (:ops plan)
         sub-ops (plan-sub-ops plan)]
     (and (every? #(#{:entity-group :pattern-scan :predicate} (:op %)) ops)
+         ;; a sub-op becomes a constraint on its attribute's column and value:
+         ;; a transaction or `added` slot has no column to be compared with
+         (not-any? (fn [op]
+                     (let [c (:clause op)]
+                       (and (vector? c)
+                            (or (some? (nth c 3 nil)) (some? (nth c 4 nil))))))
+                   sub-ops)
          (not-any? (fn [op]
                      (some (fn [k] (let [v (get op k)]
                                      (if (coll? v) (seq v) (some? v))))

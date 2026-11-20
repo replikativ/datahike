@@ -324,13 +324,32 @@
     true dbs/temporal-search
     false dbs/search-current-indices))
 
+(defn- added-after-assembly?
+  "An as-of or since view is ASSEMBLED from the temporal index: the datoms of
+   an entity's attribute are reduced to what the view holds. A pattern's
+   `added` slot has to be compared with that result. Filtering the raw datoms
+   first removed the retractions the assembly needs, so `[?e :a 9 _ true]`
+   answered with a value the view no longer contains."
+  [pattern context]
+  (and (some? (nth pattern 4 nil))
+       (some? (dbi/context-time-pred context))
+       (not (dbi/context-historical? context))))
+
 (defn contextual-search [db pattern context]
-  (-> ((contextual-search-fn context) db pattern)
-      (post-process-datoms db context)))
+  (if (added-after-assembly? pattern context)
+    (->> (post-process-datoms ((contextual-search-fn context) db (assoc (vec pattern) 4 nil))
+                              db context)
+         (dbs/filter-by-added pattern))
+    (-> ((contextual-search-fn context) db pattern)
+        (post-process-datoms db context))))
 
 (defn contextual-batch-search [db pattern-mask batch-fn context]
-  (-> ((contextual-search-fn context) db pattern-mask batch-fn)
-      (post-process-datoms db context)))
+  (if (added-after-assembly? pattern-mask context)
+    (->> (post-process-datoms ((contextual-search-fn context) db (assoc (vec pattern-mask) 4 nil) batch-fn)
+                              db context)
+         (dbs/filter-by-added pattern-mask))
+    (-> ((contextual-search-fn context) db pattern-mask batch-fn)
+        (post-process-datoms db context))))
 
 (defn contextual-datoms [db index-type cs context]
   (-> (case (dbi/context-temporal? context)

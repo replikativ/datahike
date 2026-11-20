@@ -125,3 +125,53 @@
       (is (= #{"b" "c"} (ks db (both '[:find ?e :where [?e :x/i 1] (not [?e ?la 4])] history))))
       (is (= #{["a" :x/i] ["b" :x/i] ["c" :x/i]}
              (named (both '[:find ?e ?a :where [?e ?a 1] (not [?e ?a 4])] db)))))))
+
+(deftest a-negation-with-a-local-variable-on-a-history-database
+  ;; The folded negation's `?local` was projected from a datom that a
+  ;; satisfied negation does not have.
+  (let [{:keys [db history]} (setup)
+        a (d/q '[:find ?e . :where [?e :x/k "a"]] db)
+        b (d/q '[:find ?e . :where [?e :x/k "b"]] db)
+        c (d/q '[:find ?e . :where [?e :x/k "c"]] db)]
+    (is (= #{"a" "b"}
+           (ks db (both '[:find ?e :in $ [?e ...]
+                          :where [?e :x/i 1] (not [?e :x/s ?local _ false])]
+                        history [a b c]))))
+    (is (= #{"a" "b"}
+           (ks db (both '[:find ?e :where [?e :x/i 1] (not [?e :x/s ?local _ false])] history))))))
+
+(deftest an-added-slot-on-an-as-of-or-since-view
+  ;; Such a view holds what survived, all of it asserted. c's `s 9` was
+  ;; retracted in tx2; the reference engine answered with it for `added` true,
+  ;; having dropped the retraction before working out what survived.
+  (let [{:keys [db tx1 tx2]} (setup)]
+    (doseq [[label view] [["as-of" (d/as-of db tx2)] ["since" (d/since db (dec tx1))]]]
+      (testing label
+        (is (= #{} (both '[:find ?e :where [?e :x/s 9 _ true]] view)))
+        (is (= #{} (both '[:find ?e :where [?e :x/i 1] [?e :x/s 9 _ true]] view)))
+        (is (= #{"a"} (ks db (both '[:find ?e :where [?e :x/i 1] [?e :x/s 4 _ true]] view))))
+        (is (= #{} (both '[:find ?e :where [?e :x/i 1] [?e :x/s 4 _ false]] view)))))
+    (testing "as of tx1 the value is still there"
+      (is (= #{"c"} (ks db (both '[:find ?e :where [?e :x/s 9 _ true]] (d/as-of db tx1))))))))
+
+#?(:clj
+   (deftest an-aggregate-over-a-join-honours-the-added-slot
+     ;; Large enough for the index-ordered sum, which read e, a and v only.
+     (let [cfg {:store {:backend :memory :id (random-uuid)}
+                :schema-flexibility :write :keep-history? false}
+           _ (d/create-database cfg)
+           conn (d/connect cfg)]
+       (d/transact conn [{:db/ident :lk :db/valueType :db.type/long
+                          :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                         {:db/ident :rk :db/valueType :db.type/long
+                          :db/cardinality :db.cardinality/one :db/index true}
+                         {:db/ident :amount :db/valueType :db.type/long
+                          :db/cardinality :db.cardinality/one}])
+       (d/transact conn (vec (concat (for [i (range 600)] {:lk i})
+                                     (for [i (range 600)] {:rk i :amount 1}))))
+       (is (= 600 (both '[:find (sum ?v) . :with ?r
+                          :where [?l :lk ?k] [?r :rk ?k] [?r :amount ?v]] @conn)))
+       (is (= 600 (both '[:find (sum ?v) . :with ?r
+                          :where [?l :lk ?k] [?r :rk ?k] [?r :amount ?v _ true]] @conn)))
+       (is (nil? (both '[:find (sum ?v) . :with ?r
+                         :where [?l :lk ?k] [?r :rk ?k] [?r :amount ?v nil false]] @conn))))))
