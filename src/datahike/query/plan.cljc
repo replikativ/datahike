@@ -993,9 +993,22 @@
         ;; together, since each _ is an independent anonymous variable.
         ;; Ground constants (numbers, keywords, strings) CAN share a group.
         blank-counter (atom 0)
+        var-attr-groups (volatile! #{})
         groups (group-by (fn [op]
                            (let [e-var (first (:clause op))]
                              (cond
+                               ;; A merge seeks by attribute, so a pattern with
+                               ;; a VARIABLE attribute can only drive the scan.
+                               ;; The second such pattern on an entity gets a
+                               ;; group of its own (see logical/entity-group-key).
+                               (let [a (second (:clause op))]
+                                 (and (symbol? a)
+                                      (let [k [e-var (:source op)]
+                                            taken? (contains? @var-attr-groups k)]
+                                        (vswap! var-attr-groups conj k)
+                                        taken?)))
+                               [(symbol (str "_anon_" (swap! blank-counter inc))) (:source op)]
+
                                ;; A pattern that fixes the `added` slot
                                ;; (`[?e :a ?v _ false]`) stays a scan of its
                                ;; own: a scan filters on it, a merge into
@@ -1031,6 +1044,8 @@
                       ;; can't share the same EAVT index.
                       (nil? (:source (first sub-ops)))
                       (nil? (:source not-op))
+                      ;; an anti-merge seeks by attribute: it needs a ground one
+                      (can-be-merge? (first sub-ops))
                       ;; an anti-merge does not look at the `added` slot either
                       (let [added (nth (:clause (first sub-ops)) 4 nil)]
                         (or (nil? added) (symbol? added)))

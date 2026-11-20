@@ -6638,6 +6638,8 @@
                                           (let [next-op (nth all-ops j)]
                                             (if (and (= :pattern-scan (:op next-op))
                                                      (= :lookup (:join-method next-op))
+                                                     ;; a merge seeks by attribute
+                                                     (plan/can-be-merge? next-op)
                                                      (= e-var (first (:clause next-op)))
                                                ;; Only fuse ops on the same source
                                                      (= op-source (:source next-op)))

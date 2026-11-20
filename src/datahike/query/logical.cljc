@@ -49,10 +49,20 @@
   "Grouping key for scans: [entity-var source]. Blank/anonymous vars
    each get a unique group. Works with both LScan and LOptionalScan
    since both expose :e and :source via keyword access."
-  [scan blank-counter]
+  [scan blank-counter var-attr-groups]
   (let [e-var  (:e scan)
         source (:source scan)]
     (if (or (blank-var? e-var)
+            ;; A merge seeks by attribute, so a pattern with a VARIABLE
+            ;; attribute can only drive its group's scan. A group has one
+            ;; scan: the second such pattern on an entity gets a group of its
+            ;; own, joined to the first on the entity.
+            (let [a (second (:clause scan))]
+              (and (symbol? a)
+                   (let [k [e-var source]
+                         taken? (contains? @var-attr-groups k)]
+                     (vswap! var-attr-groups conj k)
+                     taken?)))
             ;; A pattern that fixes the `added` slot (`[?e :a ?v _ false]`)
             ;; stays a scan of its own: a scan filters on that slot, a merge
             ;; into another pattern's group never looked at it.
@@ -96,6 +106,9 @@
          (let [sub-ci (analyze/classify-clause (first (:sub-clauses ci)))]
            (and (= :pattern (:type sub-ci))
                 (analyze/free-var? (:e sub-ci))
+                ;; an anti-merge seeks by attribute: it needs a ground one
+                (let [a (second (:clause sub-ci))]
+                  (and (some? a) (not (symbol? a))))
                 ;; an anti-merge does not look at the `added` slot
                 (let [added (nth (:clause sub-ci) 4 nil)]
                   (or (nil? added) (symbol? added)))
@@ -330,7 +343,8 @@
          ;; ---------------------------------------------------------------
          ;; Group scans by entity variable
          blank-counter (atom 0)
-         scan-groups (group-by #(entity-group-key % blank-counter) scans)
+         var-attr-groups (volatile! #{})
+         scan-groups (group-by #(entity-group-key % blank-counter var-attr-groups) scans)
 
          ;; Group keys whose every scan is OPTIONAL (each one a `get-else`).
          ;; Such a group has nothing that may DRIVE its scan: assemble-entity-
