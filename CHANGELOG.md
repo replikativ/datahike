@@ -6,7 +6,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
-- **`_` after an indexed lookup matched nothing ([#1168], [#TODO]).** Since
+- **`_` after an indexed lookup matched nothing ([#1168], [#1170]).** Since
   0.8.1930, `[?s :stmt/item ?si] [?s :stmt/status _]` with `?si` from `:in`
   (or written into the query) returned no rows when `:stmt/item` is indexed and
   `:stmt/status` is cardinality one: the point-lookup fast path compared the
@@ -1096,6 +1096,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1161]: https://github.com/replikativ/datahike/pull/1161
 [#1167]: https://github.com/replikativ/datahike/pull/1167
 [#1168]: https://github.com/replikativ/datahike/issues/1168
+[#1170]: https://github.com/replikativ/datahike/pull/1170
 [#1107]: https://github.com/replikativ/datahike/issues/1107
 [#938]: https://github.com/replikativ/datahike/issues/938
 [#1156]: https://github.com/replikativ/datahike/pull/1156
