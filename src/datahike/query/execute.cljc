@@ -4394,10 +4394,44 @@
 ;; ---------------------------------------------------------------------------
 ;; Relation-based execution (fallback path for predicates, functions, etc.)
 
+#?(:clj
+   (defn- probe-value-rows
+     "How many datoms `k` value-position probe keys select on `resolved-a`, or nil when
+      that cannot be told cheaply.
+
+      A probe KEY is not a ROW. An entity key selects about one datom of an attribute; a
+      value key selects every entity that has that value, which is anything from one to
+      the whole attribute. `parameterize-entity-group` compares this score with the current
+      scan's row estimate, so the two must be in the same unit. They were not: measured on
+      300k entities, `[?e :item/name \"n7\"]` (15 rows) lost the scan slot to
+      `[?e :item/kind ?kind]` probed by TWO kinds, because 2 < 15 — and the two kinds
+      select 100k entities. 40 ms a query instead of well under one (#1107).
+
+      Counted exactly on AVET, which is O(log n) per value with subtree counts: up to
+      `sample` values, scaled to `k`. Without counts there is no cheap answer and the
+      rotation is declined — the planned driver stays."
+     [db resolved-a probe-values k]
+     (let [avet (:avet db)]
+       (when (and avet (di/-has-subtree-counts? avet))
+         (let [^objects vs (probe-set-sorted-seek-array probe-values)
+               n (alength vs)
+               sample (min n 8)
+               ;; spread over the value range rather than the first few, which are neighbours
+               step (max 1 (quot n sample))
+               total (loop [i 0 taken 0 acc 0]
+                       (if (or (>= i n) (>= taken sample))
+                         acc
+                         (recur (+ i step) (inc taken)
+                                (+ acc (long (di/-count-slice avet
+                                                              (datom e0 resolved-a (aget vs i) tx0)
+                                                              (datom emax resolved-a (aget vs i) txmax)
+                                                              datom/cmp-datoms-av-only))))))]
+           (long (Math/ceil (* (double total) (/ (double (long k)) (double sample))))))))))
+
 (defn- bound-probe-score
-  "Return the number of distinct upstream keys with which `op` can drive an
-   index seek, or nil when executing it as a scan would still walk/filter its
-   full extent.
+  "Return the number of ROWS `op` would produce when driven as an index seek from the
+   distinct upstream keys bound to it, or nil when executing it as a scan would still
+   walk/filter its full extent (or the row count cannot be told; see `probe-value-rows`).
 
    This deliberately uses the same eligibility and cost threshold as
    `scan-datoms`: choosing a different entity-group driver must not turn a
@@ -4416,7 +4450,9 @@
              (when (and (:seekable? probe)
                         (pss-instance? seek-index)
                         (< (* k (long probe-driven-threshold)) scan-n))
-               k)))))
+               (if (== field 0)
+                 k
+                 (probe-value-rows db resolved-a (:values probe) k)))))))
      ;; Probe sets and persistent-set forward cursors are JVM-only. CLJS keeps
      ;; the existing scan driver, matching scan-datoms' full-scan fallback.
      :cljs nil))

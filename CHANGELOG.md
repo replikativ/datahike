@@ -523,6 +523,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ### Notable fixes
 
+- **A selective pattern keeps the scan against a collection input** — when a relation bound a variable of an entity group at run time, the engine re-chose the group's driving pattern by comparing the number of bound *keys* with the planned scan's estimated *rows*. A two-element collection on a low-cardinality attribute therefore displaced a constant that selected 15 rows and the query walked a third of the database: 40 ms instead of 0.7 ms on 300k entities, about 100 times slower than the relational engine. Candidates are now scored in rows, counted on the index. The cost was in executing the plan, not in making it. ([#1107], [#1165])
 - **A prepared query with a collection input seeks its scalar parameters** — with `*prepared-execution*` on (as the PostgreSQL wire server runs), a query with scalar parameters and a collection input, such as `name = $1 AND kind IN (...)`, fell back to the relation executor with the scalar values substituted into the patterns. The executor finds and prices a bound pattern through its variable, so the substituted pattern was priced at the whole attribute and a far less selective pattern took the scan: 63 ms instead of 0.2 ms on 300k entities. The fallback now keeps the pattern variables and binds only range bounds. ([#1166])
 - **Index subtree counts survive a write after a reconnect** — the first transaction after reopening a store left each index root with an unknown element count, and it was stored that way, so the query planner estimated from heuristics for that store from then on. Fixed in persistent-sorted-set 0.5.146, where a write on a tree whose nodes are still on disk now keeps the root's count. Stores already written this way are repaired when a connection with a local writer opens them: the counts are computed once and stored by its next transaction; a store that has its counts pays nothing for the check. Thanks to Mark Addleman for the report, the reproduction and the regression test. ([#1108], [#1164])
 - **`/health/ready` fails once a connection's writer has shut down** — a fatal commit error (for example a storage 503) closes a local writer for good, and every later transaction then fails with `:writer-shut-down`; the readiness probe only read the store, which still answered, so an orchestrator never restarted the instance. The probe now also reports 503 when a connection's `LocalWriter` has a closed transaction queue. Remote and custom writers are not checked, and `/health/live` is unchanged. ([#1158])
@@ -1062,6 +1063,8 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1158]: https://github.com/replikativ/datahike/pull/1158
 [#1159]: https://github.com/replikativ/datahike/pull/1159
 [#1157]: https://github.com/replikativ/datahike/issues/1157
+[#1107]: https://github.com/replikativ/datahike/issues/1107
+[#1165]: https://github.com/replikativ/datahike/pull/1165
 [#1108]: https://github.com/replikativ/datahike/issues/1108
 [#1164]: https://github.com/replikativ/datahike/pull/1164
 [#1166]: https://github.com/replikativ/datahike/pull/1166
