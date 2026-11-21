@@ -5022,7 +5022,11 @@
                  {:error :query/where :form (:clause op)}))
     (cond
       (some #(= branch-true %) branch-rels) ctx
-      (seq valid) (update ctx :rels rel/collapse-rels (reduce rel/sum-rel valid))
+      ;; The branches saw projected copies of the caller's bindings. Multiple
+      ;; outer rows may have the same visible key, and several branches can
+      ;; produce the same binding. Joining those copies back to the caller
+      ;; would multiply each outer row again at every disjunction.
+      (seq valid) (update ctx :rels rel/collapse-rels (rel/distinct-rel (reduce rel/sum-rel valid)))
       (some #(= branch-false %) branch-rels)
       (update ctx :rels rel/collapse-rels (rel/empty-rel))
       :else ctx)))
