@@ -132,16 +132,24 @@
   nil)
 
 (defn add-connection!
-  "Publish `conn` only if its exact reservation survived invalidation."
+  "Publish `conn` only if its exact reservation survived invalidation.
+
+   When another connect for the same id published first, this one does not
+   overwrite that connection. It counts one lease on it. Returns the connection
+   that the registry holds for `conn-id` after the call: `conn` when it was
+   published, the existing connection when this connect lost the race, nil when
+   the reservation did not survive."
   [conn-id lease conn]
-  (let [entries (swap! *connections*
-                       (fn [m]
-                         (if (contains? (get-in m [conn-id :leases]) lease)
-                           (-> m
-                               (update conn-id merge {:conn conn :count 1})
-                               (update-in [conn-id :leases] disj lease))
-                           m)))]
-    (identical? conn (get-in entries [conn-id :conn]))))
+  (let [[before after] (swap-vals! *connections*
+                                   (fn [m]
+                                     (if (contains? (get-in m [conn-id :leases]) lease)
+                                       (let [m' (update-in m [conn-id :leases] disj lease)]
+                                         (if (get-in m' [conn-id :conn])
+                                           (update-in m' [conn-id :count] (fnil inc 0))
+                                           (update m' conn-id merge {:conn conn :count 1})))
+                                       m)))]
+    (when (contains? (get-in before [conn-id :leases]) lease)
+      (get-in after [conn-id :conn]))))
 
 (defn- retire-connection! [conn]
   ;; Capture the local resource owner before invalidation discards the DB.
