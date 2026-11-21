@@ -440,6 +440,12 @@
                   ;; slot afterwards, where a lookup ref is resolved as a
                   ;; transaction; restated, it would be compared as a vector.
                   (not *fold-scalar-ins*)
+                  ;; A pattern naming its source is never merged — it is
+                  ;; answered by a scan of that source, which joins its
+                  ;; transaction with the input and resolves a lookup ref
+                  ;; against the source it names. Restated, the input was
+                  ;; resolved against the default source instead.
+                  (nil? *pattern-source*)
                   (>= (long (get *pattern-entities* [*pattern-source* (first pattern)] 0)) 2))))
        ;; `[r ?a ?b ?c 5]` is a rule call spelled as a vector
        (nil? (rule-call-args pattern))))

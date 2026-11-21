@@ -559,6 +559,13 @@
                               d (nth txs 5))))
         (is (= (into #{} (map (fn [i] [i i])) (range 20))
                (both '[:find ?a ?b :in $ [?t ...] :where [?e :m/a ?a ?t] [?e :m/b ?b ?t]] d txs)))))
+    (testing "a pattern naming its source keeps the input in its own slot"
+      (is (= '[[$b ?e :m/a ?a ?t] [$b ?e :m/b ?b ?t]]
+             (:where (q/normalize-repeated-vars
+                      '{:find [?a ?b] :in [$ $b [?t ...]]
+                        :where [[$b ?e :m/a ?a ?t] [$b ?e :m/b ?b ?t]]}))))
+      (is (= #{[5 5]} (both '[:find ?a ?b :in $ $b ?t :where [$b ?e :m/k "x"]
+                              [$b ?e :m/a ?a ?t] [$b ?e :m/b ?b ?t]] db db (nth txs 5)))))
     (testing "each alternative of a disjunction restates it for itself"
       (let [x (d/q '[:find ?e . :where [?e :m/k "x"]] db)]
         (doseq [qq '[[:find ?e :in $ [?t ...] :where [?e :m/k "x"]
