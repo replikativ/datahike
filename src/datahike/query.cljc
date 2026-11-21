@@ -444,20 +444,31 @@
        ;; `[r ?a ?b ?c 5]` is a rule call spelled as a vector
        (nil? (rule-call-args pattern))))
 
+(def ^:private ^:dynamic *tx-restatements*
+  "input tx variable -> the variable restating it, for the clause list being
+   normalized (a volatile); nil outside normalization."
+  nil)
+
 (defn- rewrite-literal-tx
   "`[?e :a ?v 123]` → `[[?e :a ?v ?tx] [[(= ?tx 123)]]]`.
 
    An input VARIABLE is restated as a binding, `[(identity ?tx) ?in]`: the
    pattern's transaction joins the input's column like the pattern's own
    slot did. As a predicate it compared every row of the group with every
-   row of a collection or relation input."
+   row of a collection or relation input. Every pattern of one clause list
+   naming that input shares the ONE restating variable, so the patterns
+   still agree on their transaction among themselves, datom by datom, as
+   they did through the input's name."
   [pattern fresh!]
-  (let [v (fresh! '?__tx)
-        tx (nth pattern 3)]
-    [(assoc (vec pattern) 3 v)
-     [(if (symbol? tx)
-        [(list 'identity v) tx]
-        [(list '= v tx)])]]))
+  (let [tx (nth pattern 3)]
+    (if (symbol? tx)
+      (if-let [v (and *tx-restatements* (get @*tx-restatements* tx))]
+        [(assoc (vec pattern) 3 v) []]
+        (let [v (fresh! '?__tx)]
+          (when *tx-restatements* (vswap! *tx-restatements* assoc tx v))
+          [(assoc (vec pattern) 3 v) [[(list 'identity v) tx]]]))
+      (let [v (fresh! '?__tx)]
+        [(assoc (vec pattern) 3 v) [[(list '= v tx)]]]))))
 
 (defn- pattern-needs-rewrite? [pattern]
   (or (repeated-var-pattern? pattern) (literal-tx-pattern? pattern)))
@@ -655,7 +666,8 @@
     :else [clause]))
 
 (defn- normalize-where-clauses [clauses fresh!]
-  (binding [*pattern-entities* (count-pattern-entities clauses)]
+  (binding [*pattern-entities* (count-pattern-entities clauses)
+            *tx-restatements* (volatile! {})]
     (into [] (mapcat #(normalize-where-clause % fresh!))
           (separate-shared-added-vars clauses fresh!))))
 

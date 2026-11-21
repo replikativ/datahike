@@ -538,7 +538,9 @@
   ;; decided by type first: an exception per datom is what a scan over an
   ;; attribute of mixed types would otherwise pay
   (when (or (and (number? a) (number? b))
-            (= (type a) (type b)))
+            (= (type a) (type b))
+            ;; java.sql.Date against java.util.Date, and the like
+            #?(:clj (or (instance? (class a) b) (instance? (class b) a))))
     (try (compare a b)
          (catch #?(:clj Exception :cljs :default) _ nil))))
 

@@ -827,7 +827,8 @@
                                                           (not-any? #{x} head-vars)
                                                           (not= x e) (not= x v))))
                                                [(nth clause 3 nil) (nth clause 4 nil)])
-                                       (not= (nth clause 3 ::a) (nth clause 4 ::b))
+                                       (let [tx (nth clause 3 nil) added (nth clause 4 nil)]
+                                         (not (and (analyze/free-var? tx) (= tx added))))
                                        (:ref? sinfo)
                                        (= [e v] (vec head-vars)))
                               a)))))))]
@@ -1157,6 +1158,12 @@
                                      (case (:type ci)
                                        (:predicate :function
                                                    :not :not-join :or :or-join :and) nil
+                                       ;; `[$b ?e :a ?v]` binds; `($b not …)`
+                                       ;; and its kin do not
+                                       :source-prefix
+                                       (when (#{:pattern :rule-call :rule}
+                                              (:type (analyze/classify-clause (:inner-clause ci))))
+                                         (:vars ci))
                                        (:vars ci))))
                            others)
                 fns (filter #(= :function (:type %)) others)]

@@ -536,3 +536,30 @@
     (is (= '[[?e :x/t _ ?t]]
            (:where (q/normalize-repeated-vars
                     '{:find [?e] :in [$ [?t ...]] :where [[?e :x/t _ ?t]]}))))))
+
+(deftest patterns-sharing-an-input-transaction-agree-on-it
+  ;; One restating variable for all of them: they compare their transactions
+  ;; with each other datom by datom, not only with the input afterwards.
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :schema-flexibility :write :keep-history? true}
+        _ (d/create-database cfg)
+        conn (d/connect cfg)
+        _ (d/transact conn [{:db/ident :m/k :db/valueType :db.type/string
+                             :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                            {:db/ident :m/a :db/valueType :db.type/long
+                             :db/cardinality :db.cardinality/many}
+                            {:db/ident :m/b :db/valueType :db.type/long
+                             :db/cardinality :db.cardinality/many}])
+        txs (vec (for [i (range 20)]
+                   (:max-tx (:db-after (d/transact conn [{:m/k "x" :m/a i :m/b i}])))))
+        db @conn]
+    (doseq [[label d] [["current" db] ["history" (d/history db)]]]
+      (testing label
+        (is (= #{[5 5]} (both '[:find ?a ?b :in $ ?t :where [?e :m/k "x"] [?e :m/a ?a ?t] [?e :m/b ?b ?t]]
+                              d (nth txs 5))))
+        (is (= (into #{} (map (fn [i] [i i])) (range 20))
+               (both '[:find ?a ?b :in $ [?t ...] :where [?e :m/a ?a ?t] [?e :m/b ?b ?t]] d txs)))))
+    (is (= '[[?e :m/a ?a ?__tx__1] [(identity ?__tx__1) ?t] [?e :m/b ?b ?__tx__1]]
+           (:where (q/normalize-repeated-vars
+                    '{:find [?a ?b] :in [$ [?t ...]]
+                      :where [[?e :m/a ?a ?t] [?e :m/b ?b ?t]]}))))))

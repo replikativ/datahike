@@ -234,8 +234,9 @@
             [var-sym const-val]
             (cond
               (nil? var-sym) [nil nil]
-              ;; a literal nil bounds nothing; the predicate decides
-              (nil? const-val) [nil nil]
+              ;; a literal nil has no place in an ordering; the predicate
+              ;; decides. (In)equality with nil is still a per-datom check.
+              (and (nil? const-val) (not (contains? #{'= '== 'not=} op))) [nil nil]
               ;; A quoted symbol spelled like a variable stays out of the
               ;; bounds: there such a symbol is a parameter's name, and
               ;; `(quote ?p)` was rebound to the input `?p`.
