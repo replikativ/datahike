@@ -1107,7 +1107,6 @@
         ;; that one and bind nothing here.
         ;; An explicit join exports only what it declares; the
         ;; rest of its body is local to it as well.
-        ;; (Also what an `or-join` may count on for a variable it requires.)
         vars-outside-not (fn [clause]
                            (into bound-vars
                                  (mapcat (fn [ci]
@@ -1118,6 +1117,21 @@
                                  (remove #(or (= clause (:clause %))
                                               (#{:not :not-join} (:type %)))
                                          classified)))
+        ;; What some OTHER clause can bind, for a variable an `or-join`
+        ;; requires: a pattern's variables, a function's output, a rule
+        ;; call's arguments. A predicate or a function's argument only reads
+        ;; it — accepted on that ground, the or-join bound the variable
+        ;; itself and answered a query the reference engine refuses.
+        vars-bound-elsewhere (fn [clause]
+                               (into #{}
+                                     (mapcat (fn [ci]
+                                               (case (:type ci)
+                                                 :predicate nil
+                                                 :function (filter analyze/free-var?
+                                                                   (tree-seq coll? seq (:binding ci)))
+                                                 (:not :not-join :or :or-join :and) nil
+                                                 (:vars ci))))
+                                     (remove #(= clause (:clause %)) classified)))
         ;; :in vars seed at card 1 (placeholder), overridden by `in-cards` for
         ;; collection/relation bindings. Besides join costing, the scalar card
         ;; lets pushdown analysis retain a value-free prepared parameter as a
@@ -1341,7 +1355,7 @@
                (let [ci (union->classified node)
                      join-vars? (= :or-join (.-type ^datahike.query.ir.LUnion node))]
                  (update acc :ops conj (plan-or-op db ci bvc rules join-vars?
-                                                   (vars-outside-not (:clause ci)))))
+                                                   (vars-bound-elsewhere (:clause ci)))))
 
                ;; LRuleCall → delegate to plan-rule-op
                (instance? datahike.query.ir.LRuleCall node)
@@ -1377,7 +1391,7 @@
                        :or (update acc :ops conj
                                    (assoc (plan-or-op db inner-ci bvc rules) :source source-sym))
                        :or-join (update acc :ops conj
-                                        (assoc (plan-or-op db inner-ci bvc rules true (vars-outside-not clause))
+                                        (assoc (plan-or-op db inner-ci bvc rules true (vars-bound-elsewhere clause))
                                                :source source-sym))
                        (update acc :ops conj (plan/plan-passthrough-op ci))))
                  ;; Regular passthrough

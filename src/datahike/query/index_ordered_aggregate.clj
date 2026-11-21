@@ -152,6 +152,9 @@
        (= 2 (count args))
        ;; a constant, as written: `(quote 0)` would be compared as a list
        (not-any? coll? args)
+       ;; `simple-predicate-value` orders with the numeric operators
+       (or (contains? #{'= 'not=} (symbol (name fn-sym)))
+           (some number? args))
        (every? #(or (not (symbol? %)) (contains? available-vars %)) args)
        ;; Bound input vars have already been folded to constants. Restrict this
        ;; path to a single row var and one constant so evaluation stays exact.

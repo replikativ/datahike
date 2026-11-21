@@ -580,8 +580,16 @@
     :avet (let [v (get clause 2)
                 ;; `some?`, not truthiness: `false` is a bound
                 clause-v (when (and (some? v) (not (symbol? v))) v)
-                from-v (if (some? (:from-v pushdown-bounds)) (:from-v pushdown-bounds) clause-v)
-                to-v (if (some? (:to-v pushdown-bounds)) (:to-v pushdown-bounds) clause-v)]
+                ;; A value the pattern itself fixes IS the slice. It gets
+                ;; there when a prepared query rebinds the pattern's value
+                ;; variable to its input; the pushed predicate's bounds
+                ;; were computed for the variable and replaced that value
+                ;; (`[?e :n ?v] [(= ?v 4)]` with ?v = 3 answered the 4s).
+                ;; The predicate is still checked per datom.
+                from-v (cond (some? clause-v) clause-v
+                             (some? (:from-v pushdown-bounds)) (:from-v pushdown-bounds))
+                to-v (cond (some? clause-v) clause-v
+                           (some? (:to-v pushdown-bounds)) (:to-v pushdown-bounds))]
             [(datom e0 resolved-a from-v tx0)
              (datom emax resolved-a to-v txmax)])))
 
