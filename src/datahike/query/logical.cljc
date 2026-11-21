@@ -69,6 +69,13 @@
 ;; ---------------------------------------------------------------------------
 ;; NOT → anti-scan folding
 
+(def ^:dynamic *maybe-bound-vars*
+  "Variables of the clauses ENCLOSING the plan being built that may be bound
+   by the time it runs, though nothing says so here: a plain `or` ahead of it
+   advertises no bindings. Enough to keep a negation from folding; never
+   enough to order a clause by."
+  #{})
+
 (defn- anti-fold-vars-local?
   "The anti-merge drops everything but the entity: `(not [?e :tag ?t])` folds
    to \"?e has no :tag datom\". That is only what the clause MEANS while ?t is
@@ -81,6 +88,7 @@
   [sub-ci not-idx bound-vars var->clause-idxs]
   (every? (fn [v]
             (and (not (contains? bound-vars v))
+                 (not (contains? *maybe-bound-vars* v))
                  (empty? (disj (get var->clause-idxs v #{}) not-idx))))
           (->> (:vars sub-ci)
                (filter analyze/free-var?)

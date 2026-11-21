@@ -476,3 +476,47 @@
                           db rows)))
       (is (= #{[1]} (both '[:find ?e :in $ $b [?e ...] :where ($b not [?e :x/i ?v] [(>= ?v 9)])]
                           db rows [1 2]))))))
+
+(deftest what-the-narrower-scopes-must-not-change
+  ;; Each of these answered correctly before the scoping fixes and went wrong
+  ;; during them.
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :schema-flexibility :read :keep-history? false}
+        _ (d/create-database cfg)
+        conn (d/connect cfg)]
+    (d/transact conn [{:db/ident :r/n :db/cardinality :db.cardinality/one :db/index true}
+                      {:db/ident :r/m :db/valueType :db.type/long
+                       :db/cardinality :db.cardinality/one :db/index true}])
+    (d/transact conn [{:db/id -1 :r/wanted 7 :r/active true :r/tag 8 :r/s 1}
+                      {:db/id -2 :r/n 1} {:db/id -3 :r/n "x"}])
+    (d/transact conn (vec (for [i (range 200)] {:r/m i})))
+    (let [db @conn
+          one (d/q '[:find ?e . :where [?e :r/n 1]] db)
+          m42 (d/q '[:find ?e . :where [?e :r/m 42]] db)]
+      (testing "a nested negation correlated through a plain or does not fold"
+        ;; ?x is 7; the entity has no :r/tag 7, so the inner not holds and the
+        ;; outer one excludes it. Folded, the inner not asked for ANY tag.
+        (is (= #{} (both '[:find ?e :where (or [?e :r/wanted ?x])
+                           (or (not [?e :r/active true] (not [?e :r/tag ?x])))] db)))
+        (is (= #{} (both '[:find ?e :in $ $b :where (or [?e :r/wanted ?x])
+                           ($b or (not [?e :r/active true] (not [?e :r/tag ?x])))] db db))))
+      (testing "a function fed by the or-join does not bind what the or-join requires"
+        (is (thrown? #?(:clj Exception :cljs js/Error)
+                     (d/q '[:find ?v :where (or-join [[?e] ?v] [?e :r/s ?v]) [(inc ?v) ?e]] db))))
+      (testing "a range on an attribute holding values of two types"
+        (is (= #{[one]} (both '[:find ?e :where [?e :r/n ?v] [(number? ?v)] [(>= ?v 0)]] db)))
+        (is (= #{[one]} (both '[:find ?e :where [?e :r/n ?v] [(number? ?v)] [(> ?v 0)]] db))))
+      (testing "an equality after a range"
+        (is (= #{[m42]} (both '[:find ?e :where [?e :r/m ?v] [(>= ?v 0)] [(= ?v 42)]] db)))
+        (is (= #{} (both '[:find ?e :where [?e :r/m ?v] [(>= ?v 50)] [(= ?v 42)]] db)))
+        (is (= #{} (both '[:find ?e :where [?e :r/m ?v] [(<= ?v 40)] [(= ?v 42)]] db)))))))
+
+(deftest a-collection-of-transactions-on-a-pattern-of-its-own
+  ;; Not restated: alone on its entity the pattern scans and joins its
+  ;; transaction with the input.
+  (let [{:keys [db tx1 tx2]} (setup)]
+    (is (= #{"a" "c"} (ks db (both '[:find ?e :in $ [?t ...] :where [?e :x/t _ ?t]] db [tx1 tx2]))))
+    (is (= #{} (both '[:find ?e :in $ [?t ...] :where [?e :x/t _ ?t]] db [tx1])))
+    (is (= '[[?e :x/t _ ?t]]
+           (:where (q/normalize-repeated-vars
+                    '{:find [?e] :in [$ [?t ...]] :where [[?e :x/t _ ?t]]}))))))

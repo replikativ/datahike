@@ -320,6 +320,22 @@
   "The variables the query's `:in` binds, while its `:where` is normalized."
   #{})
 
+(def ^:private ^:dynamic *pattern-entities*
+  "How many data patterns name each entity, in the clause list being
+   normalized and the lists enclosing it."
+  {})
+
+(defn- count-pattern-entities
+  [clauses]
+  (reduce (fn [m clause]
+            (let [e (cond (not (sequential? clause)) nil
+                          (and (symbol? (first clause))
+                               (= \$ (first (name (first clause))))) (second clause)
+                          (and (vector? clause) (not (seq? (first clause)))) (first clause))]
+              (if (or (nil? e) (= '_ e)) m (update m e (fnil inc 0)))))
+          *pattern-entities*
+          clauses))
+
 (defn- declared-input-vars
   "The inputs an explicit join lets into its body: those its variable vector
    declares. Any other variable of the body is local to it, whatever `:in`
@@ -330,25 +346,26 @@
 (defn- where-needs-normalization?
   "Cheap pre-scan for repeated pattern vars, constant outputs and blank rule calls."
   [clauses]
-  (boolean
-   (or
-    (some? (added-vars-to-separate clauses))
-    (some (fn [clause]
-            (cond
-              (constant-output-clause? clause) true
-              (blank-rule-call? clause) true
-              (repeated-var-rule-call? clause) true
-              (source-prefixed-clause? clause) (pattern-needs-rewrite? (vec (rest clause)))
-              (data-pattern-clause? clause)    (pattern-needs-rewrite? clause)
-              (and (seq? clause) (#{'not 'and 'or} (first clause)))
-              (where-needs-normalization? (rest clause))
+  (binding [*pattern-entities* (count-pattern-entities clauses)]
+    (boolean
+     (or
+      (some? (added-vars-to-separate clauses))
+      (some (fn [clause]
+              (cond
+                (constant-output-clause? clause) true
+                (blank-rule-call? clause) true
+                (repeated-var-rule-call? clause) true
+                (source-prefixed-clause? clause) (pattern-needs-rewrite? (vec (rest clause)))
+                (data-pattern-clause? clause)    (pattern-needs-rewrite? clause)
+                (and (seq? clause) (#{'not 'and 'or} (first clause)))
+                (where-needs-normalization? (rest clause))
              ;; `(not-join [vars] body…)` / `(or-join [vars] branches…)` — the
              ;; second element is the declared var vector, not a clause.
-              (and (seq? clause) (#{'not-join 'or-join} (first clause)))
-              (binding [*input-vars* (declared-input-vars (second clause))]
-                (where-needs-normalization? (drop 2 clause)))
-              :else false))
-          clauses))))
+                (and (seq? clause) (#{'not-join 'or-join} (first clause)))
+                (binding [*input-vars* (declared-input-vars (second clause))]
+                  (where-needs-normalization? (drop 2 clause)))
+                :else false))
+            clauses)))))
 
 (defn- fresh-var-fn
   "Deterministic fresh-variable generator that never collides with a symbol
@@ -400,7 +417,14 @@
   (and *slot-rewrites?*
        (> (count pattern) 3)
        (let [tx (nth pattern 3)]
-         (or (number? tx) (contains? *input-vars* tx)))
+         (or (number? tx)
+             ;; Only where the pattern can end up merged: it shares its
+             ;; entity with another pattern. On its own it scans, and the
+             ;; scan joins its transaction with the input directly — the
+             ;; restated form would compare every datom of the attribute
+             ;; with every input row.
+             (and (contains? *input-vars* tx)
+                  (>= (long (get *pattern-entities* (first pattern) 0)) 2))))
        ;; `[r ?a ?b ?c 5]` is a rule call spelled as a vector
        (nil? (rule-call-args pattern))))
 
@@ -605,8 +629,9 @@
     :else [clause]))
 
 (defn- normalize-where-clauses [clauses fresh!]
-  (into [] (mapcat #(normalize-where-clause % fresh!))
-        (separate-shared-added-vars clauses fresh!)))
+  (binding [*pattern-entities* (count-pattern-entities clauses)]
+    (into [] (mapcat #(normalize-where-clause % fresh!))
+          (separate-shared-added-vars clauses fresh!))))
 
 (defn- query-var? [x]
   (and (symbol? x) (= \? (first (name x)))))

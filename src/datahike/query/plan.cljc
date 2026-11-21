@@ -96,7 +96,16 @@
            ;; A second constraint on the same value. The slice keeps the
            ;; bounds it has and this one is checked per datom: overwriting
            ;; them made `[(= ?v 3)] [(= ?v 4)]` answer with the 4s.
-           (update bounds :strict-preds (fnil conj []) pred)
+           (let [inside? (try
+                           (and (or (nil? (:from-v bounds))
+                                    (not (pos? (compare (:from-v bounds) const-val))))
+                                (or (nil? (:to-v bounds))
+                                    (not (neg? (compare (:to-v bounds) const-val)))))
+                           (catch #?(:clj Exception :cljs :default) _ false))]
+             ;; inside the range it narrows the slice to a point; outside,
+             ;; nothing can match and the check says so
+             (cond-> (update bounds :strict-preds (fnil conj []) pred)
+               inside? (assoc :from-v const-val :to-v const-val)))
            (-> bounds
                (assoc :from-v const-val)
                (assoc :to-v const-val)

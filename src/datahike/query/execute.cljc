@@ -532,6 +532,12 @@
     (when (seq filters)
       (fn [^Datom d] (every? #(% d) filters)))))
 
+(defn- safe-compare
+  "`compare`, or nil when the two values have no order."
+  [a b]
+  (try (compare a b)
+       (catch #?(:clj Exception :cljs :default) _ nil)))
+
 (defn- build-strict-filter
   "Build a post-filter for strict inequalities (> <) on a datom field."
   [strict-preds datom-field-idx]
@@ -555,10 +561,14 @@
                       == (== dv const-val)
                       not= (not= dv const-val))
                     (case op
-                      > (> (compare dv const-val) 0)
-                      >= (not (neg? (compare dv const-val)))
-                      < (< (compare dv const-val) 0)
-                      <= (not (pos? (compare dv const-val)))
+                      ;; Values of two types share an index under a read
+                      ;; schema and do not `compare`. Such a datom is not in
+                      ;; the range; throwing here pre-empted a type guard the
+                      ;; query wrote beside the comparison.
+                      > (some-> (safe-compare dv const-val) pos?)
+                      >= (some-> (safe-compare dv const-val) neg? not)
+                      < (some-> (safe-compare dv const-val) neg?)
+                      <= (some-> (safe-compare dv const-val) pos? not)
                       ;; the query's own equalities, not the index order:
                       ;; arrays are values and do not `compare`, and
                       ;; `(= 1 1.0)` is false where `==` is true
@@ -6655,7 +6665,18 @@
                     (let [new-rel (#?(:clj legacy/lookup-pattern-coll :cljs (rel/get-legacy-fn :lookup-pattern-coll)) op-db (:clause op) (:clause op))
                           ctx' (binding [rel/*implicit-source* op-db
                                          rel/*lookup-attrs* (lookup-attrs-for-clauses op-db (:clause op) nil)]
-                                 (update ctx :rels rel/collapse-rels new-rel))]
+                                 (update ctx :rels rel/collapse-rels new-rel))
+                          ;; A predicate the plan pushed into this scan's
+                          ;; index range is no longer among the plan's
+                          ;; predicates, and a collection has no index to
+                          ;; bound: evaluate it here, or nothing does. (The
+                          ;; body of `($b or …)` is planned with the
+                          ;; primary's schema, which is how one gets pushed.)
+                          ctx' (binding [rel/*implicit-source* op-db]
+                                 (reduce (fn [c pred-clause]
+                                           (#?(:clj legacy/filter-by-pred :cljs (rel/get-legacy-fn :filter-by-pred))
+                                            c pred-clause))
+                                         ctx' (filter some? (mapv :pred-clause (:pushdown-preds op)))))]
                       (recur ctx' plan (inc idx)))
                     (if (not (pss-instance? (:eavt op-db)))
                       (let [ti (temporal-info op-db)

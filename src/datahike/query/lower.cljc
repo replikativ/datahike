@@ -38,11 +38,6 @@
 ;; plan.cljc helpers expect classified clause maps. These converters
 ;; reconstruct them from IR record fields.
 
-(def ^:private ^:dynamic *foreign-source*
-  "The source a compound clause was prefixed with (`($b or …)`, `($b not …)`),
-   while its body is planned. Every pattern of that body runs against it."
-  nil)
-
 (defn- scan-schema-info
   "Schema facts for a scan's attribute, as seen by the database the scan will
    actually run against.
@@ -59,12 +54,7 @@
   [db ci source]
   (let [info (analyze/pattern-schema-info db ci)]
     (cond-> info
-      ;; `*foreign-source*`: the body of a source-prefixed `or`/`not` was
-      ;; planned with the primary's schema, so a predicate was pushed into
-      ;; an index the named source need not have — on a collection it was
-      ;; then applied by nothing.
-      (and info (or source *foreign-source*))
-      (assoc :indexed? false :unique? false :card-one? false))))
+      (and info source) (assoc :indexed? false :unique? false :card-one? false))))
 
 (defn- scan->classified
   "Convert an LScan or LOptionalScan back to a classified clause map for
@@ -235,8 +225,7 @@
                                               " not bound in " (:clause clause-info))
                                          {:error :query/where :form (:clause clause-info)})))
                        (into #{} (filter analyze/free-var?) (tree-seq coll? seq raw))))
-         sub-plans (binding [*foreign-source* (or (:source clause-info) *foreign-source*)]
-                     (normalize-and-plan-branches db (:branches clause-info) bound-vars rules))
+         sub-plans (normalize-and-plan-branches db (:branches clause-info) bound-vars rules)
          total-est (reduce + 0 (keep (fn [p] (some :estimated-card (:ops p))) sub-plans))]
      (cond-> {:op (if join-vars? :or-join :or)
               :clause (:clause clause-info)
@@ -252,9 +241,8 @@
    (plan-not-op db clause-info bound-vars rules false))
   ([db clause-info bound-vars rules join-vars?]
    (let [join-vars (when join-vars? (set (:join-vars clause-info)))
-         sub-plan (binding [*foreign-source* (or (:source clause-info) *foreign-source*)]
-                    (plan-via-ir db (:sub-clauses clause-info)
-                                 (if join-vars? join-vars bound-vars) rules))]
+         sub-plan (plan-via-ir db (:sub-clauses clause-info)
+                               (if join-vars? join-vars bound-vars) rules)]
      (cond-> {:op (if join-vars? :not-join :not)
               :clause (:clause clause-info)
               :sub-plan sub-plan
@@ -1134,13 +1122,29 @@
         ;; call's arguments. A predicate or a function's argument only reads
         ;; it — accepted on that ground, the or-join bound the variable
         ;; itself and answered a query the reference engine refuses.
+        ;; The narrower bound sets above decide ORDER. Whether a nested
+        ;; negation may fold into "has no such datom" is decided as before,
+        ;; against every variable mentioned here: one of them can be bound by
+        ;; a clause that does not advertise it (a plain `or`), and the fold
+        ;; then answered for ANY value instead of that one.
+        with-maybe-bound (fn [f]
+                           (binding [logical/*maybe-bound-vars*
+                                     (into logical/*maybe-bound-vars*
+                                           (if (map? all-clause-vars)
+                                             (keys all-clause-vars)
+                                             all-clause-vars))]
+                             (f)))
         vars-bound-elsewhere (fn [clause]
                                (into #{}
                                      (mapcat (fn [ci]
                                                (case (:type ci)
                                                  :predicate nil
-                                                 :function (filter analyze/free-var?
-                                                                   (tree-seq coll? seq (:binding ci)))
+                                                 ;; … unless it computes that
+                                                 ;; output from this very clause
+                                                 :function (when (not-any? (set (analyze/extract-vars clause))
+                                                                           (filter analyze/free-var? (:args ci)))
+                                                             (filter analyze/free-var?
+                                                                     (tree-seq coll? seq (:binding ci))))
                                                  (:not :not-join :or :or-join :and) nil
                                                  (:vars ci))))
                                      (remove #(= clause (:clause %)) classified)))
@@ -1354,10 +1358,11 @@
                (instance? datahike.query.ir.LAntiJoin node)
                (let [ci (anti-join->classified node)
                      join-vars? (= :not-join (.-type ^datahike.query.ir.LAntiJoin node))
-                     op (plan-not-op db ci (if join-vars?
-                                             all-clause-vars
-                                             (vars-outside-not (:clause ci)))
-                                     rules join-vars?)]
+                     op (with-maybe-bound
+                          #(plan-not-op db ci (if join-vars?
+                                                all-clause-vars
+                                                (vars-outside-not (:clause ci)))
+                                        rules join-vars?))]
                  (if join-vars?
                    (update acc :ops conj op)
                    (update acc :not-ops conj op)))
@@ -1392,7 +1397,8 @@
                          inner-ci (analyze/classify-clause inner-clause)
                          inner-ci (assoc inner-ci :source source-sym)]
                      (case (:type inner-ci)
-                       :not (let [op (plan-not-op db inner-ci (vars-outside-not clause) rules)]
+                       :not (let [op (with-maybe-bound
+                                       #(plan-not-op db inner-ci (vars-outside-not clause) rules))]
                               (update acc :ops conj (assoc op :source source-sym)))
                        :not-join (let [op (plan-not-op db inner-ci all-clause-vars rules true)]
                                    (update acc :ops conj (assoc op :source source-sym)))
@@ -1401,9 +1407,12 @@
                        ;; bound, a predicate in a branch ran before the
                        ;; pattern binding its operand and emptied the branch.
                        :or (update acc :ops conj
-                                   (assoc (plan-or-op db inner-ci bvc rules) :source source-sym))
+                                   (assoc (with-maybe-bound #(plan-or-op db inner-ci bvc rules))
+                                          :source source-sym))
                        :or-join (update acc :ops conj
-                                        (assoc (plan-or-op db inner-ci bvc rules true (vars-bound-elsewhere clause))
+                                        (assoc (with-maybe-bound
+                                                 #(plan-or-op db inner-ci bvc rules true
+                                                              (vars-bound-elsewhere clause)))
                                                :source source-sym))
                        (update acc :ops conj (plan/plan-passthrough-op ci))))
                  ;; Regular passthrough
