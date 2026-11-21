@@ -325,14 +325,23 @@
    normalized and the lists enclosing it."
   {})
 
+(def ^:private ^:dynamic *pattern-source*
+  "The source prefix of the pattern being examined; nil for the default."
+  nil)
+
 (defn- count-pattern-entities
+  "Keyed by [source entity]: patterns on different sources never share a scan."
   [clauses]
   (reduce (fn [m clause]
-            (let [e (cond (not (sequential? clause)) nil
-                          (and (symbol? (first clause))
-                               (= \$ (first (name (first clause))))) (second clause)
+            (let [src? (and (sequential? clause)
+                            (symbol? (first clause))
+                            (= \$ (first (name (first clause)))))
+                  e (cond (not (sequential? clause)) nil
+                          src? (second clause)
                           (and (vector? clause) (not (seq? (first clause)))) (first clause))]
-              (if (or (nil? e) (= '_ e)) m (update m e (fnil inc 0)))))
+              (if (or (nil? e) (= '_ e))
+                m
+                (update m [(when src? (first clause)) e] (fnil inc 0)))))
           *pattern-entities*
           clauses))
 
@@ -355,7 +364,8 @@
                 (constant-output-clause? clause) true
                 (blank-rule-call? clause) true
                 (repeated-var-rule-call? clause) true
-                (source-prefixed-clause? clause) (pattern-needs-rewrite? (vec (rest clause)))
+                (source-prefixed-clause? clause) (binding [*pattern-source* (first clause)]
+                                                   (pattern-needs-rewrite? (vec (rest clause))))
                 (data-pattern-clause? clause)    (pattern-needs-rewrite? clause)
                 (and (seq? clause) (#{'not 'and 'or} (first clause)))
                 (where-needs-normalization? (rest clause))
@@ -424,7 +434,7 @@
              ;; restated form would compare every datom of the attribute
              ;; with every input row.
              (and (contains? *input-vars* tx)
-                  (>= (long (get *pattern-entities* (first pattern) 0)) 2))))
+                  (>= (long (get *pattern-entities* [*pattern-source* (first pattern)] 0)) 2))))
        ;; `[r ?a ?b ?c 5]` is a rule call spelled as a vector
        (nil? (rule-call-args pattern))))
 
@@ -568,10 +578,11 @@
 
     (source-prefixed-clause? clause)
     (let [pattern (vec (rest clause))]
-      (if (and (data-pattern-clause? pattern) (pattern-needs-rewrite? pattern))
-        (let [[pattern' preds] (rewrite-pattern pattern fresh!)]
-          (cons (into [(first clause)] pattern') preds))
-        [clause]))
+      (binding [*pattern-source* (first clause)]
+        (if (and (data-pattern-clause? pattern) (pattern-needs-rewrite? pattern))
+          (let [[pattern' preds] (rewrite-pattern pattern fresh!)]
+            (doall (cons (into [(first clause)] pattern') preds)))
+          [clause])))
 
     (data-pattern-clause? clause)
     (if (pattern-needs-rewrite? clause)

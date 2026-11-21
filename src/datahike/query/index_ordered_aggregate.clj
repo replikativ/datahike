@@ -151,7 +151,7 @@
   (and (contains? supported-predicates fn-sym)
        (= 2 (count args))
        ;; a constant, as written: `(quote 0)` would be compared as a list
-       (not-any? coll? args)
+       (not-any? seq? args)
        ;; `simple-predicate-value` orders with the numeric operators
        (or (contains? #{'= 'not=} (symbol (name fn-sym)))
            (some number? args))

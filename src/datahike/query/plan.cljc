@@ -91,26 +91,15 @@
                 (update :strict-preds (fnil conj []) pred))
          <= (-> (update-bound bounds :to-v min const-val)
                 (update :strict-preds (fnil conj []) pred))
-         (= ==)
-         (if (or (some? (:from-v bounds)) (some? (:to-v bounds)))
-           ;; A second constraint on the same value. The slice keeps the
-           ;; bounds it has and this one is checked per datom: overwriting
-           ;; them made `[(= ?v 3)] [(= ?v 4)]` answer with the 4s.
-           (let [inside? (try
-                           (and (or (nil? (:from-v bounds))
-                                    (not (pos? (compare (:from-v bounds) const-val))))
-                                (or (nil? (:to-v bounds))
-                                    (not (neg? (compare (:to-v bounds) const-val)))))
-                           (catch #?(:clj Exception :cljs :default) _ false))]
-             ;; inside the range it narrows the slice to a point; outside,
-             ;; nothing can match and the check says so
-             (cond-> (update bounds :strict-preds (fnil conj []) pred)
-               inside? (assoc :from-v const-val :to-v const-val)))
-           (-> bounds
-               (assoc :from-v const-val)
-               (assoc :to-v const-val)
-               ;; the index orders 1 and 1.0 alike, `=` tells them apart
-               (update :strict-preds (fnil conj []) pred)))
+         ;; The slice is the point. Every other constraint on the value —
+         ;; an earlier range, another equality — stays a per-datom check, so
+         ;; `[(= ?v 3)] [(= ?v 4)]` seeks 4 and finds nothing equal to 3
+         ;; (overwritten bounds alone had answered with the 4s). The index
+         ;; orders 1 and 1.0 alike; the check tells them apart.
+         (= ==) (-> bounds
+                    (assoc :from-v const-val)
+                    (assoc :to-v const-val)
+                    (update :strict-preds (fnil conj []) pred))
          not= (update bounds :strict-preds (fnil conj []) pred)
          (throw (ex-info "Unhandled op in pushdown-to-bounds — every op in analyze/range-ops must have a case arm here"
                          {:op op :pred pred})))))

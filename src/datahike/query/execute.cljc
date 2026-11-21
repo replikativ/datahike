@@ -566,14 +566,17 @@
                       ;; the range; throwing here pre-empted a type guard the
                       ;; query wrote beside the comparison.
                       > (some-> (safe-compare dv const-val) pos?)
-                      >= (some-> (safe-compare dv const-val) neg? not)
+                      ;; the inclusive bounds were not checked per datom
+                      ;; before; where no order exists they still are not
+                      >= (if-some [c (safe-compare dv const-val)] (not (neg? c)) true)
                       < (some-> (safe-compare dv const-val) neg?)
-                      <= (some-> (safe-compare dv const-val) pos? not)
+                      <= (if-some [c (safe-compare dv const-val)] (not (pos? c)) true)
                       ;; the query's own equalities, not the index order:
                       ;; arrays are values and do not `compare`, and
                       ;; `(= 1 1.0)` is false where `==` is true
                       = (da/a= dv const-val)
-                      == (and (number? dv) (number? const-val) (== dv const-val))
+                      == #?(:clj (and (number? dv) (number? const-val) (== dv const-val))
+                            :cljs (== dv const-val))
                       not= (not (da/a= dv const-val))
                       (throw (ex-info "Unhandled op in build-strict-filter — every op pushdown-to-bounds writes into :strict-preds must have a case arm here"
                                       {:op op :pred pred})))))

@@ -217,8 +217,12 @@
                            ;; "required" asks that something binds it, and the
                            ;; join with that clause gives the same rows
                            ;; whichever of the two runs first.
-                           missing (into #{} (remove #(or (contains? bound-vars %)
-                                                          (contains? bindable-vars %)))
+                           ;; `bindable-vars`, when the caller has them, are
+                           ;; the whole answer: the inputs and what another
+                           ;; clause can bind. Bound-so-far is not, a function
+                           ;; ahead of the join puts its output there whether
+                           ;; or not it can run before the join does.
+                           missing (into #{} (remove #(contains? (or bindable-vars bound-vars) %))
                                          required)]
                        (when (seq missing)
                          (throw (ex-info (str "Insufficient bindings: " missing
@@ -241,8 +245,12 @@
    (plan-not-op db clause-info bound-vars rules false))
   ([db clause-info bound-vars rules join-vars?]
    (let [join-vars (when join-vars? (set (:join-vars clause-info)))
-         sub-plan (plan-via-ir db (:sub-clauses clause-info)
-                               (if join-vars? join-vars bound-vars) rules)]
+         sub-plan (binding [logical/*maybe-bound-vars*
+                            (if join-vars?
+                              (into #{} (filter join-vars) logical/*maybe-bound-vars*)
+                              logical/*maybe-bound-vars*)]
+                    (plan-via-ir db (:sub-clauses clause-info)
+                                 (if join-vars? join-vars bound-vars) rules))]
      (cond-> {:op (if join-vars? :not-join :not)
               :clause (:clause clause-info)
               :sub-plan sub-plan
@@ -811,8 +819,8 @@
                             ;; at the seed site meaningful.
                             (when (and clause
                                        ;; the edge shortcut reads e, a and v
-                                       (nil? (nth clause 3 nil))
-                                       (nil? (nth clause 4 nil))
+                                       (contains? #{nil '_} (nth clause 3 nil))
+                                       (contains? #{nil '_} (nth clause 4 nil))
                                        (:ref? sinfo)
                                        (= [e v] (vec head-vars)))
                               a)))))))]
@@ -1135,7 +1143,7 @@
                                              all-clause-vars))]
                              (f)))
         vars-bound-elsewhere (fn [clause]
-                               (into #{}
+                               (into (if (map? bound-vars) (set (keys bound-vars)) (set bound-vars))
                                      (mapcat (fn [ci]
                                                (case (:type ci)
                                                  :predicate nil
@@ -1358,11 +1366,10 @@
                (instance? datahike.query.ir.LAntiJoin node)
                (let [ci (anti-join->classified node)
                      join-vars? (= :not-join (.-type ^datahike.query.ir.LAntiJoin node))
-                     op (with-maybe-bound
-                          #(plan-not-op db ci (if join-vars?
-                                                all-clause-vars
-                                                (vars-outside-not (:clause ci)))
-                                        rules join-vars?))]
+                     op (if join-vars?
+                          (plan-not-op db ci all-clause-vars rules true)
+                          (with-maybe-bound
+                            #(plan-not-op db ci (vars-outside-not (:clause ci)) rules false)))]
                  (if join-vars?
                    (update acc :ops conj op)
                    (update acc :not-ops conj op)))

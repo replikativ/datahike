@@ -502,7 +502,16 @@
                            ($b or (not [?e :r/active true] (not [?e :r/tag ?x])))] db db))))
       (testing "a function fed by the or-join does not bind what the or-join requires"
         (is (thrown? #?(:clj Exception :cljs js/Error)
-                     (d/q '[:find ?v :where (or-join [[?e] ?v] [?e :r/s ?v]) [(inc ?v) ?e]] db))))
+                     (d/q '[:find ?v :where (or-join [[?e] ?v] [?e :r/s ?v]) [(inc ?v) ?e]] db)))
+        (is (thrown? #?(:clj Exception :cljs js/Error)
+                     (d/q '[:find ?v :where [(inc ?v) ?e] (or-join [[?e] ?v] [?e :r/s ?v])] db))))
+      (testing "an equality the range excludes"
+        (is (= #{} (both '[:find ?e :where [?e :r/m ?v] [(>= ?v 1)] [(= ?v -5)]] db))))
+      (testing "a transaction input on a pattern alone on its source is not restated"
+        (is (= '[[?e :r/m _ ?t] [$b ?e :r/n _]]
+               (:where (q/normalize-repeated-vars
+                        '{:find [?e] :in [$ $b [?t ...]]
+                          :where [[?e :r/m _ ?t] [$b ?e :r/n _]]})))))
       (testing "a range on an attribute holding values of two types"
         (is (= #{[one]} (both '[:find ?e :where [?e :r/n ?v] [(number? ?v)] [(>= ?v 0)]] db)))
         (is (= #{[one]} (both '[:find ?e :where [?e :r/n ?v] [(number? ?v)] [(> ?v 0)]] db))))
