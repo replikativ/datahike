@@ -785,6 +785,27 @@
       (assoc query :where (mapv (fn [c] (if (fn-clause-written-as-list? c) (vec c) c)) where))
       query)))
 
+(def ^:private ^:dynamic *lookup-ref-inputs*
+  "`:in` variables whose value on this call holds a lookup ref."
+  #{})
+
+(defn- lookup-ref-inputs
+  "The `:in` variables bound, on this call, to something holding a lookup ref
+   (`[:attr value]`). A lookup ref in a transaction slot is resolved BY that
+   slot, against the pattern's source; restated outside the pattern it would
+   be compared as a vector. Such an input keeps its slot."
+  [query args]
+  (into #{}
+        (mapcat (fn [[form arg]]
+                  (when (and (not (and (symbol? form) (not (analyze/free-var? form))))
+                             (if (symbol? form)
+                               (sequential? arg)
+                               (and (sequential? arg)
+                                    (some #(and (sequential? %) (keyword? (first %)))
+                                          (tree-seq sequential? seq arg)))))
+                    (filter analyze/free-var? (tree-seq coll? seq [form])))))
+        (map vector (or (:in query) '[$]) args)))
+
 (defn normalize-repeated-vars
   "Rewrite every data pattern that mentions a variable twice into a pattern of
    distinct variables plus an explicit `=` join predicate. Also expands scalar
@@ -796,7 +817,8 @@
    and result caches are not perturbed for queries this does not affect."
   [query]
   (let [where (:where query)]
-    (binding [*input-vars* (into #{} (filter analyze/free-var?)
+    (binding [*input-vars* (into #{} (comp (filter analyze/free-var?)
+                                           (remove *lookup-ref-inputs*))
                                  (tree-seq coll? seq (:in query)))]
       (if (and (seq where) (where-needs-normalization? where))
         (let [taken  (into #{} (filter symbol?) (tree-seq coll? seq query))
@@ -984,9 +1006,10 @@
                    (:args query-input))
                arg-inputs)
         _    (check-rules-in-args! query args)]
-    (-> {:query (-> (apply dissoc query extra-ks)
-                    normalize-list-fn-clauses
-                    normalize-repeated-vars)
+    (-> {:query (binding [*lookup-ref-inputs* (lookup-ref-inputs query args)]
+                  (-> (apply dissoc query extra-ks)
+                      normalize-list-fn-clauses
+                      normalize-repeated-vars))
          ;; Rules ride in as the argument bound to `%`; normalise their
          ;; bodies too, or a self-join inside a rule stays wrong on BOTH
          ;; engines.

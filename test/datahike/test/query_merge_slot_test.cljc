@@ -578,3 +578,32 @@
            (:where (q/normalize-repeated-vars
                     '{:find [?a ?b] :in [$ [?t ...]]
                       :where [[?e :m/a ?a ?t] [?e :m/b ?b ?t]]}))))))
+
+(deftest a-lookup-ref-as-a-transaction-input-keeps-its-slot
+  ;; The slot resolves it; restated outside the pattern it would be compared
+  ;; as a vector.
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :schema-flexibility :write :keep-history? true}
+        _ (d/create-database cfg)
+        conn (d/connect cfg)
+        _ (d/transact conn [{:db/ident :l/active :db/valueType :db.type/boolean
+                             :db/cardinality :db.cardinality/one}
+                            {:db/ident :l/kind :db/valueType :db.type/keyword
+                             :db/cardinality :db.cardinality/one}
+                            {:db/ident :l/batch :db/valueType :db.type/string
+                             :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}])
+        before @conn
+        tx (:max-tx (:db-after (d/transact conn [{:db/id "i" :l/active true :l/kind :invoice}
+                                                 {:db/id "datomic.tx" :l/batch "B"}])))
+        db @conn
+        e (d/q '[:find ?e . :where [?e :l/kind :invoice]] db)
+        q1 '[:find ?e :in $ ?t :where [?e :l/active true] [?e :l/kind :invoice ?t]]]
+    (is (= #{[e]} (both q1 db [:l/batch "B"])))
+    (is (= #{[e]} (both q1 db tx)))
+    (is (= #{} (both q1 db (dec tx))))
+    (is (= #{[e]} (both '[:find ?e :in $ [?t ...] :where [?e :l/active true] [?e :l/kind :invoice ?t]]
+                        db [[:l/batch "B"]])))
+    (testing "resolved against the source the pattern names"
+      (is (= #{[e]} (both '[:find ?e :in $ $after [?t ...] :where
+                            [$after ?e :l/active true] [$after ?e :l/kind :invoice ?t]]
+                          before db [[:l/batch "B"] 12345]))))))
