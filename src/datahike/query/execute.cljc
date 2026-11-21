@@ -4505,6 +4505,10 @@
             (and (some? tx) (symbol? tx) (analyze/free-var? tx)) (conj tx)
             (and (symbol? v) (analyze/free-var? v)
                  (keyword? a)
+                 ;; a collection source has no schema, so no ref values;
+                 ;; asking it threw for any query naming a collection
+                 ;; beside a database
+                 (dbu/db? db)
                  (dbu/ref? db a)) (conj v)))]
     (reduce (fn [s mop] (add-clause-vars s (:clause mop)))
             (add-clause-vars #{} clause)

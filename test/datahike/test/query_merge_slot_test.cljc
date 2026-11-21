@@ -377,7 +377,8 @@
          (is (= #{[2400]} (q* '[:find (count ?r) :where [?l :j/lk ?k] [?r :j/rk ?k]])))
          (is (= #{[0 800] [1 800] [2 800]}
                 (q* '[:find ?g (count ?r) :where [?l :j/lk ?k] [?l :j/grp ?g] [?r :j/rk ?k]])))
-         (is (= 1200 (count (q* '[:find ?k (count ?r) :where [?l :j/lk ?k] [?r :j/rk ?k]]))))
+         (is (= (into #{} (map (fn [k] [k 2])) (range 1200))
+                (q* '[:find ?k (count ?r) :where [?l :j/lk ?k] [?r :j/rk ?k]])))
          (is (= #{[0 800]}
                 (q* '[:find ?g (count ?r) :where [?l :j/lk ?k] [?l :j/grp ?g]
                       [(= ?g (quote 0))] [?r :j/rk ?k]])))
@@ -414,12 +415,19 @@
                     (is (= #{[a]} (both '[:find ?e :in $ ?p :where [?e :c/bytes ?v] [(= ?v ?p)]]
                                         d (byte-array [1 2 3]))))))
           (testing "`=` tells a long from a double, `==` does not"
-            (is (= #{} (both '[:find ?e :where [?e :c/n ?v] [(= ?v 1.0)]] d)))
+            ;; one number type in JavaScript
+            #?(:clj (is (= #{} (both '[:find ?e :where [?e :c/n ?v] [(= ?v 1.0)]] d))))
             (is (= #{[b]} (both '[:find ?e :where [?e :c/n ?v] [(== ?v 1.0)]] d))))
           (testing "the pattern's value is itself an input"
             (is (= #{[a]} (both '[:find ?e :in $ ?v :where [?e :c/n ?v] [(= ?v 3)]] d 3)))
             (is (= #{[a]} (both '[:find ?e :in $ ?v :where [?e :c/n ?v] [(> ?v 2)]] d 3)))
-            (is (= #{} (both '[:find ?e :in $ ?v :where [?e :c/n ?v] [(> ?v 3)]] d 3))))
+            (is (= #{} (both '[:find ?e :in $ ?v :where [?e :c/n ?v] [(> ?v 3)]] d 3)))
+            (testing "which the predicate's bounds do not replace"
+              (is (= #{} (both '[:find ?e :in $ ?v :where [?e :c/n ?v] [(= ?v 10)]] d 3)))
+              (is (= #{[a]} (both '[:find ?e :in $ ?v :where [?e :c/n ?v] [(>= ?v 1)]] d 3)))
+              (is (= #{[a]} (both '[:find ?e :in $ ?v :where [?e :c/n ?v] [(<= ?v 100)]] d 3)))))
+          (testing "a literal nil bounds nothing"
+            (is (= #{[a] [b]} (both '[:find ?e :where [?e :c/kw ?v] [(> ?v nil)]] d))))
           (testing "an inclusive bound on entities that are sought one by one"
             (is (= #{[big]} (both '[:find ?e :in $ [?e ...] :where [?e :c/n ?v] [(>= ?v 10)]]
                                   d [a b big])))
@@ -438,10 +446,33 @@
         (is (= #{[4]} (both '[:find ?v :where (or-join [[?e] ?v] [?e :x/s ?v]) [?e :x/k "a"]] d)))
         (is (= #{[4]} (both '[:find ?v :in $ $b :where ($b or-join [[?e] ?v] [?e :x/s ?v])
                               [?e :x/k "a"]] d d)))
-        (testing "bound by nothing, it is refused"
-          (is (thrown? #?(:clj Exception :cljs js/Error)
-                       (d/q '[:find ?v :where (or-join [[?e] ?v] [?e :x/s ?v])] d))))
+        (testing "bound by nothing, or only read by another clause, it is refused"
+          (doseq [qq '[[:find ?v :where (or-join [[?e] ?v] [?e :x/s ?v])]
+                       [:find ?v :where (or-join [[?e] ?v] [?e :x/s ?v]) [(pos? ?e)]]
+                       [:find ?v ?z :where (or-join [[?e] ?v] [?e :x/s ?v]) [(inc ?e) ?z]]]]
+            (is (thrown? #?(:clj Exception :cljs js/Error) (d/q qq d)))
+            (is (thrown? #?(:clj Exception :cljs js/Error)
+                         (binding [q/*disable-planner* true] (d/q qq d))))))
+        (testing "a function's output binds it"
+          (let [a (d/q '[:find ?e . :where [?e :x/k "a"]] db)]
+            (is (= #{[4]} (both '[:find ?v :in $ ?a :where (or-join [[?e] ?v] [?e :x/s ?v])
+                                  [(identity ?a) ?e]] d a)))))
         (testing "a quoted nil default is the nil default"
           (is (thrown? #?(:clj Exception :cljs js/Error)
                        (d/q '[:find ?v :where [?e :x/k "b"]
                               [(get-else $ ?e :x/s (quote nil)) ?v]] d))))))))
+
+(deftest a-collection-as-a-second-source
+  ;; Beside a database, a pattern on a collection asked the collection for
+  ;; its schema and threw.
+  (let [{:keys [db]} (setup)
+        rows [[1 :x/i 1] [2 :x/i 9]]]
+    (is (= #{[1] [2]} (both '[:find ?e :in $ $b :where [$b ?e :x/i ?v]] db rows)))
+    (is (= #{[2]} (both '[:find ?e :in $ $b :where [$b ?e :x/i ?v] [(>= ?v 9)]] db rows)))
+    (testing "the body of a prefixed or / not is planned for that source"
+      ;; :x/i is indexed in the database; the collection has no index for a
+      ;; pushed predicate to land in
+      (is (= #{[2]} (both '[:find ?e :in $ $b :where ($b or (and [?e :x/i ?v] [(>= ?v 9)]))]
+                          db rows)))
+      (is (= #{[1]} (both '[:find ?e :in $ $b [?e ...] :where ($b not [?e :x/i ?v] [(>= ?v 9)])]
+                          db rows [1 2]))))))

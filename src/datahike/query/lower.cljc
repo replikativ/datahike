@@ -38,6 +38,11 @@
 ;; plan.cljc helpers expect classified clause maps. These converters
 ;; reconstruct them from IR record fields.
 
+(def ^:private ^:dynamic *foreign-source*
+  "The source a compound clause was prefixed with (`($b or …)`, `($b not …)`),
+   while its body is planned. Every pattern of that body runs against it."
+  nil)
+
 (defn- scan-schema-info
   "Schema facts for a scan's attribute, as seen by the database the scan will
    actually run against.
@@ -54,7 +59,12 @@
   [db ci source]
   (let [info (analyze/pattern-schema-info db ci)]
     (cond-> info
-      (and info source) (assoc :indexed? false :unique? false :card-one? false))))
+      ;; `*foreign-source*`: the body of a source-prefixed `or`/`not` was
+      ;; planned with the primary's schema, so a predicate was pushed into
+      ;; an index the named source need not have — on a collection it was
+      ;; then applied by nothing.
+      (and info (or source *foreign-source*))
+      (assoc :indexed? false :unique? false :card-one? false))))
 
 (defn- scan->classified
   "Convert an LScan or LOptionalScan back to a classified clause map for
@@ -225,7 +235,8 @@
                                               " not bound in " (:clause clause-info))
                                          {:error :query/where :form (:clause clause-info)})))
                        (into #{} (filter analyze/free-var?) (tree-seq coll? seq raw))))
-         sub-plans (normalize-and-plan-branches db (:branches clause-info) bound-vars rules)
+         sub-plans (binding [*foreign-source* (or (:source clause-info) *foreign-source*)]
+                     (normalize-and-plan-branches db (:branches clause-info) bound-vars rules))
          total-est (reduce + 0 (keep (fn [p] (some :estimated-card (:ops p))) sub-plans))]
      (cond-> {:op (if join-vars? :or-join :or)
               :clause (:clause clause-info)
@@ -241,8 +252,9 @@
    (plan-not-op db clause-info bound-vars rules false))
   ([db clause-info bound-vars rules join-vars?]
    (let [join-vars (when join-vars? (set (:join-vars clause-info)))
-         sub-plan (plan-via-ir db (:sub-clauses clause-info)
-                               (if join-vars? join-vars bound-vars) rules)]
+         sub-plan (binding [*foreign-source* (or (:source clause-info) *foreign-source*)]
+                    (plan-via-ir db (:sub-clauses clause-info)
+                                 (if join-vars? join-vars bound-vars) rules))]
      (cond-> {:op (if join-vars? :not-join :not)
               :clause (:clause clause-info)
               :sub-plan sub-plan

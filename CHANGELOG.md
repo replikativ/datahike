@@ -13,7 +13,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
   branch of a source-prefixed `or`. Two equalities on one indexed value
   (`[(= ?v 3)] [(= ?v 4)]`) answered with the second; `[(= ?v false)]` on an
   indexed boolean returned both values; `[(= ?v (quote foo))]` on an indexed
-  attribute returned nothing; `[(= ?v 1.0)]` matched the long `1`; two bounds
+  attribute returned nothing; `[(= ?v 1.0)]` matched the long `1` (JVM); two bounds
   on one side of a string, keyword or instant value threw; and `>=`/`<=` were
   dropped for entities passed through `:in` on a history database. `(count ?r)` over a join driven by a unique
   attribute returned `1`, or one count per key, unless the `:find` variables
@@ -22,7 +22,8 @@ When something is added, it's typically marked *Experimental*. When the API cont
   quoted attribute, or a destructuring output, dropped rows or threw; a pattern
   with no attribute beside a variable-attribute one (`[?e] [?e ?a 4]`) threw;
   `(or-join [[?e] ?v] …)` was refused although `?e` was bound; a recursive
-  rule over patterns fixing `added` ignored it. All were planner-only.
+  rule over patterns fixing `added` ignored it. A pattern on a collection
+  passed as a second source beside a database threw. All were planner-only.
   (0.8.NNNN, [#TODO])
 
 - **Transaction and `added` slots on patterns that share an entity ([#1172]).**
