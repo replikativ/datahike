@@ -433,11 +433,13 @@
                                   d [a b big])))
             (is (= #{[a] [b]} (both '[:find ?e :in $ [?e ...] :where [?e :c/n ?v] [(<= ?v 3)]]
                                     d [a b big]))))
-          (testing "two bounds on one side, on values that are not numbers"
-            (is (= #{[a]} (both '[:find ?e :where [?e :c/str ?v] [(>= ?v "a")] [(>= ?v "b")]] d)))
-            (is (= #{[b]} (both '[:find ?e :where [?e :c/kw ?v] [(<= ?v :z)] [(<= ?v :b)]] d)))
-            (is (= #{[a]} (both '[:find ?e :where [?e :c/inst ?v]
-                                  [(> ?v #inst "2019-01-01")] [(> ?v #inst "2020-01-02")]] d)))))))))
+          ;; the JVM tightened two bounds with a numeric max/min
+          #?(:clj
+             (testing "two bounds on one side, on values that are not numbers"
+               (is (= #{[a]} (both '[:find ?e :where [?e :c/str ?v] [(>= ?v "a")] [(>= ?v "b")]] d)))
+               (is (= #{[b]} (both '[:find ?e :where [?e :c/kw ?v] [(<= ?v :z)] [(<= ?v :b)]] d)))
+               (is (= #{[a]} (both '[:find ?e :where [?e :c/inst ?v]
+                                     [(> ?v #inst "2019-01-01")] [(> ?v #inst "2020-01-02")]] d))))))))))
 
 (deftest a-required-or-join-variable-bound-by-a-later-clause
   (let [{:keys [db history]} (setup)]
@@ -512,9 +514,14 @@
                (:where (q/normalize-repeated-vars
                         '{:find [?e] :in [$ $b [?t ...]]
                           :where [[?e :r/m _ ?t] [$b ?e :r/n _]]})))))
-      (testing "a range on an attribute holding values of two types"
-        (is (= #{[one]} (both '[:find ?e :where [?e :r/n ?v] [(number? ?v)] [(>= ?v 0)]] db)))
-        (is (= #{[one]} (both '[:find ?e :where [?e :r/n ?v] [(number? ?v)] [(> ?v 0)]] db))))
+      #?(:clj
+         (testing "a range on an attribute holding values of two types"
+           (is (= #{[one]} (both '[:find ?e :where [?e :r/n ?v] [(number? ?v)] [(>= ?v 0)]] db)))
+           (is (= #{[one]} (both '[:find ?e :where [?e :r/n ?v] [(number? ?v)] [(> ?v 0)]] db)))))
+      (testing "a chain of functions fed by the or-join binds nothing for it either"
+        (is (thrown? #?(:clj Exception :cljs js/Error)
+                     (d/q '[:find ?v :where (or-join [[?e] ?v] [?e :r/s ?v])
+                            [(inc ?v) ?x] [(identity ?x) ?e]] db))))
       (testing "an equality after a range"
         (is (= #{[m42]} (both '[:find ?e :where [?e :r/m ?v] [(>= ?v 0)] [(= ?v 42)]] db)))
         (is (= #{} (both '[:find ?e :where [?e :r/m ?v] [(>= ?v 50)] [(= ?v 42)]] db)))

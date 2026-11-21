@@ -58,12 +58,15 @@
   (update bounds bound-key
           (fn [cur]
             (if (some? cur)
-              (try
-                (let [c (compare cur const-val)]
-                  (if (= pick max)
-                    (if (neg? c) const-val cur)
-                    (if (pos? c) const-val cur)))
-                (catch #?(:clj Exception :cljs :default) _ cur))
+              #?(:clj (try
+                        (let [c (compare cur const-val)]
+                          (if (= pick max)
+                            (if (neg? c) const-val cur)
+                            (if (pos? c) const-val cur)))
+                        (catch Exception _ cur))
+                 ;; JavaScript's own ordering, as before: it compares strings
+                 ;; and coerces across types the way the query's operators do
+                 :cljs (pick cur const-val))
               const-val))))
 
 (defn pushdown-to-bounds

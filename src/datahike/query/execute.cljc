@@ -535,8 +535,12 @@
 (defn- safe-compare
   "`compare`, or nil when the two values have no order."
   [a b]
-  (try (compare a b)
-       (catch #?(:clj Exception :cljs :default) _ nil)))
+  ;; decided by type first: an exception per datom is what a scan over an
+  ;; attribute of mixed types would otherwise pay
+  (when (or (and (number? a) (number? b))
+            (= (type a) (type b)))
+    (try (compare a b)
+         (catch #?(:clj Exception :cljs :default) _ nil))))
 
 (defn- build-strict-filter
   "Build a post-filter for strict inequalities (> <) on a datom field."

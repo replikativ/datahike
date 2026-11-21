@@ -236,10 +236,10 @@
               (nil? var-sym) [nil nil]
               ;; a literal nil bounds nothing; the predicate decides
               (nil? const-val) [nil nil]
-              ;; A quoted SYMBOL stays out of the bounds: there a symbol is
-              ;; a parameter's name, and `(quote ?p)` was rebound to the
-              ;; input `?p`.
-              (quote-form? const-val) (if (or (symbol? (second const-val))
+              ;; A quoted symbol spelled like a variable stays out of the
+              ;; bounds: there such a symbol is a parameter's name, and
+              ;; `(quote ?p)` was rebound to the input `?p`.
+              (quote-form? const-val) (if (or (free-var? (second const-val))
                                               (coll? (second const-val)))
                                         [nil nil]
                                         [var-sym (second const-val)])

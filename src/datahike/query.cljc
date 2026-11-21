@@ -320,6 +320,8 @@
   "The variables the query's `:in` binds, while its `:where` is normalized."
   #{})
 
+(declare ^:dynamic *fold-scalar-ins*)
+
 (def ^:private ^:dynamic *pattern-entities*
   "How many data patterns name each entity, in the clause list being
    normalized and the lists enclosing it."
@@ -434,15 +436,28 @@
              ;; restated form would compare every datom of the attribute
              ;; with every input row.
              (and (contains? *input-vars* tx)
+                  ;; Folding (a test-time switch) puts the VALUE into the
+                  ;; slot afterwards, where a lookup ref is resolved as a
+                  ;; transaction; restated, it would be compared as a vector.
+                  (not *fold-scalar-ins*)
                   (>= (long (get *pattern-entities* [*pattern-source* (first pattern)] 0)) 2))))
        ;; `[r ?a ?b ?c 5]` is a rule call spelled as a vector
        (nil? (rule-call-args pattern))))
 
 (defn- rewrite-literal-tx
-  "`[?e :a ?v 123]` → `[[?e :a ?v ?tx] [[(= ?tx 123)]]]`."
+  "`[?e :a ?v 123]` → `[[?e :a ?v ?tx] [[(= ?tx 123)]]]`.
+
+   An input VARIABLE is restated as a binding, `[(identity ?tx) ?in]`: the
+   pattern's transaction joins the input's column like the pattern's own
+   slot did. As a predicate it compared every row of the group with every
+   row of a collection or relation input."
   [pattern fresh!]
-  (let [v (fresh! '?__tx)]
-    [(assoc (vec pattern) 3 v) [[(list '= v (nth pattern 3))]]]))
+  (let [v (fresh! '?__tx)
+        tx (nth pattern 3)]
+    [(assoc (vec pattern) 3 v)
+     [(if (symbol? tx)
+        [(list 'identity v) tx]
+        [(list '= v tx)])]]))
 
 (defn- pattern-needs-rewrite? [pattern]
   (or (repeated-var-pattern? pattern) (literal-tx-pattern? pattern)))

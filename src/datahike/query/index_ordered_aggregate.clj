@@ -150,8 +150,9 @@
 (defn- supported-predicate? [available-vars {:keys [fn-sym args]}]
   (and (contains? supported-predicates fn-sym)
        (= 2 (count args))
-       ;; a constant, as written: `(quote 0)` would be compared as a list
-       (not-any? seq? args)
+       ;; `(quote x)` is compared as written, a list: right for `not=`
+       ;; against anything stored, wrong for the rest
+       (or (not-any? seq? args) (= 'not= (symbol (name fn-sym))))
        ;; `simple-predicate-value` orders with the numeric operators
        (or (contains? #{'= 'not=} (symbol (name fn-sym)))
            (some number? args))

@@ -819,8 +819,15 @@
                             ;; at the seed site meaningful.
                             (when (and clause
                                        ;; the edge shortcut reads e, a and v
-                                       (contains? #{nil '_} (nth clause 3 nil))
-                                       (contains? #{nil '_} (nth clause 4 nil))
+                                       ;; absent, blank, or a variable the
+                                       ;; head does not carry: no constraint
+                                       (every? (fn [x]
+                                                 (or (nil? x) (= '_ x)
+                                                     (and (analyze/free-var? x)
+                                                          (not-any? #{x} head-vars)
+                                                          (not= x e) (not= x v))))
+                                               [(nth clause 3 nil) (nth clause 4 nil)])
+                                       (not= (nth clause 3 ::a) (nth clause 4 ::b))
                                        (:ref? sinfo)
                                        (= [e v] (vec head-vars)))
                               a)))))))]
@@ -1142,20 +1149,30 @@
                                              (keys all-clause-vars)
                                              all-clause-vars))]
                              (f)))
-        vars-bound-elsewhere (fn [clause]
-                               (into (if (map? bound-vars) (set (keys bound-vars)) (set bound-vars))
-                                     (mapcat (fn [ci]
-                                               (case (:type ci)
-                                                 :predicate nil
-                                                 ;; … unless it computes that
-                                                 ;; output from this very clause
-                                                 :function (when (not-any? (set (analyze/extract-vars clause))
-                                                                           (filter analyze/free-var? (:args ci)))
-                                                             (filter analyze/free-var?
-                                                                     (tree-seq coll? seq (:binding ci))))
-                                                 (:not :not-join :or :or-join :and) nil
-                                                 (:vars ci))))
-                                     (remove #(= clause (:clause %)) classified)))
+        vars-bound-elsewhere
+        (fn [clause]
+          (let [others (remove #(= clause (:clause %)) classified)
+                seed (into (if (map? bound-vars) (set (keys bound-vars)) (set bound-vars))
+                           (mapcat (fn [ci]
+                                     (case (:type ci)
+                                       (:predicate :function
+                                                   :not :not-join :or :or-join :and) nil
+                                       (:vars ci))))
+                           others)
+                fns (filter #(= :function (:type %)) others)]
+            ;; A function binds its output once its arguments are bound —
+            ;; by the inputs, a pattern, a rule call, or another such
+            ;; function. To a fixpoint, so a chain counts and a cycle through
+            ;; the or-join itself (`[(inc ?v) ?x] [(identity ?x) ?e]`, ?v
+            ;; from the join) does not.
+            (loop [bound seed]
+              (let [bound' (into bound
+                                 (mapcat (fn [ci]
+                                           (when (every? bound (filter analyze/free-var? (:args ci)))
+                                             (filter analyze/free-var?
+                                                     (tree-seq coll? seq (:binding ci))))))
+                                 fns)]
+                (if (= bound' bound) bound (recur bound'))))))
         ;; :in vars seed at card 1 (placeholder), overridden by `in-cards` for
         ;; collection/relation bindings. Besides join costing, the scalar card
         ;; lets pushdown analysis retain a value-free prepared parameter as a
