@@ -85,7 +85,7 @@
     (binding [connections/*connections* registry]
       (let [lease (connections/reserve-connection! conn-id)]
         (connections/invalidate-store-connections! store-id)
-        (is (false? (connections/add-connection! conn-id lease conn)))
+        (is (nil? (connections/add-connection! conn-id lease conn)))
         (is (empty? @registry))))))
 
 (deftest invalidation-releases-exactly-the-connections-it-removes
@@ -144,3 +144,27 @@
           (doseq [conn (reverse @opened)]
             (d/release conn true))
           (d/delete-database cfg))))))
+
+(deftest concurrent-connects-count-each-lease
+  (dotimes [_ 5]
+    (let [registry (atom {})
+          store-id (random-uuid)
+          cfg {:store {:backend :memory :id store-id} :schema-flexibility :read}
+          conn-id [store-id :db]
+          entry #(get @registry conn-id)]
+      (binding [connections/*connections* registry]
+        (d/create-database cfg)
+        (try
+          (let [go (java.util.concurrent.CountDownLatch. 1)
+                fs (mapv (fn [_] (future (.await go) (d/connect cfg))) (range 4))
+                _ (.countDown go)
+                conns (mapv deref fs)]
+            (is (every? #(identical? (first conns) %) conns) "one connection for all callers")
+            (is (= 4 (:count (entry))))
+            (doseq [c (butlast conns)]
+              (d/release c)
+              (is (some? (:conn (entry))) "the id stays until the last release"))
+            (d/release (last conns))
+            (is (nil? (entry))))
+          (finally
+            (d/delete-database cfg)))))))

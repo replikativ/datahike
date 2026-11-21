@@ -483,14 +483,25 @@
                                                   {:ident ident :error install-result})
                                         (dsi/finish-secondary-index-build!
                                          build-result)))))))))
-                       (if (add-connection! conn-id lease conn)
-                         conn
-                         (do
-                           (w/shutdown (:writer @(:wrapped-atom conn)))
-                           (reset! conn :released)
-                           (log/raise "Database was deleted while connecting."
-                                      {:type :database-deleted-during-connect
-                                       :config config}))))
+                       (let [registered (add-connection! conn-id lease conn)]
+                         (cond
+                           (identical? registered conn)
+                           conn
+
+                           ;; Another connect published first: this caller holds one lease on it.
+                           registered
+                           (do
+                             (w/shutdown (:writer @(:wrapped-atom conn)))
+                             (reset! conn :released)
+                             registered)
+
+                           :else
+                           (do
+                             (w/shutdown (:writer @(:wrapped-atom conn)))
+                             (reset! conn :released)
+                             (log/raise "Database was deleted while connecting."
+                                        {:type :database-deleted-during-connect
+                                         :config config})))))
                      ;; Any failure between reserving the node cache and
                      ;; registering the connection -- a missing branch, a bad
                      ;; stored config, `ready-store`, writer creation -- would
