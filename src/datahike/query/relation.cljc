@@ -271,6 +271,29 @@
             (sum-rel a)
             (sum-rel b))))))
 
+(defn distinct-rel
+  "Retain one tuple per visible binding, even when tuples have hidden fields."
+  [{:keys [attrs tuples] :as relation}]
+  (if (< (count tuples) 2)
+    relation
+    (let [key-width (count attrs)
+          key-fn (tuple-key-fn (map (fn [idx] #(tget % idx)) (vals attrs)))
+          account (resource/account :relation-distinct)
+          tick (when cancel/*cancel* (cancel/ticker))]
+      (resource/check-size! :relation-distinct-key key-width)
+      (loop [remaining (seq tuples), seen (transient #{}), output (transient [])]
+        (if-let [tuple (first remaining)]
+          (do
+            (when tick (tick))
+            (let [key (key-fn tuple)]
+              (if (contains? seen key)
+                (recur (next remaining) seen output)
+                (do
+                  (when account
+                    (resource/reserve! account (+ key-width 1 (resource/tuple-slots (count tuple)))))
+                  (recur (next remaining) (conj! seen key) (conj! output tuple))))))
+          (assoc relation :tuples (persistent! output)))))))
+
 (defn subtract-rel [a b]
   (let [{attrs-a :attrs, tuples-a :tuples} a
         {attrs-b :attrs, tuples-b :tuples} b

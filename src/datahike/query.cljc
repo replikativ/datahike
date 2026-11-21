@@ -3509,7 +3509,9 @@
                          branches)
            branch-rel (union-branch-rels
                        (align-branch-rels context (map #(join-rels (:rels %)) contexts)))]
-       (cond-> (if branch-rel (update context :rels collapse-rels branch-rel) context)
+       ;; Rejoin the visible bindings once each. Projecting the outer context
+       ;; dropped columns, so several copies of a key may have reached a branch.
+       (cond-> (if branch-rel (update context :rels collapse-rels (rel/distinct-rel branch-rel)) context)
          (:stats context) (assoc :tmp-stats {:type :or-join
                                              :branches (mapv #(-> % :stats first) contexts)})))
 
