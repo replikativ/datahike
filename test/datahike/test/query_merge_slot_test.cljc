@@ -559,6 +559,14 @@
                               d (nth txs 5))))
         (is (= (into #{} (map (fn [i] [i i])) (range 20))
                (both '[:find ?a ?b :in $ [?t ...] :where [?e :m/a ?a ?t] [?e :m/b ?b ?t]] d txs)))))
+    (testing "each alternative of a disjunction restates it for itself"
+      (let [x (d/q '[:find ?e . :where [?e :m/k "x"]] db)]
+        (doseq [qq '[[:find ?e :in $ [?t ...] :where [?e :m/k "x"]
+                      (or-join [?e ?t] [?e :m/a 99 ?t] [?e :m/b 5 ?t])]
+                     [:find ?e :in $ ?t :where [?e :m/k "x"]
+                      (or [?e :m/a 99 ?t] [?e :m/b 5 ?t])]]
+                [input expected] [[(nth txs 5) #{[x]}] [(nth txs 6) #{}]]]
+          (is (= expected (both qq db (if (= '?t (nth qq 4)) input [input])))))))
     (is (= '[[?e :m/a ?a ?__tx__1] [(identity ?__tx__1) ?t] [?e :m/b ?b ?__tx__1]]
            (:where (q/normalize-repeated-vars
                     '{:find [?a ?b] :in [$ [?t ...]]

@@ -11,7 +11,7 @@
    [datahike.datom Datom]
    [datahike.db DB]
    [datalog.parser.type Aggregate PlainSymbol Variable]
-   [java.util HashMap HashSet]))
+   [java.util HashMap]))
 
 (set! *warn-on-reflection* true)
 
@@ -311,7 +311,8 @@
 
   The supported subset is intentionally conservative: two card-one entity
   groups, one indexed shared value, simple constant predicates, and either a
-  producer-grouped `(count ?consumer-entity)` over a unique key or a scalar
+  `(count ?consumer-entity)` over a unique producer key — per producer when
+  the :find variables identify it, added up per group otherwise — or a scalar
   `(sum ?value)` whose `:with` variables prove pair multiplicity. Count walks
   equal AVET runs; sum folds a direct aggregate-column scan against join-key
   multiplicities. Neither path materializes the intermediate join relation."

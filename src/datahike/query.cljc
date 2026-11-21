@@ -586,7 +586,10 @@
    that expands into several clauses is wrapped in `and`, because the elements of
    a disjunction are alternatives, not a conjunction."
   [branch fresh!]
-  (let [out (normalize-where-clause branch fresh!)]
+  ;; Each alternative restates an input transaction for itself: a variable
+  ;; restated in one alternative is bound to the input there and nowhere else.
+  (let [out (binding [*tx-restatements* (volatile! {})]
+              (doall (normalize-where-clause branch fresh!)))]
     (if (= 1 (count out))
       (first out)
       (cons 'and out))))

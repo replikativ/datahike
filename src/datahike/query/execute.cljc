@@ -535,12 +535,13 @@
 (defn- safe-compare
   "`compare`, or nil when the two values have no order."
   [a b]
-  ;; decided by type first: an exception per datom is what a scan over an
-  ;; attribute of mixed types would otherwise pay
-  (when (or (and (number? a) (number? b))
-            (= (type a) (type b))
-            ;; java.sql.Date against java.util.Date, and the like
-            #?(:clj (or (instance? (class a) b) (instance? (class b) a))))
+  ;; A number against a string is decided without trying: that is the pair a
+  ;; scan over an attribute of mixed types meets on every datom, and an
+  ;; exception each time is what it would pay. Anything else is tried —
+  ;; `compare` orders a vector against a subvector, a java.sql.Date against a
+  ;; java.util.Date, and other pairs whose classes differ.
+  (when-not (or (and (number? a) (string? b))
+                (and (string? a) (number? b)))
     (try (compare a b)
          (catch #?(:clj Exception :cljs :default) _ nil))))
 
