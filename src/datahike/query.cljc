@@ -791,15 +791,28 @@
 
 (defn- tx-slot-symbols
   "Every symbol written in the transaction slot of a data pattern in `where`,
-   at any depth."
+   at any depth of `not` / `or` / `and`. Walks CLAUSES only: a function call's
+   arguments are data — a quoted allowlist of a hundred thousand names is one
+   element here, not a hundred thousand."
   [where]
-  (into #{}
-        (keep (fn [x]
-                (when (vector? x)
-                  (let [p (if (source-prefixed-clause? x) (subvec x 1) x)]
-                    (when (and (data-pattern-clause? p) (> (count p) 3))
-                      (let [tx (nth p 3)] (when (symbol? tx) tx)))))))
-        (tree-seq coll? seq where)))
+  (letfn [(walk [acc clause]
+            (cond
+              ;; (not …) (or …) (and …) (not-join [vars] …) ($src or …)
+              (seq? clause)
+              (let [[head & more] (if (source-prefixed-clause? clause) (rest clause) clause)]
+                (reduce walk acc (if (#{'not-join 'or-join} head) (rest more) more)))
+
+              (not (vector? clause)) acc
+              ;; [(f …) out] — a call
+              (seq? (first clause)) acc
+              ;; an `or` branch written as a vector of clauses
+              (vector? (first clause)) (reduce walk acc clause)
+
+              :else
+              (let [p (if (source-prefixed-clause? clause) (subvec clause 1) clause)
+                    tx (when (> (count p) 3) (nth p 3))]
+                (cond-> acc (symbol? tx) (conj tx)))))]
+    (reduce walk #{} where)))
 
 (defn- lookup-ref-inputs
   "The `:in` variables that sit in some pattern's transaction slot and are
@@ -810,10 +823,18 @@
 
    Looks only at inputs a transaction slot names, and there only at that
    variable's own values: a query with none of them inspects nothing, and
-   what a binding form ignores (`_`) is never touched."
+   what a binding form ignores (`_`) is never touched. A value that cannot be
+   inspected counts as not-an-id, so the input keeps its slot."
   [query args]
   (let [tx-syms (tx-slot-symbols (:where query))
-        id? (fn [x] (or (nil? x) (number? x)))]
+        id? (fn [x] (or (nil? x) (number? x)))
+        ;; any seqable — a set, a java.util.List — or false
+        all? (fn [pred xs]
+               (try (every? pred xs)
+                    (catch #?(:clj Exception :cljs :default) _ false)))
+        at (fn [row i]
+             (try (nth (vec row) i nil)
+                  (catch #?(:clj Exception :cljs :default) _ ::unreadable)))]
     (if (or (empty? tx-syms) (not (sequential? args)))
       #{}
       (into #{}
@@ -826,20 +847,19 @@
                  ;; [?t ...]
                  (and (vector? form) (= 2 (count form)) (= '... (second form))
                       (symbol? (first form)))
-                 (when (and (tx-syms (first form)) (coll? arg) (not (every? id? arg)))
+                 (when (and (tx-syms (first form)) (not (all? id? arg)))
                    [(first form)])
-                 ;; [[?a ?t]] — rows may be vectors or map entries
+                 ;; [[?a ?t]] — rows may be vectors, lists or map entries
                  (and (vector? form) (= 1 (count form)) (vector? (first form))
                       (every? symbol? (first form)))
                  (keep-indexed (fn [i v]
-                                 (when (and (tx-syms v) (coll? arg)
-                                            (not (every? #(id? (nth (vec %) i nil)) arg)))
+                                 (when (and (tx-syms v) (not (all? #(id? (at % i)) arg)))
                                    v))
                                (first form))
                  ;; [?a ?t]
                  (and (vector? form) (every? symbol? form))
                  (keep-indexed (fn [i v]
-                                 (when (and (tx-syms v) (not (id? (nth (vec arg) i nil)))) v))
+                                 (when (and (tx-syms v) (not (id? (at arg i)))) v))
                                form)
                  ;; anything nested: leave its variables as they are written
                  :else (filter tx-syms (tree-seq coll? seq [form]))))

@@ -617,6 +617,17 @@
       (is (= #{[e]} (both '[:find ?e :in $ [?t ?l] :where
                             [?e :l/active true] [?e :l/kind :invoice ?t]]
                           db [[:l/batch "B"] 1]))))
+    #?(:clj
+       (testing "in a Java collection"
+         (is (= #{[e]} (both '[:find ?e :in $ [?t ...] :where
+                               [?e :l/active true] [?e :l/kind :invoice ?t]]
+                             db (java.util.ArrayList. [[:l/batch "B"]]))))
+         (is (= #{} (both '[:find ?e :in $ [?t ...] :where
+                            [?e :l/active true] [?e :l/kind :invoice ?t]]
+                          db (java.util.ArrayList. [(dec tx)]))))))
+    (testing "data inside a call is not read as a pattern"
+      (is (= #{} (#'q/tx-slot-symbols '[[?e :l/kind ?k] [(contains? (quote #{[1 2 3 ?q]}) ?k)]])))
+      (is (= '#{?t ?u} (#'q/tx-slot-symbols '[[?e :l/kind _ ?t] (not [?e :l/active _ ?u])]))))
     (testing "an input the query ignores is not looked at"
       (is (= #{[e]} (both '[:find ?e :in [[?e _]] $ :where [?e :l/active true]]
                           [[e (map (fn [_] (throw (ex-info "forced" {}))) [1])]] db))))

@@ -16,8 +16,9 @@ When something is added, it's typically marked *Experimental*. When the API cont
   attribute returned nothing; `[(= ?v 1.0)]` matched the long `1` (JVM); two bounds
   on one side of a string, keyword or instant value threw; and `>=`/`<=` were
   dropped for entities passed through `:in` on a history database. `(count ?r)` over a join driven by a unique
-  attribute returned `1`, or one count per key, unless the `:find` variables
-  named that key or its entity. A transaction passed through `:in` was ignored
+  attribute, once large enough for the index-ordered count path, returned `1`,
+  or one count per key, unless the `:find` variables named that key or its
+  entity. A transaction passed through `:in` was ignored
   on a pattern sharing its entity with another. `get-else` with a variable or
   quoted attribute, or a destructuring output, dropped rows or threw; a pattern
   with no attribute beside a variable-attribute one (`[?e] [?e ?a 4]`) threw;
