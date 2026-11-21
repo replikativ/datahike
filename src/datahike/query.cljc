@@ -24,6 +24,7 @@
                                          RulesVar SrcVar Variable]])
    [datahike.constants :as const]
    [datahike.query.cancel :as qcancel]
+   [datahike.query.resource :as resource]
    [datahike.query.relation :as rel]
    [datahike.query.plan :as plan]
    [datahike.query.analyze :as analyze]
@@ -180,7 +181,7 @@
         #?(:clj (when scheduled (.cancel scheduled false))
            :cljs (when scheduled (js/clearTimeout scheduled)))))))
 
-(declare -collect -resolve-clause resolve-clause raw-q)
+(declare -collect collect -resolve-clause resolve-clause raw-q)
 
 ;; Records
 
@@ -1165,10 +1166,12 @@
 (defn prod-rel
   ([] (rel/->Relation {} [(da/make-array 0)]))
   ([rel1 rel2]
-   (let [attrs1 (keys (:attrs rel1))
+   (let [output (resource/account :product-output)
+         attrs1 (keys (:attrs rel1))
          attrs2 (keys (:attrs rel2))
          idxs1 (to-array (map (:attrs rel1) attrs1))
-         idxs2 (to-array (map (:attrs rel2) attrs2))]
+         idxs2 (to-array (map (:attrs rel2) attrs2))
+         slots (when output (resource/tuple-slots (+ (alength idxs1) (alength idxs2))))]
      (rel/->Relation
       (zipmap (concat attrs1 attrs2) (range))
       (persistent!
@@ -1176,6 +1179,7 @@
         (fn [acc t1]
           (when *query-cancel* (check-cancel! *query-cancel*))
           (reduce (fn [acc t2]
+                    (resource/reserve! output slots)
                     (conj! acc (join-tuples t1 idxs1 t2 idxs2)))
                   acc (:tuples rel2)))
         (transient []) (:tuples rel1)))))))
@@ -1202,10 +1206,12 @@
 (defn- unify-rel-with-plan
   "The tuple loop of `unify-rel`, given the plan from `unify-rel-plan`."
   [plan rel1 rel2]
-  (let [idxs1 (:idxs1 plan)
-        idxs2 (:idxs2 plan)
+  (let [output (resource/account :unification-output)
+        #?(:clj ^objects idxs1 :cljs idxs1) (:idxs1 plan)
+        #?(:clj ^objects idxs2 :cljs idxs2) (:idxs2 plan)
         obligations (:obligations plan)
-        tuples2 (:tuples rel2)]
+        tuples2 (:tuples rel2)
+        slots (when output (resource/tuple-slots (+ (alength idxs1) (alength idxs2))))]
     (rel/->Relation
      (:attrs plan)
      (persistent!
@@ -1219,7 +1225,8 @@
                    ;; engine already goes through an array-aware comparison.
                    (if (every? (fn [[i1 i2]] (a= (get t1 i1) (get t2 i2)))
                                obligations)
-                     (conj! acc (join-tuples t1 idxs1 t2 idxs2))
+                     (do (resource/reserve! output slots)
+                         (conj! acc (join-tuples t1 idxs1 t2 idxs2)))
                      acc))
                  acc tuples2))
        (transient []) (:tuples rel1))))))
@@ -1238,13 +1245,15 @@
 (defn- join-tuples-into!
   "Join the one tuple T1 with every tuple of TUPLES2 under PLAN (from
    `unify-rel-plan` or `prod-rel-plan`), conj!-ing the survivors onto ACC."
-  [acc plan t1 tuples2]
-  (let [idxs1 (:idxs1 plan)
-        idxs2 (:idxs2 plan)
-        obligations (:obligations plan)]
+  [acc plan t1 tuples2 output]
+  (let [#?(:clj ^objects idxs1 :cljs idxs1) (:idxs1 plan)
+        #?(:clj ^objects idxs2 :cljs idxs2) (:idxs2 plan)
+        obligations (:obligations plan)
+        slots (when output (resource/tuple-slots (+ (alength idxs1) (alength idxs2))))]
     (reduce (fn [acc t2]
               (if (every? (fn [[i1 i2]] (a= (tget t1 i1) (tget t2 i2))) obligations)
-                (conj! acc (join-tuples t1 idxs1 t2 idxs2))
+                (do (resource/reserve! output slots)
+                    (conj! acc (join-tuples t1 idxs1 t2 idxs2)))
                 acc))
             acc tuples2)))
 
@@ -1955,60 +1964,8 @@
 ;; DEFAULT engine while the base engine answered correctly.
 (def tuple-key-fn rel/tuple-key-fn)
 
-(defn hash-attrs [key-fn tuples]
-  ;; Equivalent to group-by except that it uses a list instead of a vector.
-  (loop [tuples tuples
-         hash-table (transient {})]
-    (if-some [tuple (first tuples)]
-      (let [_ (when *query-cancel* (check-cancel! *query-cancel*))
-            key (key-fn tuple)]
-        (recur (next tuples)
-               (assoc! hash-table key (conj (get hash-table key '()) tuple))))
-      (persistent! hash-table))))
-
-(defn hash-join [rel1 rel2]
-  (let [tuples1      (:tuples rel1)
-        tuples2      (:tuples rel2)
-        attrs1       (:attrs rel1)
-        attrs2       (:attrs rel2)
-        common-attrs (vec (intersect-keys (:attrs rel1) (:attrs rel2)))
-        common-gtrs1 (map #(getter-fn attrs1 %) common-attrs)
-        common-gtrs2 (map #(getter-fn attrs2 %) common-attrs)
-        keep-attrs1  (keys attrs1)
-        keep-attrs2  (vec (set/difference (set (keys attrs2)) (set (keys attrs1))))
-        keep-idxs1   (to-array (map attrs1 keep-attrs1))
-        keep-idxs2   (to-array (map attrs2 keep-attrs2))
-        key-fn1      (tuple-key-fn common-gtrs1)
-        key-fn2      (tuple-key-fn common-gtrs2)]
-    (if (< (count tuples1) (count tuples2))
-      (let [hash       (hash-attrs key-fn1 tuples1)
-            new-tuples (->>
-                        (reduce (fn [acc tuple2]
-                                  (let [_ (when *query-cancel* (check-cancel! *query-cancel*))
-                                        key (key-fn2 tuple2)]
-                                    (if-some [tuples1 (get hash key)]
-                                      (reduce (fn [acc tuple1]
-                                                (conj! acc (join-tuples tuple1 keep-idxs1 tuple2 keep-idxs2)))
-                                              acc tuples1)
-                                      acc)))
-                                (transient []) tuples2)
-                        (persistent!))]
-        (rel/->Relation (zipmap (concat keep-attrs1 keep-attrs2) (range))
-                        new-tuples))
-      (let [hash       (hash-attrs key-fn2 tuples2)
-            new-tuples (->>
-                        (reduce (fn [acc tuple1]
-                                  (let [_ (when *query-cancel* (check-cancel! *query-cancel*))
-                                        key (key-fn1 tuple1)]
-                                    (if-some [tuples2 (get hash key)]
-                                      (reduce (fn [acc tuple2]
-                                                (conj! acc (join-tuples tuple1 keep-idxs1 tuple2 keep-idxs2)))
-                                              acc tuples2)
-                                      acc)))
-                                (transient []) tuples1)
-                        (persistent!))]
-        (rel/->Relation (zipmap (concat keep-attrs1 keep-attrs2) (range))
-                        new-tuples)))))
+(def hash-attrs rel/hash-attrs)
+(def hash-join rel/hash-join)
 
 (defn subtract-rel [a b]
   (let [{attrs-a :attrs, tuples-a :tuples} a
@@ -2016,7 +1973,7 @@
         attrs (intersect-keys attrs-a attrs-b)
         getters-b (map #(getter-fn attrs-b %) attrs)
         key-fn-b (tuple-key-fn getters-b)
-        hash (hash-attrs key-fn-b tuples-b)
+        hash (hash-attrs key-fn-b tuples-b (count attrs))
         getters-a (map #(getter-fn attrs-a %) attrs)
         key-fn-a (tuple-key-fn getters-a)]
     (assoc a
@@ -2194,7 +2151,11 @@
                                     (when *query-cancel* (check-cancel! *query-cancel*))
                                     (try (tuple-pred tuple)
                                          #?(:clj (catch ClassCastException _ false)
-                                            :cljs (catch :default _ false))
+                                            :cljs (catch :default e
+                                                    (when (or (cancellation? e)
+                                                              (resource/limit-exceeded? e))
+                                                      (throw e))
+                                                    false))
                                          #?(:clj (catch IllegalArgumentException _ false))))]
                     (update production :tuples #(filter safe-pred %)))
                   (assoc production :tuples []))]
@@ -2245,6 +2206,9 @@
             new-rel (if fun
                       (let [tuple-fn (-call-fn context production fun args)
                             attrs1 (:attrs production)
+                            ;; One account covers every tuple retained by this
+                            ;; function binding, including accumulator flushes.
+                            output (resource/account :function-production)
                             ;; unify-rel, not prod-rel: when the binding names a
                             ;; variable this tuple already binds, the clause
                             ;; CONSTRAINS it — the tuple survives only if the
@@ -2286,7 +2250,7 @@
                                                       rels)
                                                acc (if (and acc same?) acc (transient []))]
                                            (recur (next ts) attrs2 pl
-                                                  (join-tuples-into! acc pl tuple (:tuples r2))
+                                                  (join-tuples-into! acc pl tuple (:tuples r2) output)
                                                   rels))))))]
                         (if (empty? rels)
                           (unify-rel production (empty-rel binding))
@@ -2431,7 +2395,9 @@
 
             ;; no rules -> expand, collect, sum
             (let [prefix-context (solve (:prefix-context frame) (:clause frame) clauses)
-                  tuples (-collect prefix-context final-attrs)
+                  tuples (if resource/*max-intermediate-slots*
+                           (collect prefix-context final-attrs)
+                           (-collect prefix-context final-attrs))
                   new-rel (rel/->Relation final-attrs-map tuples)
                   new-stats (conj tmp-stats (last (:stats prefix-context)))]
               (recur (next stack) (sum-rel rel new-rel) new-stats))
@@ -3476,6 +3442,8 @@
 (defn -collect
   ([context symbols]
    (let [rels (:rels context)
+         _ (when resource/*max-intermediate-slots*
+             (resource/check-size! :collection-tuple (resource/tuple-slots (count symbols))))
          start-array (to-array (map #(get (:consts context) %) symbols))]
      (-collect [start-array] rels symbols)))
   ([acc rels symbols]
@@ -3492,7 +3460,9 @@
          (if (empty? keep-attrs)
            (recur acc (next rels) symbols)
            (let [copy-map (to-array (map #(get keep-attrs %) symbols))
-                 len (count symbols)]
+                 len (count symbols)
+                 _ (when resource/*max-intermediate-slots*
+                     (resource/check-size! :collection-tuple (resource/tuple-slots len)))]
              ;; THE product loop of the base engine, and the planner's
              ;; fallback whenever the cartesian split declines --
              ;; `:keys`, `:with`, aggregates, pulls. `rel/hash-join` is
@@ -3917,9 +3887,58 @@
       :strs (convert-fn (map str mapping-keys))
       :syms (convert-fn (map symbol mapping-keys)))))
 
+(defn- collect-reducible
+  "Project through nonmemoizing transducers under the internal resource policy.
+   Each stage streams into the next; a duplicate product prefix cannot remain
+   pinned in a lazy sequence while the checked distinct sink consumes it."
+  [context symbols]
+  (let [rels (:rels context)
+        width (count symbols)]
+    (if (some #(empty? (:tuples %)) rels)
+      []
+      (do
+        (resource/check-size! :collection-tuple (resource/tuple-slots width))
+        (let [stages (keep (fn [rel]
+                             (let [attrs (select-keys (:attrs rel) symbols)]
+                               (when (seq attrs)
+                                 (let [copy-map (to-array (map attrs symbols))
+                                       tick (qcancel/ticker)]
+                                   (mapcat
+                                    (fn [#?(:clj ^objects tuple :cljs tuple)]
+                                      (eduction
+                                       (map (fn [other]
+                                              (tick)
+                                              (let [out (aclone tuple)]
+                                                (dotimes [i width]
+                                                  (when-some [idx (aget copy-map i)]
+                                                    (aset out i (get other idx))))
+                                                out)))
+                                       (:tuples rel))))))))
+                           rels)]
+          (eduction (comp (apply comp stages) (map vec))
+                    [(to-array (map #(get (:consts context) %) symbols))]))))))
+
 (defn collect [context symbols]
-  (->> (-collect context symbols)
-       (map vec)))
+  (if resource/*max-intermediate-slots*
+    (collect-reducible context symbols)
+    (->> (-collect context symbols)
+         (map vec))))
+
+(defn- tuple-set
+  "Collect distinct tuples, reserving only new retained entries. The lazy
+   collection pipeline stays lazy; visiting duplicate candidates is not a
+   cumulative memory charge. Each candidate's width is checked separately."
+  [tuples]
+  (if-not resource/*max-intermediate-slots*
+    (into #{} tuples)
+    (let [output (resource/account :distinct-output)]
+      (persistent!
+       (reduce (fn [acc tuple]
+                 (if (contains? acc tuple)
+                   acc
+                   (do (resource/reserve! output (resource/tuple-slots (count tuple)))
+                       (conj! acc tuple))))
+               (transient #{}) tuples)))))
 
 (def default-settings {})
 
@@ -5351,7 +5370,7 @@
                          col-agg-adapter (resolve-stratum-fn 'columnar-aggregate-from-maps)]
                      (col-agg-adapter result-maps group-keys stratum-aggs find-elements))))))))
        (catch Exception e
-         (when (cancellation? e) (throw e))
+         (when (or (cancellation? e) (resource/limit-exceeded? e)) (throw e))
          (log/warn "secondary-idx-agg not applicable:" (.getMessage e) (pr-str (type e)))
          nil))))
 
@@ -5374,7 +5393,7 @@
                                  (col-agg-fn column-map group-keys agg-specs find-elements))
                                cancel))))))
        (catch Exception e
-         (when (cancellation? e) (throw e))
+         (when (or (cancellation? e) (resource/limit-exceeded? e)) (throw e))
          (log/debug "columnar-aggregate not applicable:" (.getMessage e))
          nil))))
 
@@ -5625,6 +5644,18 @@
           xs (cartesian-product-seq (rest colls))]
       (into [x] xs))))
 
+(defn- cartesian-product-reducible
+  "Stream combinations without memoizing previously visited product prefixes."
+  [colls]
+  (resource/check-size! :cartesian-combination (resource/tuple-slots (count colls)))
+  (eduction
+   (apply comp
+          (map (fn [coll]
+                 (mapcat (fn [prefix]
+                           (eduction (map #(conj prefix %)) coll))))
+               colls))
+   [[]]))
+
 (defn- cartesian-merge
   "Build wide result tuples in `target-vars` order from a vector of
    `{:tuples seq-of-vectors :vars [var ...]}` component results.
@@ -5652,15 +5683,30 @@
       ;; against the `mapv` over `var-locator` this already runs for
       ;; every combination -- and it only reads the cancel cell, which
       ;; is arbitrary caller-supplied code, once per 512.
-      (let [tick (qcancel/ticker)]
-        (into #{}
-              (map (fn [combo]
-                     (tick)
-                     (mapv (fn [v]
-                             (let [[ci pos] (var-locator v)]
-                               (nth (nth combo ci) pos)))
-                           target-vars)))
-              (cartesian-product-seq component-tuples))))))
+      (let [tick (qcancel/ticker)
+            project (fn [combo]
+                      (tick)
+                      (mapv (fn [v]
+                              (let [[ci pos] (var-locator v)]
+                                (nth (nth combo ci) pos)))
+                            target-vars))]
+        (if-not resource/*max-intermediate-slots*
+          (into #{} (map project) (cartesian-product-seq component-tuples))
+          (let [output (resource/account :cartesian-output)
+                slots (when output (resource/tuple-slots (count target-vars)))
+            ;; A distinct candidate needs bounded scratch even if it is a
+            ;; duplicate. Only a new retained tuple grows the output account.
+                _ (when output
+                    (resource/check-size! :cartesian-tuple slots))]
+            (persistent!
+             (reduce (fn [acc combo]
+                       (let [tuple (project combo)]
+                         (if (contains? acc tuple)
+                           acc
+                           (do (resource/reserve! output slots)
+                               (conj! acc tuple)))))
+                     (transient #{})
+                     (cartesian-product-reducible component-tuples)))))))))
 
 (defn- resolve-pred-symbol
   "Resolve a predicate symbol used in a post-filter clause.
@@ -5756,7 +5802,8 @@
    Returns result set or nil if not eligible."
   [plan db qfind find-elements context-in query stats? qreturnmaps max-results]
   (let [prepared? (prepared-execution?)
-        direct-eligible? (and (instance? FindRel qfind)
+        direct-eligible? (and (nil? resource/*max-intermediate-slots*)
+                              (instance? FindRel qfind)
                               (not stats?)
                               ;; the fused HashSet path applies fns via post-apply-fns,
                               ;; which doesn't accumulate :fn-counts — route counting
@@ -5869,10 +5916,11 @@
         ;; (jobtech batched lookups: 43ms -> 0.26ms at small batch sizes). This
         ;; mirrors the `(empty? (:rels context-in))` gate already in
         ;; execute-planned-direct.
-        fused-rel (when (empty? (:rels context-in))
+        fused-rel (when (and (nil? resource/*max-intermediate-slots*)
+                             (empty? (:rels context-in)))
                     (try (exec-direct-rel plan db (:cancel context-in))
                          (catch #?(:clj Exception :cljs :default) e
-                           (when (cancellation? e) (throw e))
+                           (when (or (cancellation? e) (resource/limit-exceeded? e)) (throw e))
                            (log/debug "fused-scan-rel not applicable:" #?(:clj (.getMessage ^Exception e) :cljs (str e)))
                            nil)))
         context-out (if fused-rel
@@ -5884,8 +5932,8 @@
                          (:unique-results? context-out)
                          (not offset)
                          (or (nil? limit) (neg? limit)))
-                  (set resultset)
-                  (into #{} resultset))
+                  (tuple-set resultset)
+                  (tuple-set resultset))
         deduped (if lookup-ref-reverse-map
                   (let [var-vec (vec all-vars)
                         idx-maps (keep-indexed
@@ -5916,7 +5964,7 @@
    order-spec offset limit stats? qreturnmaps]
   (let [context-out (-q context-in (:where query))
         resultset (collect context-out all-vars)
-        deduped (into #{} resultset)]
+        deduped (tuple-set resultset)]
     (with-fn-counts context-out
       (post-process-result deduped context-in context-out query qfind find-elements
                            result-arity order-spec offset limit stats? qreturnmaps))))
@@ -6184,7 +6232,8 @@
                     ;; input, an input that is also a find var, or a plan the
                     ;; rebinding cannot reach soundly, leaves the query to the
                     ;; relation path as before.
-                    agg-plan (when (and has-aggs?
+                    agg-plan (when (and (nil? resource/*max-intermediate-slots*)
+                                        has-aggs?
                                         (not (some #(instance? Pull %) find-elements))
                                         (not lookup-ref-reverse-map))
                                (if (empty? (:rels context-in))
@@ -6316,10 +6365,12 @@
                        (throw e))))
         uncached (fn []
                    (binding [dhm/*record-query-metrics?* sampled?]
-                     #?(:clj (or (try-secondary-index-aggregate-fast query-map)
+                     #?(:clj (or (when-not resource/*max-intermediate-slots*
+                                   (try-secondary-index-aggregate-fast query-map))
                                  (raw-q* query-map))
                         :cljs (raw-q* query-map))))]
-    (if (or (not *query-result-cache?*)
+    (if (or resource/*max-intermediate-slots*
+            (not *query-result-cache?*)
             stats?
             count-fns?                         ;; counting needs re-execution; a cache hit wouldn't re-run the fn
             #?(:clj *profile?* :cljs false))
