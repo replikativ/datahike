@@ -603,6 +603,23 @@
     (is (= #{} (both q1 db (dec tx))))
     (is (= #{[e]} (both '[:find ?e :in $ [?t ...] :where [?e :l/active true] [?e :l/kind :invoice ?t]]
                         db [[:l/batch "B"]])))
+    (testing "in a set, a relation, a tuple"
+      (let [qc '[:find ?e :in $ [?t ...] :where [?e :l/active true] [?e :l/kind :invoice ?t]]]
+        (is (= #{[e]} (both qc db #{[:l/batch "B"]})))
+        (is (= #{[e]} (both qc db #{tx})))
+        (is (= #{} (both qc db #{(dec tx)}))))
+      (is (= #{[e "x"]} (both '[:find ?e ?l :in $ [[?t ?l]] :where
+                                [?e :l/active true] [?e :l/kind :invoice ?t]]
+                              db [[[:l/batch "B"] "x"]])))
+      (is (= #{} (both '[:find ?e ?l :in $ [[?t ?l]] :where
+                         [?e :l/active true] [?e :l/kind :invoice ?t]]
+                       db [[(dec tx) "x"]])))
+      (is (= #{[e]} (both '[:find ?e :in $ [?t ?l] :where
+                            [?e :l/active true] [?e :l/kind :invoice ?t]]
+                          db [[:l/batch "B"] 1]))))
+    (testing "an input the query ignores is not looked at"
+      (is (= #{[e]} (both '[:find ?e :in [[?e _]] $ :where [?e :l/active true]]
+                          [[e (map (fn [_] (throw (ex-info "forced" {}))) [1])]] db))))
     (testing "resolved against the source the pattern names"
       (is (= #{[e]} (both '[:find ?e :in $ $after [?t ...] :where
                             [$after ?e :l/active true] [$after ?e :l/kind :invoice ?t]]

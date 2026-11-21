@@ -789,22 +789,61 @@
   "`:in` variables whose value on this call holds a lookup ref."
   #{})
 
-(defn- lookup-ref-inputs
-  "The `:in` variables bound, on this call, to something holding a lookup ref
-   (`[:attr value]`). A lookup ref in a transaction slot is resolved BY that
-   slot, against the pattern's source; restated outside the pattern it would
-   be compared as a vector. Such an input keeps its slot."
-  [query args]
+(defn- tx-slot-symbols
+  "Every symbol written in the transaction slot of a data pattern in `where`,
+   at any depth."
+  [where]
   (into #{}
-        (mapcat (fn [[form arg]]
-                  (when (and (not (and (symbol? form) (not (analyze/free-var? form))))
-                             (if (symbol? form)
-                               (sequential? arg)
-                               (and (sequential? arg)
-                                    (some #(and (sequential? %) (keyword? (first %)))
-                                          (tree-seq sequential? seq arg)))))
-                    (filter analyze/free-var? (tree-seq coll? seq [form])))))
-        (map vector (or (:in query) '[$]) args)))
+        (keep (fn [x]
+                (when (vector? x)
+                  (let [p (if (source-prefixed-clause? x) (subvec x 1) x)]
+                    (when (and (data-pattern-clause? p) (> (count p) 3))
+                      (let [tx (nth p 3)] (when (symbol? tx) tx)))))))
+        (tree-seq coll? seq where)))
+
+(defn- lookup-ref-inputs
+  "The `:in` variables that sit in some pattern's transaction slot and are
+   bound, on this call, to anything but transaction ids — a lookup ref, most
+   likely. A transaction slot resolves a lookup ref against the pattern's
+   source; restated outside the pattern it would be compared as a vector. Such
+   an input keeps its slot.
+
+   Looks only at inputs a transaction slot names, and there only at that
+   variable's own values: a query with none of them inspects nothing, and
+   what a binding form ignores (`_`) is never touched."
+  [query args]
+  (let [tx-syms (tx-slot-symbols (:where query))
+        id? (fn [x] (or (nil? x) (number? x)))]
+    (if (or (empty? tx-syms) (not (sequential? args)))
+      #{}
+      (into #{}
+            (mapcat
+             (fn [[form arg]]
+               (cond
+                 ;; ?t
+                 (symbol? form)
+                 (when (and (tx-syms form) (not (id? arg))) [form])
+                 ;; [?t ...]
+                 (and (vector? form) (= 2 (count form)) (= '... (second form))
+                      (symbol? (first form)))
+                 (when (and (tx-syms (first form)) (coll? arg) (not (every? id? arg)))
+                   [(first form)])
+                 ;; [[?a ?t]] — rows may be vectors or map entries
+                 (and (vector? form) (= 1 (count form)) (vector? (first form))
+                      (every? symbol? (first form)))
+                 (keep-indexed (fn [i v]
+                                 (when (and (tx-syms v) (coll? arg)
+                                            (not (every? #(id? (nth (vec %) i nil)) arg)))
+                                   v))
+                               (first form))
+                 ;; [?a ?t]
+                 (and (vector? form) (every? symbol? form))
+                 (keep-indexed (fn [i v]
+                                 (when (and (tx-syms v) (not (id? (nth (vec arg) i nil)))) v))
+                               form)
+                 ;; anything nested: leave its variables as they are written
+                 :else (filter tx-syms (tree-seq coll? seq [form]))))
+             (map vector (or (:in query) '[$]) args))))))
 
 (defn normalize-repeated-vars
   "Rewrite every data pattern that mentions a variable twice into a pattern of
