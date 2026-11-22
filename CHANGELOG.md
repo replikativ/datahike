@@ -6,6 +6,13 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **`with-db` in the babashka pod failed under babashka 1.13.230 ([#TODO]).**
+  `(d/with-db [db (d/db conn)] …)` raised `Unable to resolve symbol:
+  release-db` unless the caller had referred the pod's functions. The macro
+  now names `datahike.pod/release-db` and itself in full, so it works from
+  any namespace on old and new babashka.
+  (0.8.NNNN, [#TODO])
+
 - **Transaction and `added` slots on patterns that share an entity ([#1172]).**
   Several patterns on one entity are answered by one scan and a seek per
   further pattern, and the seek dropped what a pattern said beyond attribute
