@@ -1297,6 +1297,7 @@
 
 (def builtin-op?
   #{:db.fn/call
+    :db.fn/call-with-tempids
     :db.fn/cas
     :db/cas
     :db/add
@@ -1642,6 +1643,13 @@
 
       :db.fn/call (let [[_ f & args] op-vec]
                     [report (apply f db args)])
+
+      ;; Like :db.fn/call, with this execution's allocated tempid bindings.
+      ;; Pass the immutable map so the callback can validate values on the
+      ;; writer basis before returning the operations that use those IDs.
+      :db.fn/call-with-tempids
+      (let [[_ f & args] op-vec]
+        [report (apply f db (:tempids report) args)])
 
       (if (and (keyword? op)
                (not (builtin-op? op)))
