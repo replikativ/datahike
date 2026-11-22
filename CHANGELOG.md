@@ -6,6 +6,16 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Historical snapshots keep the settled value when a transaction both asserts
+  and retracts it.** New history records preserve whether that value survived.
+  Both audit signs remain visible after a file-store reopen and full-history
+  restore. Older dumps without a settled state use the inference in [#1132].
+
+- **Transaction functions can read allocated tempids.** The local
+  `[:db.fn/call-with-tempids f ...]` operation passes the current database and
+  allocated IDs to the callback before it validates or generates writes.
+
+
 - **Transaction and `added` slots on patterns that share an entity ([#1172]).**
   Several patterns on one entity are answered by one scan and a seek per
   further pattern, and the seek dropped what a pattern said beyond attribute
@@ -186,6 +196,23 @@ When something is added, it's typically marked *Experimental*. When the API cont
   on a cold read from the node it was stored against, which the in-memory
   walk never visits, so GC could delete it and a reopened database failed
   with "Node not found". The mark now follows the stored nodes. Fixes [#1112].
+- **A history restore of a value asserted and retracted in one transaction ([#1132]).**
+  datahike writes such pairs itself — a cardinality-one attribute set twice in
+  one transaction records the first value's assertion and retraction. The
+  default streaming `import-db` (and `import-source`) replayed them
+  retraction-first, so the passing value was resurrected over the one that
+  survived: the restore answered the wrong current value and lost a history
+  datom (95 of 3,000,032 on a synthetic history, failing verification; on
+  other shapes the count matched and verification passed). `:build-indexes?
+  true` kept the passing value current alongside the survivor. Now the history
+  is restored exactly on both paths, a cardinality-one attribute never has more
+  than one current value, and a value only asserted in the transaction always
+  wins over values both asserted and retracted in it. A history records datoms
+  as a set, so some shapes cannot be told apart — `[add :x, retract :x]` and
+  `[add :x, retract :x, add :x]` record the same datoms; there the restore
+  keeps the value current (as before), which is wrong for the first reading.
+  This needs an explicit retraction of a value the same transaction asserted,
+  or one value revisited within a transaction; see `datahike.migrate.history`.
 - **Schema-on-read stores retract vector values of any length ([#1105]).**
   An attribute without a declared `:db/valueType` can hold a vector of any
   length. `:db/retract`, `:db.fn/retractAttribute` and
@@ -1145,3 +1172,4 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1108]: https://github.com/replikativ/datahike/issues/1108
 [#1164]: https://github.com/replikativ/datahike/pull/1164
 [#1166]: https://github.com/replikativ/datahike/pull/1166
+[#1132]: https://github.com/replikativ/datahike/pull/1132

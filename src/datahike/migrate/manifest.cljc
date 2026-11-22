@@ -753,10 +753,10 @@
                              :reason why
                              :record record})))]
     (when-not (and (vector? record) (<= 5 (count record) 6))
-      (bad! "not a 5-element record with optional settled history state"))
+      (bad! "not a 5-element vector or a 6-element history vector"))
     (let [[e a v t op state] record]
       (when (and (= 6 (count record))
-                 (not (or (= :absent state) (and (= :present state) (false? op)))))
+                 (not (#{:absent :present} state)))
         (bad! (str "invalid settled history state: " (pr-str state))))
       (when-not (integer? e) (bad! (str "e is not an integer: " (pr-str e))))
       ;; An attribute is normally a keyword ident. A dump that renamed an

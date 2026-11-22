@@ -25,6 +25,7 @@
    ;; that happen to live here — so taking the rule from the namespace that
    ;; owns mappings is the direction that keeps the two import paths agreeing.
    [datahike.migrate.ids :as mids]
+   [datahike.migrate.history :as mh]
    [org.replikativ.persistent-sorted-set.arrays :as arrays])
   #?(:cljs (:require-macros [datahike.datom :refer [datom]]))
   #?(:clj (:import [clojure.lang ExceptionInfo]
@@ -915,8 +916,9 @@
 
 (defn- settle-history-ties
   "Mark both signs of a same-transaction assertion that ends absent.
-   Mark the retraction alone when the assertion survives. Pure assertions
-   skip the pass. Datom equality supplies the
+   When the assertion survives, mark the retraction and any card-many
+   assertion already in the temporal tree. Pure assertions skip the pass.
+   Datom equality supplies the
    EAV key, including content equality for byte and numeric arrays."
   [{:keys [db-after tx-data] :as report}]
   (if-not (and (::recorded-retraction? report) (dbi/-keep-history? db-after))
@@ -947,7 +949,8 @@
                                                                 (.-v retraction)]))
                              state (if (and live (= (datom-tx live) (datom-tx retraction)))
                                      :present :absent)
-                             assertion (when (= :absent state)
+                             assertion (when (or (= :absent state)
+                                                 (dbu/multival? db (.-a retraction)))
                                          (let [positive (dd/datom (.-e retraction) (.-a retraction)
                                                                   (.-v retraction) (datom-tx retraction))]
                                            (first (filter datom-added
@@ -2260,7 +2263,7 @@
   ([initial-report initial-es tx-options]
    (transact-tx-data-internal initial-report initial-es tx-options nil)))
 
-(defn- import-temporal-event [db ^Datom event]
+(defn- import-temporal-event [db ^Datom event count-assertion?]
   (let [{a-ident :ident} (dbu/attr-info db (.-a event) :error-on-missing)
         indexed? (dbu/indexing? db a-ident)
         op-count (:op-count db)
@@ -2271,7 +2274,7 @@
           (update :temporal-aevt di/-temporal-insert event :aevt op-count)
           (cond-> indexed? (update :temporal-avet di/-temporal-insert event :avet op-count))
           (update :op-count inc)
-          (cond-> (datom-added event) (update :hash + (hash event)))))))
+          (cond-> count-assertion? (update :hash + (hash event)))))))
 
 (defn- import-ordered-datom [report datom upsert?]
   (let [state (dd/history-state datom)]
@@ -2280,16 +2283,84 @@
       ;; This assertion was canceled within its original transaction. Store
       ;; its audit sign without replacing the target's live card-one value.
       (-> report
-          (update :db-after import-temporal-event datom)
+          (update :db-after import-temporal-event datom true)
           (record-tx-datom datom))
 
       state
-      ;; An explicit retraction is an audit event even if its assertion
-      ;; never became current on this import path.
-      (-> (transact-report report datom upsert?)
-          (update :db-after import-temporal-event datom))
+      ;; A marked retraction can have no live match. A marked surviving
+      ;; assertion was already in the temporal tree in the source. Preserve
+      ;; both, and keep the marker confined to temporal trees.
+      (let [live-op (if (datom-added datom)
+                      (dd/with-history-state datom nil)
+                      datom)]
+        (-> (transact-report report live-op upsert?)
+            (update :db-after import-temporal-event datom false)))
 
       :else (transact-report report datom upsert?))))
+
+(defn- same-tea?
+  "Do two records share `[t e a]`?"
+  [x y]
+  (and (= (nth x 3) (nth y 3)) (= (nth x 0) (nth y 0)) (= (nth x 1) (nth y 1))))
+
+(defn- run-has-legacy-pair?
+  "Does this [t e a] run include both audit signs without a settled state?"
+  [run]
+  (let [retracted (into #{}
+                        (keep #(when (and (not (nth % 4)) (nil? (nth % 5 nil)))
+                                 (mh/value-key (nth % 2))))
+                        run)]
+    (boolean (some #(and (nth % 4) (nil? (nth % 5 nil))
+                         (contains? retracted (mh/value-key (nth % 2))))
+                   run))))
+
+(defn- mark-same-tx-pairs
+  "Replace every run of records sharing `[t e a]` that asserts AND retracts one
+   value without a settled state by a `{::run records}` marker. Other records pass through
+   in place. One pass, holding one run.
+
+   A history holds such pairs and datahike's own transactor writes them —
+   `[[:db/add e :tag :x] [:db/retract e :tag :x]]`, or a cardinality-one
+   attribute set twice in one transaction (`25` then `21` over `24` records
+   `[24 false] [25 true] [25 false] [21 true]`). The history does not say which
+   of the two came first, and replayed in the source's order — retraction first
+   — the retraction of the not-yet-present `25` was dropped, `25` then upserted
+   over `21`, and the restore answered `25` where the source answers `21` (95 of
+   3,000,032 datoms lost on a synthetic history). The marker is resolved against
+   the target's state when it is reached; see the `run-recs` branch of
+   `transact-entities-directly` and `datahike.migrate.history/tx-plan`.
+
+   Requires the import order `(t, e, a, op)`, which keeps a `[t e a]` contiguous;
+   an unsorted source simply has its pairs go undetected. The importer's batcher
+   never splits a `[t e a]` run across calls (see `run-import`)."
+  [records]
+  (let [flush (fn [out run]
+                (if (and (next run) (run-has-legacy-pair? run))
+                  (conj! out {::run run})
+                  (reduce conj! out run)))]
+    (loop [rs (seq records) run [] out (transient [])]
+      (if rs
+        (let [r (first rs)]
+          (if (or (empty? run) (same-tea? (peek run) r))
+            (recur (next rs) (conj run r) out)
+            (recur (next rs) [r] (flush out run))))
+        (persistent! (if (seq run) (flush out run) out))))))
+
+(defn- replay-order
+  "The records of one marked `[t e a]` run in an order that rebuilds the outcome
+   `plan` (from `mh/tx-plan`) decided: the current values it retracts go out
+   first, then every value that ends absent passes through (asserted, then
+   retracted), then the survivors are asserted — after passing through temporal
+   first when the source history says they did. No value of the run is ever
+   upserted over another."
+  [plan]
+  (concat
+   (keep #(when (and (:before? %) (:r %)) (:r %)) plan)
+   (mapcat #(when (and (:a %) (not (:after? %))) (if (:r %) [(:a %) (:r %)] [(:a %)])) plan)
+   (keep #(when (and (:r %) (not (:a %)) (not (:before? %))) (:r %)) plan)
+   (mapcat #(when (:after? %)
+              (if (and (:r %) (not (:before? %))) [(:a %) (:r %) (:a %)] [(:a %)]))
+           plan)))
 
 (defn transact-entities-directly
   "Load `initial-es` (raw `[e a v t op]` records) into `(:db-after
@@ -2312,12 +2383,23 @@
    clear even before this changed.)
 
    Now the caller owns it: pass the previous call's `:migration` back in, and
-   the map goes out of scope when the import ends."
+   the map goes out of scope when the import ends.
+
+   On the import path (a non-nil `:migration`) the records are expected in the
+   import order `(t, e, a, op)`, and a `[t e a]` run that asserts and retracts
+   one value is replayed in an order derived from the target's state — see
+   `mark-same-tx-pairs`. The public `load-entities` passes no `:migration`, and
+   its records are replayed exactly as given."
   [initial-report initial-es]
   (loop [report (-> initial-report
                     (update :datahike/tx-ops #(or % #{}))
                     (update :db-after db/db-transient))
-         es initial-es
+         ;; Only on the IMPORT path (`:migration` present). The public
+         ;; `load-entities` takes records in whatever order its caller gives and
+         ;; replays them as given.
+         es (if (some? (:migration initial-report))
+              (mark-same-tx-pairs initial-es)
+              initial-es)
          migration-state (or (:migration initial-report) {})]
     (if (empty? es)
       ;; NO `max-tx` bump here. One call is one BATCH, not one transaction, and
@@ -2341,7 +2423,8 @@
           (update :db-after #(tracking/schema-transition (:db-before initial-report) %)))
       (let [[entity & entities] es
             {:keys [config] :as db} (:db-after report)
-            [e a v t op state] entity
+            run-recs (when (map? entity) (::run entity))
+            [e a v t op state] (if run-recs (first run-recs) entity)
             a-ident (if (and (number? a) (:attribute-refs? config))
                       (dbi/-ident-for db a)
                       a)
@@ -2378,6 +2461,21 @@
             max-eid (next-eid db)
             max-tid (inc (get-in report [:db-after :max-tx]))]
         (cond
+          ;; A `[t e a]` run asserting and retracting one value — see
+          ;; `mark-same-tx-pairs`. Its outcome is decided against what is
+          ;; current NOW, i.e. before this source transaction, and replayed in
+          ;; an order that produces it.
+          run-recs
+          (let [te (migrated-eid migration-state e)
+                ref? (dbu/ref? db a)
+                present? (fn [r]
+                           (let [rv (nth r 2)
+                                 tv (if ref? (migrated-eid migration-state rv) rv)]
+                             (and (some? te) (some? tv)
+                                  (some? (first (dbi/search db [te a tv]))))))
+                plan (mh/tx-plan run-recs (dbu/multival? db a-ident) present?)]
+            (recur report (concat (replay-order plan) entities) migration-state))
+
           (= :db.install/attribute a-ident)
           (recur report entities migration-state)
 
