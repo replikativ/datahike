@@ -148,7 +148,7 @@
    that happens to be 4) must not be touched. The guard is the schema, not the
    shape of the number."
   [{:keys [eids tids]} schema record]
-  (let [[e a v t op] record
+  (let [[e a v t] record
         ;; structural, matching `build-mapping`: e names the transaction iff e = t
         e' (if (= e t) (lookup-id tids e e) (lookup-id eids e e))
         ;; a ref may point at a transaction, so :tids is consulted as a fallback
@@ -156,7 +156,7 @@
              (lookup-id eids v (lookup-id tids v v))
              v)
         t' (lookup-id tids t t)]
-    [e' a v' t' op]))
+    (assoc record 0 e' 2 v' 3 t')))
 
 (defn identity-mapping?
   "True when the mapping leaves every id alone — the ordinary case for an import

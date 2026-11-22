@@ -594,7 +594,8 @@
    pass through unchanged — no double-hashing."
   [secondary-only? ^Datom datom]
   (if (and secondary-only? (datom-added datom))
-    (dd/datom (.-e datom) (.-a datom) (secondary-only-hash (.-v datom)) (.-tx datom) (datom-added datom))
+    (cond-> (dd/datom (.-e datom) (.-a datom) (secondary-only-hash (.-v datom)) (.-tx datom) true)
+      (dd/history-state datom) (dd/with-history-state (dd/history-state datom)))
     datom))
 
 (defn- with-datom [db ^Datom datom tx-meta]
@@ -891,6 +892,72 @@
       (assoc-in migration-state [:eids e] new-e)
       (assoc-in migration-state [:allocated e] new-e))))
 
+(defn- record-tx-datom [report datom]
+  (cond-> (update report :tx-data conj datom)
+    (not (datom-added datom)) (assoc ::recorded-retraction? true)))
+
+(defn- replace-temporal-event [db ^Datom event state]
+  (let [a (.-a event)
+        {a-ident :ident} (dbu/attr-info db a :error-on-missing)
+        indexing? (dbu/indexing? db a-ident)
+        marked (dd/with-history-state event state)
+        op-count (:op-count db)
+        replace-event (fn [index index-type]
+                        (-> index
+                            (di/-remove event index-type op-count)
+                            (di/-temporal-insert marked index-type (inc op-count))))]
+    (cond-> (update db :temporal-eavt replace-event :eavt)
+      true (update :temporal-aevt replace-event :aevt)
+      indexing? (update :temporal-avet replace-event :avet)
+      (effects/enabled? db) (effects/emit a-ident :temporal :remove event nil)
+      (effects/enabled? db) (effects/emit a-ident :temporal :temporal-insert marked nil)
+      true (update :op-count + 2))))
+
+(defn- settle-history-ties
+  "Mark both signs of a same-transaction assertion that ends absent.
+   Mark the retraction alone when the assertion survives. Pure assertions
+   skip the pass. Datom equality supplies the
+   EAV key, including content equality for byte and numeric arrays."
+  [{:keys [db-after tx-data] :as report}]
+  (if-not (and (::recorded-retraction? report) (dbi/-keep-history? db-after))
+    report
+    (let [event-key (fn [^Datom d]
+                      (let [a (.-a d)
+                            prim (project-primary (dbu/secondary-only? db-after a) d)]
+                        [(datom-tx prim) prim]))
+          negatives (into {}
+                          (keep (fn [^Datom d]
+                                  (when-not (datom-added d) [(event-key d) d])))
+                          tx-data)
+          ties (into {}
+                     (keep (fn [^Datom d]
+                             (when (datom-added d)
+                               (let [k (event-key d)]
+                                 (when-let [negative (get negatives k)] [k negative])))))
+                     tx-data)]
+      (update report :db-after
+              (fn [db]
+                (reduce-kv
+                 (fn [db _ ^Datom negative]
+                   (let [events (di/-slice (:temporal-eavt db) negative negative :eavt)
+                         ^Datom retraction (first (remove datom-added events))]
+                     (if retraction
+                       (let [^Datom live (first (dbi/search db [(.-e retraction)
+                                                                (.-a retraction)
+                                                                (.-v retraction)]))
+                             state (if (and live (= (datom-tx live) (datom-tx retraction)))
+                                     :present :absent)
+                             assertion (when (= :absent state)
+                                         (let [positive (dd/datom (.-e retraction) (.-a retraction)
+                                                                  (.-v retraction) (datom-tx retraction))]
+                                           (first (filter datom-added
+                                                          (di/-slice (:temporal-eavt db)
+                                                                     positive positive :eavt)))))]
+                         (cond-> (replace-temporal-event db retraction state)
+                           assertion (replace-temporal-event assertion state)))
+                       db)))
+                 db ties))))))
+
 (defn- transact-report
   ([report datom] (transact-report report datom false))
   ([report datom upsert?] (transact-report report datom upsert? ::not-looked-up))
@@ -912,7 +979,7 @@
                      :else                    (with-datom-upsert db datom old tx-meta)))
          report' (-> report
                      (update-in [:db-after] write)
-                     (update-in [:tx-data] conj datom))]
+                     (record-tx-datom datom))]
      ;; ONE resolving lookup, not a resolving predicate plus a raw lookup.
      ;; `tuple-source?` resolved `a` ref→ident and answered yes; the `get` that
      ;; followed did not, so under `:attribute-refs?` (where `a` is a numeric
@@ -1240,7 +1307,7 @@
         ;; history to keep, drops the new value's own temporal record.
         (and upsert? (some? old))
         (-> report
-            (update :tx-data conj (datom (.-e old) (.-a old) (.-v old) tx false))
+            (record-tx-datom (datom (.-e old) (.-a old) (.-v old) tx false))
             (transact-report new-datom upsert? old))
 
         :else (transact-report report new-datom upsert? old)))))
@@ -2101,7 +2168,8 @@
                 ;; The inverse transition is equally atomic: remove the full
                 ;; current AVET slice before this database value is published.
                 remove-disabled-indices
-                (dissoc ::pending-vt-validation)
+                (settle-history-ties)
+                (dissoc ::pending-vt-validation ::recorded-retraction?)
                 (assoc-in [:tempids :db/current-tx] (current-tx report))
                 (update-in [:db-after :max-tx] inc)
                 (update :db-after db/db-persistent!)
@@ -2184,6 +2252,37 @@
   ([initial-report initial-es tx-options]
    (transact-tx-data-internal initial-report initial-es tx-options nil)))
 
+(defn- import-temporal-event [db ^Datom event]
+  (let [{a-ident :ident} (dbu/attr-info db (.-a event) :error-on-missing)
+        indexed? (dbu/indexing? db a-ident)
+        op-count (:op-count db)
+        event (project-primary (dbu/secondary-only? db a-ident) event)]
+    (cond-> (advance-max-eid db (.-e ^Datom event))
+      (dbi/-keep-history? db)
+      (-> (update :temporal-eavt di/-temporal-insert event :eavt op-count)
+          (update :temporal-aevt di/-temporal-insert event :aevt op-count)
+          (cond-> indexed? (update :temporal-avet di/-temporal-insert event :avet op-count))
+          (update :op-count inc)
+          (cond-> (datom-added event) (update :hash + (hash event)))))))
+
+(defn- import-ordered-datom [report datom upsert?]
+  (let [state (dd/history-state datom)]
+    (cond
+      (and (= :absent state) (datom-added datom))
+      ;; This assertion was canceled within its original transaction. Store
+      ;; its audit sign without replacing the target's live card-one value.
+      (-> report
+          (update :db-after import-temporal-event datom)
+          (record-tx-datom datom))
+
+      state
+      ;; An explicit retraction is an audit event even if its assertion
+      ;; never became current on this import path.
+      (-> (transact-report report datom upsert?)
+          (update :db-after import-temporal-event datom))
+
+      :else (transact-report report datom upsert?))))
+
 (defn transact-entities-directly
   "Load `initial-es` (raw `[e a v t op]` records) into `(:db-after
    initial-report)`, remapping source ids to target ones.
@@ -2228,12 +2327,13 @@
       ;; already produced.
       (-> report
           (assoc :migration migration-state)
+          (dissoc ::recorded-retraction?)
           (update :db-after db/db-persistent!)
           (update :db-after finalize-secondary-indices)
           (update :db-after #(tracking/schema-transition (:db-before initial-report) %)))
       (let [[entity & entities] es
             {:keys [config] :as db} (:db-after report)
-            [e a v t op] entity
+            [e a v t op state] entity
             a-ident (if (and (number? a) (:attribute-refs? config))
                       (dbi/-ident-for db a)
                       a)
@@ -2276,10 +2376,11 @@
           ;; meta entity
           (ds/meta-attr? a-ident)
           (let [new-t (get-in migration-state [:tids t] max-tid)
-                new-datom (dd/datom new-t a v new-t op)
+                new-datom (cond-> (dd/datom new-t a v new-t op)
+                            state (dd/with-history-state state))
                 new-e (.-e new-datom)
                 upsert? (not (dbu/multival? db a-ident))]
-            (recur (-> (transact-report report new-datom upsert?)
+            (recur (-> (import-ordered-datom report new-datom upsert?)
                        (assoc-in [:db-after :max-tx] max-tid))
                    entities
                    (-> migration-state
@@ -2303,6 +2404,7 @@
                                     v)
                                   (get-in migration-state [:tids t])
                                   op)
+                new-datom (cond-> new-datom state (dd/with-history-state state))
                 upsert? (and (not (dbu/multival? db a-ident))
                              op)]
-            (recur (transact-report report new-datom upsert?) entities (remember-eid migration-state e (.-e new-datom)))))))))
+            (recur (import-ordered-datom report new-datom upsert?) entities (remember-eid migration-state e (.-e new-datom)))))))))

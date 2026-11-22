@@ -151,12 +151,13 @@
           (let [bs (mcbor/encode-record (first rs))
                 len (alength ^bytes bs)
                 bn' (+ (long bn) (long len))
-                block' (conj block bs)]
+                block' (conj block bs)
+                da' (dig/add-record da bs (first rs))]
             (dig/sha256-update! md bs)
             (if (>= bn' mz/default-block-size)
               (do (flush-block! block' bn')
-                  (recur (next rs) (inc c) (dig/add-record da bs) [] 0 (+ (long raw) (long len))))
-              (recur (next rs) (inc c) (dig/add-record da bs) block' bn' (+ (long raw) (long len)))))
+                  (recur (next rs) (inc c) da' [] 0 (+ (long raw) (long len))))
+              (recur (next rs) (inc c) da' block' bn' (+ (long raw) (long len)))))
           (do (flush-block! block bn)
               [rs c (dig/sha256-finalize md) da raw])))
       (finally (fs/close-sink! sink)))))
@@ -3366,18 +3367,17 @@
 ;; verify
 
 (defn- fp-init [] {:acc (dig/accumulator) :refc {} :outd {}})
-(defn- fp-step [fp [e a v op] ref?]
+(defn- fp-step [fp [e a v op state] ref?]
   (if (ref? a)
-    (-> fp (update-in [:refc a] (fnil inc 0)) (update-in [:outd e] (fnil inc 0)))
-    ;; Hash the CBOR encoding of the normalised tuple rather than its `pr-str`.
-    ;; This fingerprint compares a DUMP against a LIVE database, so it must be a
-    ;; function of the values alone — and `:archival` gives that by construction,
-    ;; where `pr-str` does not: it renders a Double and a Float identically and
-    ;; differs between JVM and ClojureScript for several types.
-    (update fp :acc dig/add-record (mcbor/encode-record [a (norm-val v) op]))))
+    (cond-> (-> fp (update-in [:refc a] (fnil inc 0)) (update-in [:outd e] (fnil inc 0)))
+      state (update-in [:ref-history [a op state]] (fnil inc 0)))
+    ;; Archival CBOR preserves value types and is consistent across runtimes.
+    (let [record (cond-> [a (norm-val v) op] state (conj state))]
+      (update fp :acc dig/add-record (mcbor/encode-record record)))))
 (defn- fp-final [fp]
   {:digest (dig/finalize (:acc fp))
    :ref-counts (:refc fp)
+   :ref-history (:ref-history fp)
    :out-degree (frequencies (vals (:outd fp)))})
 
 (defn- with-source-records
@@ -3417,8 +3417,8 @@
       {:sampled 0 :ok? true :note "no :db.unique attrs — content covered by tiers 1–2"}
       (let [picks (reduce-source
                    (fn [acc record]
-                     (let [[e a v _t op] record]
-                       (if (and op (uniq a) (< (count acc) n) (not (contains? acc [a v])))
+                     (let [[e a v _t op state] record]
+                       (if (and op (not= :absent state) (uniq a) (< (count acc) n) (not (contains? acc [a v])))
                          (assoc acc [a v] e) acc)))
                    {})
             pick-es (set (vals picks))
@@ -3426,8 +3426,9 @@
             ;; so a fully-retracted entity nets to empty (and is not compared).
             recon (reduce-source
                    (fn [acc record]
-                     (let [[e a v _t op] record]
-                       (if (and (contains? pick-es e) (not (ref? a)))
+                     (let [[e a v _t op state] record]
+                       (if (and (contains? pick-es e) (not (ref? a))
+                                (not (and op (= :absent state))))
                          (update-in acc [e a] (fnil (if op conj disj) #{}) (norm-val v))
                          acc)))
                    {})
@@ -3845,21 +3846,25 @@
              sec-only? (fn [a] (dbu/secondary-only? db a))
              dump-fp (fp-final (reduce-source
                                 (fn [fp record]
-                                  (let [[e a v _t op] record
+                                  (let [[e a v _t op state] record
                                         v (if (and op (sec-only? a))
                                             (dbt/secondary-only-hash v)
                                             v)]
-                                    (fp-step fp [e a v op] ref?)))
+                                    (fp-step fp [e a v op state] ref?)))
                                 (fp-init)))
              src     (if hist? (api/history db) db)
              live-fp (fp-final (reduce (fn [fp dm]
                                          (if (> (d/datom-tx dm) c/tx0)
-                                           (fp-step fp [(nth dm 0) (a-ident db (nth dm 1)) (nth dm 2) (nth dm 4)] ref?)
+                                           (fp-step fp [(nth dm 0) (a-ident db (nth dm 1))
+                                                        (nth dm 2) (nth dm 4) (d/history-state dm)]
+                                                    ref?)
                                            fp))
                                        (fp-init) (api/datoms src :eavt)))
+             ref-history-match? (= (:ref-history dump-fp) (:ref-history live-fp))
              t2-ok  (and (= (:digest dump-fp) (:digest live-fp))
                          (= (:ref-counts dump-fp) (:ref-counts live-fp))
-                         (= (:out-degree dump-fp) (:out-degree live-fp)))
+                         (= (:out-degree dump-fp) (:out-degree live-fp))
+                         ref-history-match?)
                ;; tier 3 — sampled structural diff
              t3     (verify-sample manifest reduce-source db ref? 25)
                ;; blobs — same tier as the chunks, and part of :ok?
@@ -3881,6 +3886,7 @@
           :tier2 {:match? t2-ok
                   :value-digest-match? (= (:digest dump-fp) (:digest live-fp))
                   :ref-counts-match? (= (:ref-counts dump-fp) (:ref-counts live-fp))
+                  :ref-history-match? ref-history-match?
                   :out-degree-match? (= (:out-degree dump-fp) (:out-degree live-fp))}
           :tier3 t3
           :blobs blobs})))))

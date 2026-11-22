@@ -187,7 +187,7 @@
                                                  :storage))
                 :resolve-cmp     (fn [m] (dd/index-type->cmp-quick (:index-type m) false))}
                opts))
-       install-element-handlers
+       (install-element-handlers true)
        install-db-handlers)))
 
 (defn registry

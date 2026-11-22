@@ -378,7 +378,7 @@
    twin (plain maps/vectors) hash identically."
   [x]
   (cond
-    (dd/datom? x)   (vec (seq x))
+    (dd/datom? x)   (dd/storage-tuple x)
     (map? x)        (persistent!
                      (reduce-kv (fn [m k v] (assoc! m (canon k) (canon v)))
                                 (transient {}) x))
@@ -407,7 +407,7 @@
 (defn- leaf-content-uuid
   "Content-addressed UUID of a Leaf: hash of its datoms in vector form."
   [node]
-  (uuid (mapv (comp vec seq) #?(:clj (.keys ^Leaf node) :cljs (.-keys node)))))
+  (uuid (mapv dd/storage-tuple #?(:clj (.keys ^Leaf node) :cljs (.-keys node)))))
 
 (defn- gen-address [#?(:clj ^ANode node :cljs node) crypto-hash?]
   (if crypto-hash?
@@ -824,14 +824,14 @@
 ;; the canonical node codec. (vector form `[e a v tx added]`, read back via datom-from-reader.)
 (def ^:private datom-read-handler
   {"datahike.datom.Datom"
-   #?(:clj  (reify ReadHandler (read [_ rdr _ _] (dd/datom-from-reader (.readObject rdr))))
-      :cljs (fn [rdr _ _] (dd/datom-from-reader (fress/read-object rdr))))})
+   #?(:clj  (reify ReadHandler (read [_ rdr _ _] (dd/datom-from-storage (.readObject rdr))))
+      :cljs (fn [rdr _ _] (dd/datom-from-storage (fress/read-object rdr))))})
 (def ^:private datom-write-handler
   #?(:clj  {datahike.datom.Datom {"datahike.datom.Datom"
                                   (reify WriteHandler (write [_ w d] (.writeTag w "datahike.datom.Datom" 1)
-                                                        (.writeObject w (vec (seq ^Datom d)))))}}
+                                                        (.writeObject w (dd/storage-tuple d))))}}
      :cljs {datahike.datom.Datom (fn [w d] (fress/write-tag w "datahike.datom.Datom" 1)
-                                   (fress/write-object w (vec (seq d))))}))
+                                   (fress/write-object w (dd/storage-tuple d)))}))
 
 (defmethod di/add-konserve-handlers :datahike.index/persistent-set [config store]
   (let [store-id (or (get-in config [:store :id]) (:id config))  ; the konserve store's UUID

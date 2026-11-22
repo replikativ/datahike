@@ -58,6 +58,9 @@
   [(nth datom 3) (nth datom 0) (str (nth datom 1)) (str (nth datom 2))
    (if (nth datom 4) 1 0)])
 
+(defn- live-assertion? [record]
+  (and (nth record 4) (not= :absent (nth record 5 nil))))
+
 (defn derive-current
   "The set of `[e a v]` triples currently true, given `history-records` as
    `[e a v t added]` tuples.
@@ -75,7 +78,7 @@
   [history-records]
   (reduce (fn [acc record]
             (let [k [(nth record 0) (nth record 1) (nth record 2)]]
-              (if (nth record 4) (conj acc k) (disj acc k))))
+              (if (live-assertion? record) (conj acc k) (disj acc k))))
           #{}
           (sort-by tx-order history-records)))
 
@@ -107,7 +110,7 @@
   (keep (fn [run]
           ;; last record for this [e a v] wins; current iff it asserted
           (let [final (last run)]
-            (when (nth final 4) final)))
+            (when (live-assertion? final) final)))
         (eav-runs sorted-records)))
 
 (defn temporal-from-eavt-sorted
@@ -140,7 +143,7 @@
   [exclude-attr? sorted-records]
   (mapcat (fn [run]
             (let [final (last run)]
-              (if (and (nth final 4) (exclude-attr? (nth final 1)))
+              (if (and (live-assertion? final) (exclude-attr? (nth final 1)))
                 (butlast run)
                 run)))
           (eav-runs sorted-records)))

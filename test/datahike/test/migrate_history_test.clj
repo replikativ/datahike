@@ -10,9 +10,12 @@
    So the property is checked against datahike itself, on databases built to
    contain the shapes where the rule could go wrong, and then on randomised
    histories to catch the shapes nobody thought of."
-  (:require [clojure.test :refer [deftest testing is]]
+  (:require [clojure.java.io :as io]
+            [clojure.test :refer [deftest testing is]]
             [datahike.api :as d]
             [datahike.datom :as dd]
+            [datahike.migrate :as migrate]
+            [datahike.migrate.fs :as fs]
             [datahike.migrate.history :as mh]
             [datahike.test.utils :as utils]))
 
@@ -24,9 +27,68 @@
    :keep-history? true :schema-flexibility :write})
 
 (defn- records
-  "History as `[e a v t added]` tuples — the dump's own record shape."
+  "History in the dump record shape."
   [db]
-  (mapv (juxt :e :a :v :tx :added) (d/datoms (d/history db) :eavt)))
+  (mapv dd/storage-tuple (d/datoms (d/history db) :eavt)))
+
+(defn- check-order-at [db tx expected]
+  (let [snapshot (d/as-of db tx)]
+    (is (= expected (set (map :v (d/datoms snapshot :avet :history/value)))))
+    (is (= expected (set (map first (d/q '[:find ?v :where [_ :history/value ?v]]
+                                         snapshot)))))
+    (is (= #{true false}
+           (into #{}
+                 (comp (filter #(= tx (:tx %))) (map :added))
+                 (d/datoms (d/history db) :avet :history/value "a"))))))
+
+(deftest same-transaction-state-survives-reopen-and-restore
+  (doseq [cardinality [:db.cardinality/one :db.cardinality/many]
+          ends-present? [true false]]
+    (testing (str cardinality " holding a at commit: " ends-present?)
+      (let [cfg (assoc (mem-cfg)
+                       :crypto-hash? true
+                       :store {:backend :file :path (fs/temp-store-path! "settled-history")
+                               :id (random-uuid)})
+            dump (fs/temp-dir! "settled-history-dump-")
+            expected (if ends-present? #{"a"} #{"b"})]
+        (try
+          (let [conn (utils/setup-db cfg)
+                tx
+                (try
+                  (d/transact conn [{:db/ident :history/value :db/valueType :db.type/string
+                                     :db/cardinality cardinality :db/index true}])
+                  (let [add-a [:db/add 100 :history/value "a"]
+                        remove-a [:db/retract 100 :history/value "a"]]
+                    (when-not ends-present?
+                      (d/transact conn [add-a]))
+                    (let [ops (if ends-present?
+                                [add-a remove-a add-a]
+                                [remove-a add-a remove-a [:db/add 100 :history/value "b"]])
+                          tx (-> (d/transact conn ops) :db-after :max-tx)]
+                      (check-order-at (d/db conn) tx expected)
+                      (d/transact conn [remove-a [:db/retract 100 :history/value "b"]
+                                        [:db/add 100 :history/value "later"]])
+                      tx))
+                  (finally (d/release conn)))
+                reopened (d/connect cfg)]
+            (try
+              (check-order-at (d/db reopened) tx expected)
+              (let [manifest (migrate/export-db (d/db reopened) dump
+                                                {:history? true :chunk-size 3})]
+                (is (some #{:datahike.migrate/settled-history} (:requires manifest))))
+              (doseq [build-indexes? [true false]]
+                (let [restored (utils/setup-db (mem-cfg))]
+                  (try
+                    (is (:verified? (migrate/import-db restored dump
+                                                       {:build-indexes? build-indexes?
+                                                        :batch-size 3})))
+                    (check-order-at (d/db restored) tx expected)
+                    (is (:ok? (migrate/verify-against (d/db restored) dump)))
+                    (finally (teardown restored)))))
+              (finally (d/release reopened))))
+          (finally
+            (d/delete-database cfg)
+            (run! fs/delete! (reverse (file-seq (io/file dump))))))))))
 
 (defn- actual-current [db]
   (set (map (juxt :e :a :v) (d/datoms db :eavt))))

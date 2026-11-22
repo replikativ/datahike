@@ -167,11 +167,9 @@
                      :supported index-families}))))
 
 (defn record->datom
-  "`[e a v t added]` -> Datom. The comparators are over Datoms, so records become
-   datoms before sorting rather than after."
+  "Decode a raw index record as a Datom before comparing it."
   [record]
-  (dd/datom (nth record 0) (nth record 1) (nth record 2)
-            (nth record 3) (nth record 4)))
+  (dd/datom-from-storage record))
 
 (defn datom->tuple
   "Datom -> `[e a v t added]`. The inverse of `record->datom` for `t > 0`.
@@ -181,8 +179,7 @@
    data: that one resolves attribute idents and translates system-entity refs
    into `#datahike/sysref`, this one is a raw field read."
   [d]
-  [(.-e ^Datom d) (.-a ^Datom d) (.-v ^Datom d)
-   (dd/datom-tx d) (dd/datom-added d)])
+  (dd/storage-tuple d))
 
 (defn sort-family!
   "External-sort `records` into `index-type`'s TEMPORAL order and return the file.
@@ -570,7 +567,8 @@
                   (let [a (nth record 1)]
                     (or (ds/schema-attr? a) (ds/entity-spec-attr? a))))
         ordered (sort-by (fn [record] [(nth record 3) (if (nth record 4) 1 0)])
-                         (filter schema? records))
+                         (remove #(and (nth % 4) (= :absent (nth % 5 nil)))
+                                 (filter schema? records)))
         db (reduce (fn [db [e a v t op]]
                      (let [dt (dd/datom e a v t op)]
                        (dbt/update-rschema

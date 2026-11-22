@@ -230,7 +230,9 @@
                                 (byte-count stored)
                                 (byte-count content)
                                 (dig/sha256-hex content)))
-                  (reduce dig/add-record dacc encs)))))))))
+                  (reduce-kv (fn [acc i bs]
+                               (dig/add-record acc bs (nth part i)))
+                             dacc encs)))))))))
 
 (defn read-manifest
   ([medium] (read-manifest medium {:sync? true}))

@@ -12,6 +12,23 @@
   (datom-tx [this])
   (datom-added [this]))
 
+(defprotocol IHistoryState
+  (history-state [this]
+    "Settled state of an EAV when both audit signs occur in one transaction."))
+
+;; Reserve two values of the existing hash cache to keep ordinary Datoms the
+;; same size. A normal hash can equal either value: return it without caching.
+;; Marked datoms keep their marker for their lifetime and compute the same hash
+;; as their unmarked equivalents.
+(def ^:private ^:const history-present-slot -2147483648)
+(def ^:private ^:const history-absent-slot -2147483647)
+
+(defn- history-slot [state]
+  (case state
+    :present history-present-slot
+    :absent history-absent-slot
+    nil 0))
+
 (defn- combine-hashes
   "Inlined from `datahike.tools`: a datom must not pull the tools namespace,
    whose requires (supervisor, hashing, logging) would follow it into every
@@ -26,11 +43,22 @@
   (datom-tx [d] (if (pos? tx) tx (- tx)))
   (datom-added [d] (pos? tx))
 
+  IHistoryState
+  (history-state [d]
+    (cond
+      (= _hash history-present-slot) :present
+      (= _hash history-absent-slot) :absent
+      :else nil))
+
   #?@(:cljs
       [IHash
-       (-hash [d] (if (zero? _hash)
-                    (set! _hash (hash-datom d))
-                    _hash))
+       (-hash [d]
+              (if (or (zero? _hash) (<= _hash history-absent-slot))
+                (let [h (hash-datom d)]
+                  (when (and (zero? _hash) (> h history-absent-slot))
+                    (set! _hash h))
+                  h)
+                _hash))
        IEquiv
        (-equiv [d o] (and (instance? Datom o) (equiv-datom d o)))
 
@@ -60,9 +88,10 @@
       :clj
       [Object
        (hashCode [d]
-                 (if (zero? _hash)
+                 (if (or (zero? _hash) (<= _hash history-absent-slot))
                    (let [h (int (hash-datom d))]
-                     (set! _hash h)
+                     (when (and (zero? _hash) (> h history-absent-slot))
+                       (set! _hash h))
                      h)
                    _hash))
        (toString [d] (pr-str d))
@@ -102,6 +131,19 @@
   ([e a v] (Datom. e a v tx0 0))
   ([e a v tx] (Datom. e a v tx 0))
   ([e a v tx added] (Datom. e a v (if added tx (- tx)) 0)))
+
+(defn ^Datom with-history-state [^Datom d state]
+  (Datom. (.-e d) (.-a d) (.-v d) (.-tx d) (history-slot state)))
+
+(defn storage-tuple
+  "The five public Datom fields, plus the settled history state when present."
+  [^Datom d]
+  (let [state (history-state d)]
+    (cond-> (vec (seq d))
+      state (conj state))))
+
+(defn ^Datom datom-from-storage [[e a v tx added state]]
+  (Datom. e a v (if added tx (- tx)) (history-slot state)))
 
 (defn datom? [x] (instance? Datom x))
 

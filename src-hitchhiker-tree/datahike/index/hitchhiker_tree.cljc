@@ -51,20 +51,25 @@
   (-compare [key1 key2]
     (compare-arrays key1 key2)))
 
+(defn- stored-datom [e a v tx state]
+  (cond-> (dd/datom e a v tx)
+    state (dd/with-history-state state)))
+
 (defn- index-type->datom-fn [index-type]
   (case index-type
-    :aevt (fn [a e v tx] (dd/datom e a v tx true))
-    :avet (fn [a v e tx] (dd/datom e a v tx true))
-    (fn [e a v tx] (dd/datom e a v tx true))))
+    :aevt (fn [a e v tx state] (stored-datom e a v tx state))
+    :avet (fn [a v e tx state] (stored-datom e a v tx state))
+    (fn [e a v tx state] (stored-datom e a v tx state))))
 
 (defn slice [tree from to index-type]
   (let [[a b c d] (diu/datom-to-vec from index-type true)
         cmp (diu/prefix-scan kc/-compare (diu/datom-to-vec to index-type false))
+        decode (index-type->datom-fn index-type)
         xf (comp
             (take-while (fn [^AMapEntry kv] (cmp (.key kv))))
             (map (fn [kv]
-                   (let [[a b c d] (.key ^AMapEntry kv)]
-                     ((index-type->datom-fn index-type) a b c d)))))]
+                   (let [[a b c d state] (.key ^AMapEntry kv)]
+                     (decode a b c d state)))))]
     (->> (sequence xf (hmsg/lookup-fwd-iter tree [a b c d]))
          seq)))
 
@@ -75,18 +80,18 @@
   (count (datom-seq tree index-type)))
 
 (defn all-datoms [tree index-type]
-  (map
-   #(apply
-     (index-type->datom-fn index-type)
-     (first %))
-   (hmsg/lookup-fwd-iter tree [])))
+  (let [decode (index-type->datom-fn index-type)]
+    (map (fn [[[a b c d state]]] (decode a b c d state))
+         (hmsg/lookup-fwd-iter tree []))))
 
 (defn- datom->node [^Datom datom index-type]
-  (case index-type
-    :aevt [(.-a datom) (.-e datom) (.-v datom) (.-tx datom)]
-    :avet [(.-a datom) (.-v datom) (.-e datom) (.-tx datom)]
-    :eavt [(.-e datom) (.-a datom) (.-v datom) (.-tx datom)]
-    (throw (IllegalArgumentException. (str "Unknown index-type: " index-type)))))
+  (let [key (case index-type
+              :aevt [(.-a datom) (.-e datom) (.-v datom) (.-tx datom)]
+              :avet [(.-a datom) (.-v datom) (.-e datom) (.-tx datom)]
+              :eavt [(.-e datom) (.-a datom) (.-v datom) (.-tx datom)]
+              (throw (IllegalArgumentException. (str "Unknown index-type: " index-type))))]
+    (cond-> key
+      (dd/history-state datom) (conj (dd/history-state datom)))))
 
 (defn- index-type->indices [index-type]
   (case index-type
