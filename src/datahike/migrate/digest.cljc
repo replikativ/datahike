@@ -193,19 +193,22 @@
 
 (defn add-record
   "Fold one record's encoded bytes into the accumulator."
-  [acc bs]
-  (let [h (record-hash8 bs)]
-    {:xor   (xor64 (:xor acc) h)
-     :sum   (add64 (:sum acc) h)
-     :count (inc (long (:count acc)))}))
+  ([acc bs] (add-record acc bs nil))
+  ([acc bs record]
+   (let [h (record-hash8 bs)]
+     (cond-> {:xor   (xor64 (:xor acc) h)
+              :sum   (add64 (:sum acc) h)
+              :count (inc (long (:count acc)))}
+       (or (:settled-history? acc) (nth record 5 nil)) (assoc :settled-history? true)))))
 
 (defn finalize
   "Render an accumulator to the manifest shape: unsigned hex xor + hex sum + count."
   [acc]
-  {:algo  :xor64+sum64
-   :xor   (hex64 (:xor acc))
-   :sum   (hex64 (:sum acc))
-   :count (:count acc)})
+  (cond-> {:algo  :xor64+sum64
+           :xor   (hex64 (:xor acc))
+           :sum   (hex64 (:sum acc))
+           :count (:count acc)}
+    (:settled-history? acc) (with-meta {:settled-history? true})))
 
 (defn digest-records
   "Convenience: fold a seq/reducible of encoded record bytes to a finalized digest."

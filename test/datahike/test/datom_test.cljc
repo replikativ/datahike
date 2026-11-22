@@ -14,6 +14,25 @@
            (select-keys d [:e :a :v])))
     (is (= 123 (d :e)))))
 
+(deftest settled-history-does-not-change-public-datom-equality
+  (let [legacy (datom 123 :foo/bar "foobar" 100 false)]
+    (is (nil? (d/history-state (d/datom-from-storage (d/storage-tuple legacy)))))
+    (doseq [state [:present :absent]]
+      (let [marked (d/with-history-state legacy state)
+            decoded (d/datom-from-storage (d/storage-tuple marked))]
+        (is (= (hash legacy) (hash marked) (hash decoded)))
+        (is (= state (d/history-state marked) (d/history-state decoded)))
+        (is (= (seq legacy) (seq marked) (seq decoded)))))))
+
+#?(:clj
+   (deftest reserved-hash-values-do-not-mark-ordinary-datoms
+     (doseq [reserved [-2147483648 -2147483647]]
+       (with-redefs-fn {#'d/hash-datom (constantly reserved)}
+         (fn []
+           (let [ordinary (datom 123 :foo/bar "foobar")]
+             (is (= reserved (hash ordinary) (hash ordinary)))
+             (is (nil? (d/history-state ordinary)))))))))
+
 (deftest prefix-comparators
   (testing "Prefix comparators match on e,a,v ignoring tx"
     (let [d1 (datom 1 :name "Alice" 100)

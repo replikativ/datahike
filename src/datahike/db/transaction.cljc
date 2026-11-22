@@ -25,6 +25,7 @@
    ;; that happen to live here — so taking the rule from the namespace that
    ;; owns mappings is the direction that keeps the two import paths agreeing.
    [datahike.migrate.ids :as mids]
+   [datahike.migrate.history :as mh]
    [org.replikativ.persistent-sorted-set.arrays :as arrays])
   #?(:cljs (:require-macros [datahike.datom :refer [datom]]))
   #?(:clj (:import [clojure.lang ExceptionInfo]
@@ -594,7 +595,8 @@
    pass through unchanged — no double-hashing."
   [secondary-only? ^Datom datom]
   (if (and secondary-only? (datom-added datom))
-    (dd/datom (.-e datom) (.-a datom) (secondary-only-hash (.-v datom)) (.-tx datom) (datom-added datom))
+    (cond-> (dd/datom (.-e datom) (.-a datom) (secondary-only-hash (.-v datom)) (.-tx datom) true)
+      (dd/history-state datom) (dd/with-history-state (dd/history-state datom)))
     datom))
 
 (defn- with-datom [db ^Datom datom tx-meta]
@@ -891,6 +893,74 @@
       (assoc-in migration-state [:eids e] new-e)
       (assoc-in migration-state [:allocated e] new-e))))
 
+(defn- record-tx-datom [report datom]
+  (cond-> (update report :tx-data conj datom)
+    (not (datom-added datom)) (assoc ::recorded-retraction? true)))
+
+(defn- replace-temporal-event [db ^Datom event state]
+  (let [a (.-a event)
+        {a-ident :ident} (dbu/attr-info db a :error-on-missing)
+        indexing? (dbu/indexing? db a-ident)
+        marked (dd/with-history-state event state)
+        op-count (:op-count db)
+        replace-event (fn [index index-type]
+                        (-> index
+                            (di/-remove event index-type op-count)
+                            (di/-temporal-insert marked index-type (inc op-count))))]
+    (cond-> (update db :temporal-eavt replace-event :eavt)
+      true (update :temporal-aevt replace-event :aevt)
+      indexing? (update :temporal-avet replace-event :avet)
+      (effects/enabled? db) (effects/emit a-ident :temporal :remove event nil)
+      (effects/enabled? db) (effects/emit a-ident :temporal :temporal-insert marked nil)
+      true (update :op-count + 2))))
+
+(defn- settle-history-ties
+  "Mark both signs of a same-transaction assertion that ends absent.
+   When the assertion survives, mark the retraction and any card-many
+   assertion already in the temporal tree. Pure assertions skip the pass.
+   Datom equality supplies the
+   EAV key, including content equality for byte and numeric arrays."
+  [{:keys [db-after tx-data] :as report}]
+  (if-not (and (::recorded-retraction? report) (dbi/-keep-history? db-after))
+    report
+    (let [event-key (fn [^Datom d]
+                      (let [a (.-a d)
+                            prim (project-primary (dbu/secondary-only? db-after a) d)]
+                        [(datom-tx prim) prim]))
+          negatives (into {}
+                          (keep (fn [^Datom d]
+                                  (when-not (datom-added d) [(event-key d) d])))
+                          tx-data)
+          ties (into {}
+                     (keep (fn [^Datom d]
+                             (when (datom-added d)
+                               (let [k (event-key d)]
+                                 (when-let [negative (get negatives k)] [k negative])))))
+                     tx-data)]
+      (update report :db-after
+              (fn [db]
+                (reduce-kv
+                 (fn [db _ ^Datom negative]
+                   (let [events (di/-slice (:temporal-eavt db) negative negative :eavt)
+                         ^Datom retraction (first (remove datom-added events))]
+                     (if retraction
+                       (let [^Datom live (first (dbi/search db [(.-e retraction)
+                                                                (.-a retraction)
+                                                                (.-v retraction)]))
+                             state (if (and live (= (datom-tx live) (datom-tx retraction)))
+                                     :present :absent)
+                             assertion (when (or (= :absent state)
+                                                 (dbu/multival? db (.-a retraction)))
+                                         (let [positive (dd/datom (.-e retraction) (.-a retraction)
+                                                                  (.-v retraction) (datom-tx retraction))]
+                                           (first (filter datom-added
+                                                          (di/-slice (:temporal-eavt db)
+                                                                     positive positive :eavt)))))]
+                         (cond-> (replace-temporal-event db retraction state)
+                           assertion (replace-temporal-event assertion state)))
+                       db)))
+                 db ties))))))
+
 (defn- transact-report
   ([report datom] (transact-report report datom false))
   ([report datom upsert?] (transact-report report datom upsert? ::not-looked-up))
@@ -912,7 +982,7 @@
                      :else                    (with-datom-upsert db datom old tx-meta)))
          report' (-> report
                      (update-in [:db-after] write)
-                     (update-in [:tx-data] conj datom))]
+                     (record-tx-datom datom))]
      ;; ONE resolving lookup, not a resolving predicate plus a raw lookup.
      ;; `tuple-source?` resolved `a` ref→ident and answered yes; the `get` that
      ;; followed did not, so under `:attribute-refs?` (where `a` is a numeric
@@ -1240,7 +1310,7 @@
         ;; history to keep, drops the new value's own temporal record.
         (and upsert? (some? old))
         (-> report
-            (update :tx-data conj (datom (.-e old) (.-a old) (.-v old) tx false))
+            (record-tx-datom (datom (.-e old) (.-a old) (.-v old) tx false))
             (transact-report new-datom upsert? old))
 
         :else (transact-report report new-datom upsert? old)))))
@@ -1297,6 +1367,7 @@
 
 (def builtin-op?
   #{:db.fn/call
+    :db.fn/call-with-tempids
     :db.fn/cas
     :db/cas
     :db/add
@@ -1642,6 +1713,13 @@
 
       :db.fn/call (let [[_ f & args] op-vec]
                     [report (apply f db args)])
+
+      ;; Like :db.fn/call, with this execution's allocated tempid bindings.
+      ;; Pass the immutable map so the callback can validate values on the
+      ;; writer basis before returning the operations that use those IDs.
+      :db.fn/call-with-tempids
+      (let [[_ f & args] op-vec]
+        [report (apply f db (:tempids report) args)])
 
       (if (and (keyword? op)
                (not (builtin-op? op)))
@@ -2101,7 +2179,8 @@
                 ;; The inverse transition is equally atomic: remove the full
                 ;; current AVET slice before this database value is published.
                 remove-disabled-indices
-                (dissoc ::pending-vt-validation)
+                (settle-history-ties)
+                (dissoc ::pending-vt-validation ::recorded-retraction?)
                 (assoc-in [:tempids :db/current-tx] (current-tx report))
                 (update-in [:db-after :max-tx] inc)
                 (update :db-after db/db-persistent!)
@@ -2184,6 +2263,105 @@
   ([initial-report initial-es tx-options]
    (transact-tx-data-internal initial-report initial-es tx-options nil)))
 
+(defn- import-temporal-event [db ^Datom event count-assertion?]
+  (let [{a-ident :ident} (dbu/attr-info db (.-a event) :error-on-missing)
+        indexed? (dbu/indexing? db a-ident)
+        op-count (:op-count db)
+        event (project-primary (dbu/secondary-only? db a-ident) event)]
+    (cond-> (advance-max-eid db (.-e ^Datom event))
+      (dbi/-keep-history? db)
+      (-> (update :temporal-eavt di/-temporal-insert event :eavt op-count)
+          (update :temporal-aevt di/-temporal-insert event :aevt op-count)
+          (cond-> indexed? (update :temporal-avet di/-temporal-insert event :avet op-count))
+          (update :op-count inc)
+          (cond-> count-assertion? (update :hash + (hash event)))))))
+
+(defn- import-ordered-datom [report datom upsert?]
+  (let [state (dd/history-state datom)]
+    (cond
+      (and (= :absent state) (datom-added datom))
+      ;; This assertion was canceled within its original transaction. Store
+      ;; its audit sign without replacing the target's live card-one value.
+      (-> report
+          (update :db-after import-temporal-event datom true)
+          (record-tx-datom datom))
+
+      state
+      ;; A marked retraction can have no live match. A marked surviving
+      ;; assertion was already in the temporal tree in the source. Preserve
+      ;; both, and keep the marker confined to temporal trees.
+      (let [live-op (if (datom-added datom)
+                      (dd/with-history-state datom nil)
+                      datom)]
+        (-> (transact-report report live-op upsert?)
+            (update :db-after import-temporal-event datom false)))
+
+      :else (transact-report report datom upsert?))))
+
+(defn- same-tea?
+  "Do two records share `[t e a]`?"
+  [x y]
+  (and (= (nth x 3) (nth y 3)) (= (nth x 0) (nth y 0)) (= (nth x 1) (nth y 1))))
+
+(defn- run-has-legacy-pair?
+  "Does this [t e a] run include both audit signs without a settled state?"
+  [run]
+  (let [retracted (into #{}
+                        (keep #(when (and (not (nth % 4)) (nil? (nth % 5 nil)))
+                                 (mh/value-key (nth % 2))))
+                        run)]
+    (boolean (some #(and (nth % 4) (nil? (nth % 5 nil))
+                         (contains? retracted (mh/value-key (nth % 2))))
+                   run))))
+
+(defn- mark-same-tx-pairs
+  "Replace every run of records sharing `[t e a]` that asserts AND retracts one
+   value without a settled state by a `{::run records}` marker. Other records pass through
+   in place. One pass, holding one run.
+
+   A history holds such pairs and datahike's own transactor writes them —
+   `[[:db/add e :tag :x] [:db/retract e :tag :x]]`, or a cardinality-one
+   attribute set twice in one transaction (`25` then `21` over `24` records
+   `[24 false] [25 true] [25 false] [21 true]`). The history does not say which
+   of the two came first, and replayed in the source's order — retraction first
+   — the retraction of the not-yet-present `25` was dropped, `25` then upserted
+   over `21`, and the restore answered `25` where the source answers `21` (95 of
+   3,000,032 datoms lost on a synthetic history). The marker is resolved against
+   the target's state when it is reached; see the `run-recs` branch of
+   `transact-entities-directly` and `datahike.migrate.history/tx-plan`.
+
+   Requires the import order `(t, e, a, op)`, which keeps a `[t e a]` contiguous;
+   an unsorted source simply has its pairs go undetected. The importer's batcher
+   never splits a `[t e a]` run across calls (see `run-import`)."
+  [records]
+  (let [flush (fn [out run]
+                (if (and (next run) (run-has-legacy-pair? run))
+                  (conj! out {::run run})
+                  (reduce conj! out run)))]
+    (loop [rs (seq records) run [] out (transient [])]
+      (if rs
+        (let [r (first rs)]
+          (if (or (empty? run) (same-tea? (peek run) r))
+            (recur (next rs) (conj run r) out)
+            (recur (next rs) [r] (flush out run))))
+        (persistent! (if (seq run) (flush out run) out))))))
+
+(defn- replay-order
+  "The records of one marked `[t e a]` run in an order that rebuilds the outcome
+   `plan` (from `mh/tx-plan`) decided: the current values it retracts go out
+   first, then every value that ends absent passes through (asserted, then
+   retracted), then the survivors are asserted — after passing through temporal
+   first when the source history says they did. No value of the run is ever
+   upserted over another."
+  [plan]
+  (concat
+   (keep #(when (and (:before? %) (:r %)) (:r %)) plan)
+   (mapcat #(when (and (:a %) (not (:after? %))) (if (:r %) [(:a %) (:r %)] [(:a %)])) plan)
+   (keep #(when (and (:r %) (not (:a %)) (not (:before? %))) (:r %)) plan)
+   (mapcat #(when (:after? %)
+              (if (and (:r %) (not (:before? %))) [(:a %) (:r %) (:a %)] [(:a %)]))
+           plan)))
+
 (defn transact-entities-directly
   "Load `initial-es` (raw `[e a v t op]` records) into `(:db-after
    initial-report)`, remapping source ids to target ones.
@@ -2205,12 +2383,23 @@
    clear even before this changed.)
 
    Now the caller owns it: pass the previous call's `:migration` back in, and
-   the map goes out of scope when the import ends."
+   the map goes out of scope when the import ends.
+
+   On the import path (a non-nil `:migration`) the records are expected in the
+   import order `(t, e, a, op)`, and a `[t e a]` run that asserts and retracts
+   one value is replayed in an order derived from the target's state — see
+   `mark-same-tx-pairs`. The public `load-entities` passes no `:migration`, and
+   its records are replayed exactly as given."
   [initial-report initial-es]
   (loop [report (-> initial-report
                     (update :datahike/tx-ops #(or % #{}))
                     (update :db-after db/db-transient))
-         es initial-es
+         ;; Only on the IMPORT path (`:migration` present). The public
+         ;; `load-entities` takes records in whatever order its caller gives and
+         ;; replays them as given.
+         es (if (some? (:migration initial-report))
+              (mark-same-tx-pairs initial-es)
+              initial-es)
          migration-state (or (:migration initial-report) {})]
     (if (empty? es)
       ;; NO `max-tx` bump here. One call is one BATCH, not one transaction, and
@@ -2228,12 +2417,14 @@
       ;; already produced.
       (-> report
           (assoc :migration migration-state)
+          (dissoc ::recorded-retraction?)
           (update :db-after db/db-persistent!)
           (update :db-after finalize-secondary-indices)
           (update :db-after #(tracking/schema-transition (:db-before initial-report) %)))
       (let [[entity & entities] es
             {:keys [config] :as db} (:db-after report)
-            [e a v t op] entity
+            run-recs (when (map? entity) (::run entity))
+            [e a v t op state] (if run-recs (first run-recs) entity)
             a-ident (if (and (number? a) (:attribute-refs? config))
                       (dbi/-ident-for db a)
                       a)
@@ -2270,16 +2461,32 @@
             max-eid (next-eid db)
             max-tid (inc (get-in report [:db-after :max-tx]))]
         (cond
+          ;; A `[t e a]` run asserting and retracting one value — see
+          ;; `mark-same-tx-pairs`. Its outcome is decided against what is
+          ;; current NOW, i.e. before this source transaction, and replayed in
+          ;; an order that produces it.
+          run-recs
+          (let [te (migrated-eid migration-state e)
+                ref? (dbu/ref? db a)
+                present? (fn [r]
+                           (let [rv (nth r 2)
+                                 tv (if ref? (migrated-eid migration-state rv) rv)]
+                             (and (some? te) (some? tv)
+                                  (some? (first (dbi/search db [te a tv]))))))
+                plan (mh/tx-plan run-recs (dbu/multival? db a-ident) present?)]
+            (recur report (concat (replay-order plan) entities) migration-state))
+
           (= :db.install/attribute a-ident)
           (recur report entities migration-state)
 
           ;; meta entity
           (ds/meta-attr? a-ident)
           (let [new-t (get-in migration-state [:tids t] max-tid)
-                new-datom (dd/datom new-t a v new-t op)
+                new-datom (cond-> (dd/datom new-t a v new-t op)
+                            state (dd/with-history-state state))
                 new-e (.-e new-datom)
                 upsert? (not (dbu/multival? db a-ident))]
-            (recur (-> (transact-report report new-datom upsert?)
+            (recur (-> (import-ordered-datom report new-datom upsert?)
                        (assoc-in [:db-after :max-tx] max-tid))
                    entities
                    (-> migration-state
@@ -2303,6 +2510,7 @@
                                     v)
                                   (get-in migration-state [:tids t])
                                   op)
+                new-datom (cond-> new-datom state (dd/with-history-state state))
                 upsert? (and (not (dbu/multival? db a-ident))
                              op)]
-            (recur (transact-report report new-datom upsert?) entities (remember-eid migration-state e (.-e new-datom)))))))))
+            (recur (import-ordered-datom report new-datom upsert?) entities (remember-eid migration-state e (.-e new-datom)))))))))

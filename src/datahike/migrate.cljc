@@ -151,12 +151,13 @@
           (let [bs (mcbor/encode-record (first rs))
                 len (alength ^bytes bs)
                 bn' (+ (long bn) (long len))
-                block' (conj block bs)]
+                block' (conj block bs)
+                da' (dig/add-record da bs (first rs))]
             (dig/sha256-update! md bs)
             (if (>= bn' mz/default-block-size)
               (do (flush-block! block' bn')
-                  (recur (next rs) (inc c) (dig/add-record da bs) [] 0 (+ (long raw) (long len))))
-              (recur (next rs) (inc c) (dig/add-record da bs) block' bn' (+ (long raw) (long len)))))
+                  (recur (next rs) (inc c) da' [] 0 (+ (long raw) (long len))))
+              (recur (next rs) (inc c) da' block' bn' (+ (long raw) (long len)))))
           (do (flush-block! block bn)
               [rs c (dig/sha256-finalize md) da raw])))
       (finally (fs/close-sink! sink)))))
@@ -1539,26 +1540,43 @@
                                                      :tx-size (count tx-group)}))
               (if tx-rep
                 (recur (next groups) errs (:migration tx-rep))
-                (let [[errs' m'] (loop [ds (seq tx-group) errs errs m m]
-                                   (if (nil? ds)
+                ;; Narrow to `[e a]` runs before single datoms: `load-entities`
+                ;; resolves a value asserted and retracted in one transaction per
+                ;; run (`mark-same-tx-pairs`), so only a run that itself fails is
+                ;; split further, record by record.
+                (let [[errs' m'] (loop [runs (seq (partition-by (fn [d] [(nth d 0) (nth d 1)]) tx-group))
+                                        errs errs m m]
+                                   (if (nil? runs)
                                      [errs m]
-                                     (let [d (first ds)
-                                           r (try {:rep (<?- (load-batch! conn [d] m opts))}
-                                                  (catch #?(:clj Exception :cljs :default) e {:ex e}))]
-                                       (when (and (:ex r) (not (record-fault? (:ex r))))
-                                         (abort-not-a-record-fault! (:ex r) {:datom d}))
-                                       (recur (next ds)
-                                              (if-let [ex (:ex r)]
-                                                ;; `dt/ex-error`, not `(:error (ex-data ex))`:
-                                                ;; the writer boundary wraps twice, so the
-                                                ;; latter is nil even for a `:transact/unique`
-                                                ;; that said exactly what was wrong — which is
-                                                ;; how every collected error came back labelled
-                                                ;; `:import/corrupt-datom`.
-                                                (conj errs {:error (or (dt/ex-error ex) :import/corrupt-datom)
-                                                            :datom d :message (ex-message ex)})
-                                                errs)
-                                              (if (:ex r) m (:migration (:rep r)))))))]
+                                     (let [run (vec (first runs))
+                                           rr (try {:rep (<?- (load-batch! conn run m opts))}
+                                                   (catch #?(:clj Exception :cljs :default) e {:ex e}))
+                                           run-rep (:rep rr)]
+                                       (when (and (:ex rr) (not (record-fault? (:ex rr))))
+                                         (abort-not-a-record-fault! (:ex rr) {:run-size (count run)}))
+                                       (if run-rep
+                                         (recur (next runs) errs (:migration run-rep))
+                                         (let [[errs m] (loop [ds (seq run) errs errs m m]
+                                                          (if (nil? ds)
+                                                            [errs m]
+                                                            (let [d (first ds)
+                                                                  r (try {:rep (<?- (load-batch! conn [d] m opts))}
+                                                                         (catch #?(:clj Exception :cljs :default) e {:ex e}))]
+                                                              (when (and (:ex r) (not (record-fault? (:ex r))))
+                                                                (abort-not-a-record-fault! (:ex r) {:datom d}))
+                                                              (recur (next ds)
+                                                                     (if-let [ex (:ex r)]
+                                                                       ;; `dt/ex-error`, not `(:error (ex-data ex))`:
+                                                                       ;; the writer boundary wraps twice, so the
+                                                                       ;; latter is nil even for a `:transact/unique`
+                                                                       ;; that said exactly what was wrong — which is
+                                                                       ;; how every collected error came back labelled
+                                                                       ;; `:import/corrupt-datom`.
+                                                                       (conj errs {:error (or (dt/ex-error ex) :import/corrupt-datom)
+                                                                                   :datom d :message (ex-message ex)})
+                                                                       errs)
+                                                                     (if (:ex r) m (:migration (:rep r)))))))]
+                                           (recur (next runs) errs m))))))]
                   (recur (next groups) errs' m')))))))))))
 
 (defn- flush-batch!
@@ -2028,9 +2046,24 @@
                                          ;; which is threaded across calls, so both
                                          ;; halves land on ONE transaction with order
                                          ;; and grouping intact.
+                                         ;;
+                                         ;; ...but never INSIDE one `[t e a]`. A value
+                                         ;; asserted and retracted in one transaction
+                                         ;; is resolved per `[t e a]` run by
+                                         ;; `load-entities` (`mark-same-tx-pairs`), and
+                                         ;; a run split across two calls resurrected the
+                                         ;; passing value (`{:batch-size 1}` restored
+                                         ;; `25` for `21`). So the backstop waits for the
+                                         ;; run to end; one `[e a]` holding more than
+                                         ;; `hard-max` values in a single transaction
+                                         ;; can therefore exceed it.
+                                         last-rec (:last-rec acc)
                                          acc (if (or (and (>= (long (:n acc)) batch-size)
                                                           (not= t (:last-t acc)))
-                                                     (>= (long (:n acc)) hard-max))
+                                                     (and (>= (long (:n acc)) hard-max)
+                                                          (not (and (= t (nth last-rec 3))
+                                                                    (= (nth rec 0) (nth last-rec 0))
+                                                                    (= (nth rec 1) (nth last-rec 1))))))
                                                (let [r (<?- (flush-batch! conn (:batch acc)
                                                                           on-error (:migration acc)
                                                                           progress opts))]
@@ -2043,7 +2076,7 @@
                                             (-> acc
                                                 (update :batch conj rec)
                                                 (update :n inc)
-                                                (assoc :last-t t))))
+                                                (assoc :last-t t :last-rec rec))))
                                    (recur (next rs) (update acc :dropped inc))))))))))
           ;; The completion arity, once, after the last chunk. A transducer
           ;; holding a partial group — `partition-all`, or a custom one buffering
@@ -3366,18 +3399,17 @@
 ;; verify
 
 (defn- fp-init [] {:acc (dig/accumulator) :refc {} :outd {}})
-(defn- fp-step [fp [e a v op] ref?]
+(defn- fp-step [fp [e a v op state] ref?]
   (if (ref? a)
-    (-> fp (update-in [:refc a] (fnil inc 0)) (update-in [:outd e] (fnil inc 0)))
-    ;; Hash the CBOR encoding of the normalised tuple rather than its `pr-str`.
-    ;; This fingerprint compares a DUMP against a LIVE database, so it must be a
-    ;; function of the values alone — and `:archival` gives that by construction,
-    ;; where `pr-str` does not: it renders a Double and a Float identically and
-    ;; differs between JVM and ClojureScript for several types.
-    (update fp :acc dig/add-record (mcbor/encode-record [a (norm-val v) op]))))
+    (cond-> (-> fp (update-in [:refc a] (fnil inc 0)) (update-in [:outd e] (fnil inc 0)))
+      state (update-in [:ref-history [a op state]] (fnil inc 0)))
+    ;; Archival CBOR preserves value types and is consistent across runtimes.
+    (let [record (cond-> [a (norm-val v) op] state (conj state))]
+      (update fp :acc dig/add-record (mcbor/encode-record record)))))
 (defn- fp-final [fp]
   {:digest (dig/finalize (:acc fp))
    :ref-counts (:refc fp)
+   :ref-history (:ref-history fp)
    :out-degree (frequencies (vals (:outd fp)))})
 
 (defn- with-source-records
@@ -3417,8 +3449,8 @@
       {:sampled 0 :ok? true :note "no :db.unique attrs — content covered by tiers 1–2"}
       (let [picks (reduce-source
                    (fn [acc record]
-                     (let [[e a v _t op] record]
-                       (if (and op (uniq a) (< (count acc) n) (not (contains? acc [a v])))
+                     (let [[e a v _t op state] record]
+                       (if (and op (not= :absent state) (uniq a) (< (count acc) n) (not (contains? acc [a v])))
                          (assoc acc [a v] e) acc)))
                    {})
             pick-es (set (vals picks))
@@ -3426,8 +3458,9 @@
             ;; so a fully-retracted entity nets to empty (and is not compared).
             recon (reduce-source
                    (fn [acc record]
-                     (let [[e a v _t op] record]
-                       (if (and (contains? pick-es e) (not (ref? a)))
+                     (let [[e a v _t op state] record]
+                       (if (and (contains? pick-es e) (not (ref? a))
+                                (not (and op (= :absent state))))
                          (update-in acc [e a] (fnil (if op conj disj) #{}) (norm-val v))
                          acc)))
                    {})
@@ -3845,21 +3878,25 @@
              sec-only? (fn [a] (dbu/secondary-only? db a))
              dump-fp (fp-final (reduce-source
                                 (fn [fp record]
-                                  (let [[e a v _t op] record
+                                  (let [[e a v _t op state] record
                                         v (if (and op (sec-only? a))
                                             (dbt/secondary-only-hash v)
                                             v)]
-                                    (fp-step fp [e a v op] ref?)))
+                                    (fp-step fp [e a v op state] ref?)))
                                 (fp-init)))
              src     (if hist? (api/history db) db)
              live-fp (fp-final (reduce (fn [fp dm]
                                          (if (> (d/datom-tx dm) c/tx0)
-                                           (fp-step fp [(nth dm 0) (a-ident db (nth dm 1)) (nth dm 2) (nth dm 4)] ref?)
+                                           (fp-step fp [(nth dm 0) (a-ident db (nth dm 1))
+                                                        (nth dm 2) (nth dm 4) (d/history-state dm)]
+                                                    ref?)
                                            fp))
                                        (fp-init) (api/datoms src :eavt)))
+             ref-history-match? (= (:ref-history dump-fp) (:ref-history live-fp))
              t2-ok  (and (= (:digest dump-fp) (:digest live-fp))
                          (= (:ref-counts dump-fp) (:ref-counts live-fp))
-                         (= (:out-degree dump-fp) (:out-degree live-fp)))
+                         (= (:out-degree dump-fp) (:out-degree live-fp))
+                         ref-history-match?)
                ;; tier 3 — sampled structural diff
              t3     (verify-sample manifest reduce-source db ref? 25)
                ;; blobs — same tier as the chunks, and part of :ok?
@@ -3881,6 +3918,7 @@
           :tier2 {:match? t2-ok
                   :value-digest-match? (= (:digest dump-fp) (:digest live-fp))
                   :ref-counts-match? (= (:ref-counts dump-fp) (:ref-counts live-fp))
+                  :ref-history-match? ref-history-match?
                   :out-degree-match? (= (:out-degree dump-fp) (:out-degree live-fp))}
           :tier3 t3
           :blobs blobs})))))

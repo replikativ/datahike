@@ -262,14 +262,15 @@
 (defn distinct-datoms
   ([db index-type current-datoms history-datoms]
    (if  (dbi/-keep-history? db)
-     (merge-datoms
-      index-type
-      (filter (fn [datom]
-                (let [a (:a datom)]
-                  (or (no-history? db a)
-                      (multival? db a))))
-              current-datoms)
-      history-datoms)
+     (let [current (filter (fn [datom]
+                             (let [a (:a datom)]
+                               (or (no-history? db a) (multival? db a))))
+                           current-datoms)]
+       ;; On an indexed tie, keep the temporal copy. It can carry a settled
+       ;; history state that the identical current assertion does not need.
+       (if index-type
+         (merge-datoms index-type history-datoms current)
+         (merge-datoms index-type current history-datoms)))
      current-datoms)))
 
 (defn distinct-datoms-desc
@@ -285,12 +286,12 @@
           rcmp (fn [a b] (cmp b a))]
       (merge-distinct-sorted-seqs
        rcmp
+       history-datoms
        (filter (fn [datom]
                  (let [a (:a datom)]
                    (or (no-history? db a)
                        (multival? db a))))
-               current-datoms)
-       history-datoms))
+               current-datoms)))
     current-datoms))
 
 (defn temporal-datoms [db index-type cs]

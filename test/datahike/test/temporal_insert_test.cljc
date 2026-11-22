@@ -169,3 +169,24 @@
               "the superseded value is in history")
           (is (= #{["b"]} (d/q '[:find ?n :in $ ?e :where [?e :name ?n]] db e))
               "and the current value is the new one"))))))
+
+(deftest overwriting-false-preserves-its-history-retraction
+  (with-conn
+    (fn [conn eid]
+      (d/transact conn [{:db/ident :enabled :db/valueType :db.type/boolean
+                         :db/cardinality :db.cardinality/one}])
+      (let [add-false (d/transact conn [[:db/add eid :enabled false]])
+            add-true (d/transact conn [[:db/add eid :enabled true]])
+            restore-false (d/transact conn [[:db/add eid :enabled false]])
+            db @conn
+            t1 (:max-tx (:db-after add-false))
+            t2 (:max-tx (:db-after add-true))
+            t3 (:max-tx (:db-after restore-false))]
+        (is (= #{[false t1 true] [false t2 false] [true t2 true]
+                 [true t3 false] [false t3 true]}
+               (into #{} (map (juxt :v :tx :added))
+                     (d/datoms (d/history db) :eavt eid :enabled))))
+        (is (= [[false] [true] [false]]
+               (mapv (fn [tx]
+                       (mapv :v (d/datoms (d/as-of db tx) :eavt eid :enabled)))
+                     [t1 t2 t3])))))))

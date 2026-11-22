@@ -27,7 +27,7 @@
 (alter-meta! #'->Cursor assoc :private true)
 
 (def ^:private codec {:profile :archival
-                      :registry (elements/install-element-handlers (boring/tag-registry))})
+                      :registry (elements/install-element-handlers (boring/tag-registry) true)})
 
 (defn- fail! [type message data]
   (throw (ex-info message (assoc data :type type))))

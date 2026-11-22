@@ -16,9 +16,12 @@
   supplies the READ side, keyed by the same name. The `nil` read-fn on
   `register-tag` is deliberate — passing one would replace boring's built-in
   tag-27 dispatch wholesale, and that dispatch is what looks the name up."
-  [reg]
-  (-> reg
-      (boring/register-tag 27 #?(:clj Datom :cljs dd/Datom)
-                           (fn [d] [datom-name (vec (seq d))])
-                           nil)
-      (boring/register-record datom-name dd/datom-from-reader)))
+  ([reg] (install-element-handlers reg false))
+  ([reg durable?]
+   (let [tuple (if durable? dd/storage-tuple #(vec (seq %)))
+         from-tuple (if durable? dd/datom-from-storage dd/datom-from-reader)]
+     (-> reg
+         (boring/register-tag 27 #?(:clj Datom :cljs dd/Datom)
+                              (fn [d] [datom-name (tuple d)])
+                              nil)
+         (boring/register-record datom-name from-tuple)))))

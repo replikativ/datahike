@@ -223,8 +223,8 @@
 ;; the records a dump contains
 
 (defn datom->record
-  "Convert a datom to an EDN-encodable record vector [e a v t added]. `a` becomes a
-   keyword ident; ref values pointing at a system entity become #datahike/sysref."
+  "Convert a datom to a record with an optional settled history state.
+   Attribute idents use keywords. System entity refs use #datahike/sysref."
   ([db sys-ents sys-idents datom] (datom->record db sys-ents sys-idents nil datom))
   ([db sys-ents sys-idents sec-read datom] (datom->record db sys-ents sys-idents sec-read nil datom))
   ([db sys-ents sys-idents sec-read renamed-attrs datom]
@@ -266,7 +266,8 @@
          op (nth datom 4)
          sysref? (fn [val] (when (and (dbu/ref? db a) (contains? sys-ents val))
                              (get sys-idents val)))]
-     [e a (mcbor/encode-value v sysref?) t op])))
+     (cond-> [e a (mcbor/encode-value v sysref?) t op]
+       (d/history-state datom) (conj (d/history-state datom))))))
 
 (defn- refuse-unresolvable!
   "Refuse an export that cannot recover the value a datom names.
@@ -510,7 +511,8 @@
               :datahike.migrate/store-ref-blobs
               :datahike.migrate/external-blobs
               :datahike.migrate/attribute-refs
-              :datahike.migrate/ident-timeline)
+              :datahike.migrate/ident-timeline
+              :datahike.migrate/settled-history)
         ds/builtin-value-types))
 
 (defn check-capabilities!
@@ -555,7 +557,9 @@
      ;; …and, separately, what is needed to READ this dump. See `dump-requires`:
      ;; provenance is for diagnostics, capabilities are for the accept/reject
      ;; decision, and conflating them is what makes a version stamp too blunt.
-      :requires                       (vec (sort (dump-requires db opts (get opts blob-plan-key))))
+      :requires                       (vec (sort (cond-> (dump-requires db opts (get opts blob-plan-key))
+                                                   (:settled-history? (meta digest))
+                                                   (conj :datahike.migrate/settled-history))))
       :source-config                  (into (array-map :store-backend (get-in cfg [:store :backend]))
                                             (map (fn [k] [k (get cfg k)]))
                                             (sort source-config-allowlist))
@@ -704,8 +708,8 @@
                         {:error :migrate/bad-size :option k :value v}))))))
 
 (defn validate-record!
-  "Refuse a record that is not `[e a v t op]` with the right shapes. Throws;
-   returns nil. ~65 ns, i.e. 0.3% of a streaming import — which is the whole
+  "Check `[e a v t op]` and its optional settled history state. Throws on
+   a malformed record and returns nil on success. ~65 ns, i.e. 0.3% of a streaming import — which is the whole
    argument for running it always rather than behind a flag.
 
    Applied AFTER sysref resolution and AFTER `:xform`, so it also catches a
@@ -748,8 +752,12 @@
                             {:error :import/malformed-record
                              :reason why
                              :record record})))]
-    (when-not (and (vector? record) (= 5 (count record))) (bad! "not a 5-element vector"))
-    (let [[e a v t op] record]
+    (when-not (and (vector? record) (<= 5 (count record) 6))
+      (bad! "not a 5-element vector or a 6-element history vector"))
+    (let [[e a v t op state] record]
+      (when (and (= 6 (count record))
+                 (not (#{:absent :present} state)))
+        (bad! (str "invalid settled history state: " (pr-str state))))
       (when-not (integer? e) (bad! (str "e is not an integer: " (pr-str e))))
       ;; An attribute is normally a keyword ident. A dump that renamed an
       ;; attribute records THAT one by entity instead, so the reader can choose

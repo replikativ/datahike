@@ -210,6 +210,26 @@
                           (d/db-with db [[:db/retractEntity "missing"]
                                          {:db/id "missing" :person/name "Later"}])))))
 
+(deftest test-call-with-allocated-tempids
+  (let [db (db/empty-db {:person/friend {:db/valueType :db.type/ref}})
+        tx [{:db/id "target" :person/name "Target"}
+            [:db.fn/call-with-tempids
+             (fn [tx-db tempids name]
+               (let [target (get tempids "target")]
+                 (is (nil? (get tempids "source")))
+                 (is (= ["Target"] (mapv :v (d/datoms tx-db :eavt target :person/name))))
+                 [{:db/id "source" :person/name name :person/friend target}]))
+             "Source"]]
+        base-with-row (d/db-with db [{:person/name "Unrelated"}])]
+    (doseq [base [db base-with-row]]
+      (let [result (d/db-with base tx)]
+        (is (= #{["Source" "Target"]}
+               (d/q '[:find ?source-name ?target-name
+                      :where [?source :person/name ?source-name]
+                      [?source :person/friend ?target]
+                      [?target :person/name ?target-name]]
+                    result)))))))
+
 (deftest test-retract-fns-not-found
   (let [db  (-> (db/empty-db {:name {:db/unique :db.unique/identity}})
                 (d/db-with  [[:db/add 1 :name "Ivan"]]))
