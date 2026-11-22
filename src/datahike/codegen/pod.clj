@@ -103,15 +103,20 @@
                 :returns :value}})
 
 (def with-db-macro-code
-  "Client-side macro for automatic db cleanup."
+  "Client-side macro for automatic db cleanup.
+
+   The expansion names `datahike.pod/with-db` and `datahike.pod/release-db`
+   in full. Left bare they have to resolve in the caller's namespace, which
+   normally only aliases the pod; under babashka 1.13.230 a bare `release-db`
+   failed with \"Unable to resolve symbol\"."
   "(defmacro with-db [bindings & body]
      (cond
        (= (count bindings) 0) `(do ~@body)
        (symbol? (bindings 0)) `(let ~(subvec bindings 0 2)
                                  (try
-                                   (with-db ~(subvec bindings 2) ~@body)
+                                   (datahike.pod/with-db ~(subvec bindings 2) ~@body)
                                    (finally
-                                     (release-db ~(bindings 0)))))
+                                     (datahike.pod/release-db ~(bindings 0)))))
        :else (throw (IllegalArgumentException.
                       \"with-db only allows Symbols in bindings\"))))")
 
