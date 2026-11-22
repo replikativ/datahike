@@ -2139,16 +2139,26 @@
               (recur (allocate-eid report v (current-tx report)) (cons [op e a (current-tx report)] entities))
 
               (tempid? e)
-              (if (not= op :db/add)
-                (log/raise "Can't use tempid in '" entity "'. Tempids are allowed in :db/add only"
-                           {:error :transact/syntax, :op entity})
-                (let [upserted-eid (when (dbu/is-attr? db a :db.unique/identity)
-                                     (:e (first (dbi/datoms db :avet [a v]))))
-                      allocated-eid (get tempids e)]
-                  (if (and upserted-eid allocated-eid (not= upserted-eid allocated-eid))
-                    (retry-with-tempid initial-report report initial-es e upserted-eid tx-options prepared)
-                    (let [eid (or upserted-eid allocated-eid (next-eid db))]
-                      (recur (allocate-eid report e eid) (cons [op eid a v] entities))))))
+              (let [allocated-eid (get tempids e)]
+                (cond
+                  (= op :db/add)
+                  (let [upserted-eid (when (dbu/is-attr? db a :db.unique/identity)
+                                       (:e (first (dbi/datoms db :avet [a v]))))]
+                    (if (and upserted-eid allocated-eid (not= upserted-eid allocated-eid))
+                      (retry-with-tempid initial-report report initial-es e upserted-eid tx-options prepared)
+                      (let [eid (or upserted-eid allocated-eid (next-eid db))]
+                        (recur (allocate-eid report e eid) (cons [op eid a v] entities)))))
+
+                  (contains? #{:db/retract :db.fn/retractAttribute
+                               :db/retractEntity :db.fn/retractEntity} op)
+                  (if allocated-eid
+                    (recur report (cons (into [op allocated-eid] (nnext entity)) entities))
+                    (log/raise "Cannot retract an unresolved tempid: " e
+                               {:error :transact/syntax, :op entity}))
+
+                  :else
+                  (log/raise "Can't use tempid in '" entity "'. Tempids are allowed in :db/add only"
+                             {:error :transact/syntax, :op entity})))
 
               (and (dbu/ref? db a) (tempid? v))
               (if-let [vid (get tempids v)]
