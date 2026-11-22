@@ -6,6 +6,13 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **`with-db` in the babashka pod failed under babashka 1.13.230 ([#1179]).**
+  `(d/with-db [db (d/db conn)] …)` raised `Unable to resolve symbol:
+  release-db` unless the caller had referred the pod's functions. The macro
+  now names `datahike.pod/release-db` and itself in full, so it works from
+  any namespace on old and new babashka.
+  (0.8.NNNN, [#1179])
+
 - **Transaction and `added` slots on patterns that share an entity ([#1172]).**
   Several patterns on one entity are answered by one scan and a seek per
   further pattern, and the seek dropped what a pattern said beyond attribute
@@ -1131,6 +1138,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1170]: https://github.com/replikativ/datahike/pull/1170
 [#1171]: https://github.com/replikativ/datahike/pull/1171
 [#1172]: https://github.com/replikativ/datahike/pull/1172
+[#1179]: https://github.com/replikativ/datahike/pull/1179
 [#1107]: https://github.com/replikativ/datahike/issues/1107
 [#938]: https://github.com/replikativ/datahike/issues/938
 [#1156]: https://github.com/replikativ/datahike/pull/1156
