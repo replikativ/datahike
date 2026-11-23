@@ -2,11 +2,14 @@
   "A database created before every index branch was stored with its element count
    (#1108): the connect says so once, with the call that fixes it, and
    `datahike.index.recount/recount!` fixes it."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.core.async :as async]
+            [clojure.test :refer [deftest is testing]]
             [datahike.api :as d]
             [datahike.index.recount :as recount]
             [datahike.migrate.fs :as fs]
             [datahike.tools :as dt]
+            [datahike.versioning :as dv]
+            [datahike.writing :as dw]
             [konserve.core :as k]
             [org.replikativ.persistent-sorted-set :as psset]
             [taoensso.trove :as trove])
@@ -15,12 +18,21 @@
 (def ^:private index-keys
   [:eavt :aevt :avet :temporal-eavt :temporal-aevt :temporal-avet])
 
+(def ^:private root-keys
+  [:eavt-key :aevt-key :avet-key :temporal-eavt-key :temporal-aevt-key :temporal-avet-key])
+
 (defn- cfg [extra]
   (merge {:store {:backend :file
                   :path (fs/temp-store-path! "dh-recount")
                   :id (random-uuid)}
-          :schema-flexibility :read
+          :schema-flexibility :write
           :keep-history? true
+          ;; both attributes indexed, so that AVET and its history twin grow
+          ;; branches below their roots like the other four
+          :initial-tx [{:db/ident :k :db/valueType :db.type/long
+                        :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                       {:db/ident :v :db/valueType :db.type/string
+                        :db/cardinality :db.cardinality/one :db/index true}]
           ;; small nodes: a few thousand datoms give three levels, so there are
           ;; branches below the root to lose their counts
           :index-config {:branching-factor 16}}
@@ -32,7 +44,7 @@
 (defn- fill! [conn]
   (dotimes [i 8]
     (d/transact conn (vec (for [j (range 250)] {:k (+ (* i 250) j) :v (str "x" j)}))))
-  (d/transact conn (vec (for [j (range 300)] [:db/retract (inc j) :v (str "x" (mod j 250))]))))
+  (d/transact conn (vec (for [j (range 300)] [:db/retract [:k j] :v (str "x" (mod j 250))]))))
 
 (defn- age!
   "Make the stored database look as one written by an earlier version does: every
@@ -45,9 +57,11 @@
         branch (get-in db [:config :branch])
         n (atom 0)]
     (doseq [ik index-keys
-            :let [^PersistentSortedSet p (get db ik)]
-            :when p
-            :let [root (.-_address p)
+            :let [p (get db ik)]
+            ;; nothing to age in an index type that keeps no counts
+            :when (instance? PersistentSortedSet p)
+            :let [^PersistentSortedSet p p
+                  root (.-_address p)
                   addrs (atom [])]]
       (psset/walk-addresses p (fn [a] (swap! addrs conj a) true))
       (doseq [a @addrs
@@ -60,10 +74,10 @@
     (k/update-in store [branch]
                  (fn [stored]
                    (when roots?
-                     (doseq [sk [:eavt-key :aevt-key :temporal-eavt-key :temporal-aevt-key]
-                             :let [^PersistentSortedSet p (get stored sk)]
-                             :when p]
-                       (set! (.-_count p) (int -1))))
+                     (doseq [sk root-keys
+                             :let [p (get stored sk)]
+                             :when (instance? PersistentSortedSet p)]
+                       (set! (.-_count ^PersistentSortedSet p) (int -1))))
                    (update stored :meta #(-> %
                                              (dissoc :datahike/index-counts)
                                              (assoc :persistent.set/version "0.5.146"))))
@@ -141,6 +155,8 @@
                   (is (= [] (:roots-without-count data)) "the roots have their counts here")
                   (is (= (get-in cfg [:store :id]) (:store-id data)))))
               (testing "the census finds what was erased"
+                (is (every? #(pos? (:unknown %)) (vals (:indices before)))
+                    "precondition: all six indices, AVET and the history ones included, lost counts")
                 (is (not (:complete? before)))
                 (is (= erased (unknown before))))
               (testing "recount! reports what it found and commits without a transaction"
@@ -166,7 +182,7 @@
                 (is (zero? (unknown c)))
                 (testing "and writes keep them"
                   (d/transact conn (vec (for [j (range 400)] {:k (+ 5000 j) :v "y"})))
-                  (d/transact conn (vec (for [j (range 200)] [:db/retract (+ 400 j) :v (str "x" (mod (+ 399 j) 250))])))
+                  (d/transact conn (vec (for [j (range 200)] [:db/retract [:k (+ 400 j)] :v (str "x" (mod (+ 400 j) 250))])))
                   (is (zero? (unknown (recount/census conn)))))
                 (d/release conn))
               (is (empty? @warnings) "a marked database is quiet"))))))
@@ -185,8 +201,7 @@
           (let [conn (d/connect cfg)]
             (is (= 1 (count @warnings)))
             (let [[msg data] (first @warnings)]
-              (is (= [:eavt-key :aevt-key :temporal-eavt-key :temporal-aevt-key]
-                     (:roots-without-count data)))
+              (is (= root-keys (:roots-without-count data)))
               (is (re-find #"heuristics" (str msg))))
             (is (pos? (unknown (recount/census conn))))
             (recount/recount! conn)
@@ -237,6 +252,106 @@
             (is (every? (set (d/datoms @conn :eavt)) datoms) "every datom from before is there")
             (is (= (+ 2000 500) (d/q '[:find (count ?e) . :where [?e :k]] @conn)))
             (is (zero? (unknown (recount/census conn))))
+            (d/release conn)))))
+    (d/delete-database cfg)))
+
+(deftest an-interrupted-recount-changes-nothing-and-is-run-again
+  ;; The commit writes the rewritten nodes and then publishes the head. Fail it
+  ;; between the two, as a crash would: the head is the old one, and a rerun
+  ;; finds the same work and does it.
+  (let [cfg (cfg {})]
+    (d/create-database cfg)
+    (let [conn (d/connect cfg)
+          pss (pss? conn)]
+      (fill! conn)
+      (age! conn false)
+      (d/release conn)
+      (when pss
+        (let [conn (d/connect cfg)
+              before (recount/census conn)
+              commit-id (get-in @conn [:meta :datahike/commit-id])
+              datoms (vec (d/datoms @conn :eavt))
+              write! dw/write-pending-kvs!
+              written (atom 0)]
+          (with-redefs [dw/write-pending-kvs!
+                        (fn [store kvs sync?]
+                          (let [r (write! store kvs sync?)
+                                e (ex-info "interrupted after the node writes" {:type ::interrupted})]
+                            (swap! written + (count kvs))
+                            (if sync?
+                              (throw e)
+                              (async/go (when r (async/<! r)) e))))]
+            (is (thrown? Exception (recount/recount! conn))))
+          (is (pos? @written) "precondition: the rewritten nodes had been written")
+          (d/release conn)
+          (let [conn (d/connect cfg)]
+            (is (= commit-id (get-in @conn [:meta :datahike/commit-id])) "the head is the old one")
+            (is (= before (recount/census conn)) "with the same branches uncounted")
+            (is (= datoms (vec (d/datoms @conn :eavt))))
+            (is (= before (recount/recount! conn)) "the rerun does the work")
+            (d/release conn))
+          (let [conn (d/connect cfg)
+                c (recount/census conn)]
+            (is (:complete? c))
+            (is (zero? (unknown c)))
+            (is (= datoms (vec (d/datoms @conn :eavt))))
+            (d/release conn)))))
+    (d/delete-database cfg)))
+
+(deftest each-branch-is-recounted-on-its-own
+  (let [cfg (cfg {})]
+    (d/create-database cfg)
+    (let [conn (d/connect cfg)
+          pss (pss? conn)]
+      (fill! conn)
+      (age! conn false)
+      (d/release conn)
+      (when pss
+        (let [conn (d/connect cfg)
+              datoms (vec (d/datoms @conn :eavt))]
+          (dv/branch! conn :db :side)
+          (is (pos? (unknown (recount/recount! conn))))
+          (d/release conn)
+          (with-warnings warnings
+            (let [side (d/connect (assoc cfg :branch :side))
+                  c (recount/census side)]
+              (is (= 1 (count @warnings)) "the other branch still says so")
+              (is (not (:complete? c)))
+              (is (pos? (unknown c)) "it still names the nodes the first recount replaced")
+              (is (= datoms (vec (d/datoms @side :eavt))) "which are still there")
+              (recount/recount! side)
+              (d/transact side [{:k 77777 :v "side"}])
+              (d/release side)))
+          (doseq [b [:db :side]]
+            (let [conn (d/connect (assoc cfg :branch b))
+                  c (recount/census conn)]
+              (is (:complete? c) (str b))
+              (is (zero? (unknown c)) (str b))
+              (is (every? (set (d/datoms @conn :eavt)) datoms) (str b))
+              (d/release conn))))))
+    (d/delete-database cfg)))
+
+(deftest a-database-with-buffered-edits-is-recounted
+  (let [cfg (cfg {:index-config {:branching-factor 16 :diff-buf-size 4}})]
+    (d/create-database cfg)
+    (let [conn (d/connect cfg)
+          pss (pss? conn)]
+      (fill! conn)
+      (age! conn false)
+      (d/release conn)
+      (when pss
+        (let [conn (d/connect cfg)
+              datoms (vec (d/datoms @conn :eavt))
+              before (recount/recount! conn)]
+          (is (pos? (unknown before)) "precondition: branches lost counts that no buffered edit supplies")
+          (d/transact conn (vec (for [j (range 300)] {:k (+ 6000 j) :v "w"})))
+          (d/release conn)
+          (let [conn (d/connect cfg)
+                c (recount/census conn)]
+            (is (:complete? c))
+            (is (zero? (unknown c)))
+            (is (every? (set (d/datoms @conn :eavt)) datoms))
+            (is (= (count (d/datoms @conn :eavt)) (count @conn)))
             (d/release conn)))))
     (d/delete-database cfg)))
 

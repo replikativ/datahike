@@ -26,7 +26,6 @@ When something is added, it's typically marked *Experimental*. When the API cont
   writes would store branches without counts again — refuses to open it.
   `datahike.index.recount/census` reports how many branches lack a count
   without writing anything. JVM and persistent-set indices only.
-  *Experimental.*
   (0.8.NNNN, [#1181])
 
 - **`connect` no longer counts index roots, and neither does the query planner ([#1108]).**
