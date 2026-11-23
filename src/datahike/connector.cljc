@@ -492,10 +492,16 @@
    `idents` are the indices that were :building in the STORED database, read
    before publication (`building-indices`). Once the connection is published
    another caller can declare a new index through it, whose own build is
-   already scheduled; reading the schema here would recover that one too."
-  [conn idents]
+   already scheduled; reading the schema here would recover that one too.
+
+   `writer` is the one this connect created, handed in: once published, the
+   connection can be released by another caller, and its atom then holds no
+   writer to read. Only a local writer rebuilds. A remote one (the
+   :datahike-server writer sends nothing but transactions) leaves recovery to
+   the process that runs the writer, which does it in its own connect."
+  [writer idents]
   #?(:clj
-     (let [writer (:writer @(:wrapped-atom conn))]
+     (when (instance? datahike.writer.LocalWriter writer)
        (doseq [ident idents]
          (log/trace :datahike/secondary-index-backfill {:ident ident})
          (go
@@ -599,13 +605,13 @@
                            _ (when-not (:allow-unsafe-config config)
                                (ensure-stored-config-consistency config (:config stored-db)))
                            conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]
-                       (swap! (:wrapped-atom conn) assoc :writer
-                              (w/create-writer (:writer config) conn))
-                       (let [building (building-indices conn)
+                       (let [writer (w/create-writer (:writer config) conn)
+                             _ (swap! (:wrapped-atom conn) assoc :writer writer)
+                             building (building-indices conn)
                              registered (add-connection! conn-id lease conn #(interchangeable? config %))]
                          (cond
                            (identical? registered conn)
-                           (do (recover-building-indices! conn building)
+                           (do (recover-building-indices! writer building)
                                conn)
 
                            ;; Another connect published first, and this caller
