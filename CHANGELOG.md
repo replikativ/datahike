@@ -6,6 +6,16 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **A pattern whose entity or value is bound kept rows that an inclusive predicate should have removed.**
+  With the query planner on (the default, JVM), `[?e :score ?s] [(<= ?s 10)]`
+  with `?e` bound to a few entities — through `:in`, or by an earlier clause —
+  returned those entities' scores even above 10 once the attribute was large
+  enough (about 2,500 datoms per bound key) for the planner to seek per key
+  instead of scanning. The same held for `>=` and `=`, for a bound value, and
+  over history. `<` and `>` were checked and unaffected alone. A ground value
+  was dropped the same way: `[?e :grade 3]` with `?e` bound returned entities
+  of any grade. Both are now checked on every seek-driven scan.
+  (0.8.NNNN, [#1182])
 - **Every stored index branch keeps its element count; older databases say so once and `datahike.index.recount/recount!` repairs them ([#1108]).**
   Until now a branch that split, or borrowed from a neighbour, while its
   children were on disk was stored without its count (persistent-sorted-set
@@ -1173,6 +1183,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1171]: https://github.com/replikativ/datahike/pull/1171
 [#1172]: https://github.com/replikativ/datahike/pull/1172
 [#1179]: https://github.com/replikativ/datahike/pull/1179
+[#1182]: https://github.com/replikativ/datahike/pull/1182
 [#1181]: https://github.com/replikativ/datahike/pull/1181
 [#1107]: https://github.com/replikativ/datahike/issues/1107
 [#938]: https://github.com/replikativ/datahike/issues/938
