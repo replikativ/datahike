@@ -895,6 +895,14 @@
            (count p))))
      nil))
 
+(defmethod di/root-count-known? :datahike.index/persistent-set [_index-name pset]
+  #?(:clj  (if (instance? PersistentSortedSet pset)
+             (>= (.-_count ^PersistentSortedSet pset) 0)
+             true)
+     :cljs (if (instance? BTSet pset)
+             (let [c (.-cnt pset)] (and (some? c) (>= c 0)))
+             true)))
+
 #?(:clj
    (defmethod di/count-census :datahike.index/persistent-set [_index-name pset]
      (when (instance? PersistentSortedSet pset)

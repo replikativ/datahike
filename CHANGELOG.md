@@ -19,10 +19,14 @@ When something is added, it's typically marked *Experimental*. When the API cont
   `(datahike.index.recount/recount! conn)`. That rewrites the uncounted
   branches and commits without a transaction (no datom changes, `:max-tx`
   stays), then sets the mark; run it once per branch, at a quiet time, on a
-  connection with a local writer. `datahike.index.recount/census` reports how
-  many branches lack a count without writing anything. A `:crypto-hash?`
-  store cannot be rewritten in place and is rebuilt with an export and an
-  import instead. JVM only. *Experimental.*
+  connection with a local writer, after every process that writes to the
+  database has been upgraded. The recount also raises the persistent-sorted-set
+  version recorded with the database, so a runtime with an older one — whose
+  writes would store branches without counts again — refuses to open it.
+  `datahike.index.recount/census` reports how many branches lack a count
+  without writing anything. A `:crypto-hash?` store cannot be rewritten in
+  place and is rebuilt with an export and an import instead. JVM and
+  persistent-set indices only. *Experimental.*
   (0.8.NNNN, [#TODO])
 
 - **`with-db` in the babashka pod failed under babashka 1.13.230 ([#1179]).**

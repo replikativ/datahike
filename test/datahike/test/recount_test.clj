@@ -6,6 +6,7 @@
             [datahike.api :as d]
             [datahike.index.recount :as recount]
             [datahike.migrate.fs :as fs]
+            [datahike.tools :as dt]
             [konserve.core :as k]
             [org.replikativ.persistent-sorted-set :as psset]
             [taoensso.trove :as trove])
@@ -63,7 +64,9 @@
                              :let [^PersistentSortedSet p (get stored sk)]
                              :when p]
                        (set! (.-_count p) (int -1))))
-                   (update stored :meta dissoc :datahike/index-counts))
+                   (update stored :meta #(-> %
+                                             (dissoc :datahike/index-counts)
+                                             (assoc :persistent.set/version "0.5.146"))))
                  {:sync? true})
     @n))
 
@@ -90,12 +93,20 @@
     (with-warnings warnings
       (let [conn (d/connect cfg)]
         (fill! conn)
-        (when (pss? conn)
+        (if (pss? conn)
           (let [c (recount/census conn)]
             (is (:complete? c))
             (is (pos? (reduce + (map :branches (vals (:indices c)))))
                 "precondition: the indices have branches")
-            (is (zero? (unknown c)) "every write kept every count")))
+            (is (zero? (unknown c)) "every write kept every count")
+            (testing "a recount of a complete database commits nothing"
+              (let [commit-id (get-in @conn [:meta :datahike/commit-id])]
+                (is (some? commit-id))
+                (is (zero? (unknown (recount/recount! conn))))
+                (is (= commit-id (get-in @conn [:meta :datahike/commit-id]))))))
+          (testing "an index type without counts carries no mark and has nothing to recount"
+            (is (not (:complete? (recount/census conn))))
+            (is (thrown-with-msg? Exception #"Only persistent-set" (recount/recount! conn)))))
         (d/release conn))
       (let [conn (d/connect cfg)]
         (when (pss? conn)
@@ -115,13 +126,15 @@
         (when pss
           (is (pos? erased) "precondition: there were branches below the roots")
           (with-warnings warnings
+            (let [conn (d/connect cfg)]
+              (d/release conn))
             (let [conn (d/connect cfg)
                   before (recount/census conn)
                   max-tx (:max-tx @conn)
                   datoms (vec (d/datoms @conn :eavt))
                   q '[:find (count ?e) . :where [?e :k ?k] [(< ?k 700)] [?e :v "x7"]]
                   answer (d/q q @conn)]
-              (testing "the connect says so, with the call that fixes it"
+              (testing "the connect says so, with the call that fixes it -- once, though this is the second connect"
                 (is (= 1 (count @warnings)))
                 (let [[msg data] (first @warnings)]
                   (is (re-find #"\(datahike\.index\.recount/recount! conn\)" (str msg)))
@@ -133,6 +146,8 @@
               (testing "recount! reports what it found and commits without a transaction"
                 (is (= before (recount/recount! conn)))
                 (is (= max-tx (:max-tx @conn)))
+                (is (= dt/persistent-set-version (get-in @conn [:meta :persistent.set/version]))
+                    "and raises the recorded version, so that an older runtime refuses the database")
                 (is (= datoms (vec (d/datoms @conn :eavt))))
                 (is (= answer (d/q q @conn))))
               (testing "what it will store has every count"
@@ -142,11 +157,7 @@
                   (is (= (map :branches (vals (:indices before)))
                          (map :branches (vals (:indices after))))
                       "the trees keep their shape")))
-              (d/release conn))
-            (testing "a second connect in this process does not repeat it"
-              (let [conn (d/connect cfg)]
-                (d/release conn))
-              (is (= 1 (count @warnings)))))
+              (d/release conn)))
           (testing "the counts and the mark are in the store"
             (with-warnings warnings
               (let [conn (d/connect cfg)
@@ -157,10 +168,6 @@
                   (d/transact conn (vec (for [j (range 400)] {:k (+ 5000 j) :v "y"})))
                   (d/transact conn (vec (for [j (range 200)] [:db/retract (+ 400 j) :v (str "x" (mod (+ 399 j) 250))])))
                   (is (zero? (unknown (recount/census conn)))))
-                (testing "a recount of a complete database changes nothing"
-                  (let [db @conn]
-                    (is (zero? (unknown (recount/recount! conn))))
-                    (is (every? #(identical? (get db %) (get @conn %)) index-keys))))
                 (d/release conn))
               (is (empty? @warnings) "a marked database is quiet"))))))
     (d/delete-database cfg)))
@@ -194,14 +201,37 @@
           (is (empty? @warnings)))))
     (d/delete-database cfg)))
 
-(deftest recount-refuses-what-it-cannot-do-safely
+(deftest recount-leaves-nothing-for-online-gc-to-recycle
+  ;; Rewriting a branch reports the replaced node as freed. Were the recount's
+  ;; commit to lose a head race, the winning head would still name those nodes, so
+  ;; the recount takes its hints back and leaves the nodes to offline GC.
   (let [cfg (cfg {:online-gc {:enabled? true :grace-period-ms 0}})]
     (d/create-database cfg)
-    (let [conn (d/connect cfg)]
-      (is (thrown-with-msg? Exception #"online GC is enabled" (recount/recount! conn))
-          "rewriting frees nodes; not next to a collector that acts on that")
-      (d/release conn))
-    (d/delete-database cfg))
+    (let [conn (d/connect cfg)
+          pss (pss? conn)]
+      (fill! conn)
+      (age! conn false)
+      (d/release conn)
+      (when pss
+        (let [conn (d/connect cfg)
+              storage (get-in @conn [:store :storage])
+              hints (fn [] [@(:freed-set storage) (set (map first @(:freed-addresses storage)))])
+              before (hints)
+              datoms (vec (d/datoms @conn :eavt))]
+          (is (pos? (unknown (recount/recount! conn))) "precondition: branches were rewritten")
+          (is (= before (hints)) "no hint is left behind")
+          (testing "and transactions that run online GC afterwards recycle none of them"
+            (dotimes [i 5]
+              (d/transact conn (vec (for [j (range 100)] {:k (+ 9000 (* i 100) j) :v "z"}))))
+            (d/release conn))
+          (let [conn (d/connect cfg)]
+            (is (every? (set (d/datoms @conn :eavt)) datoms) "every datom from before is there")
+            (is (= (+ 2000 500) (d/q '[:find (count ?e) . :where [?e :k]] @conn)))
+            (is (zero? (unknown (recount/census conn))))
+            (d/release conn)))))
+    (d/delete-database cfg)))
+
+(deftest recount-refuses-what-it-cannot-do-safely
   (let [cfg (cfg {})]
     (d/create-database cfg)
     (let [conn (d/connect cfg)]
@@ -212,7 +242,8 @@
   (let [cfg (cfg {:crypto-hash? true})]
     (d/create-database cfg)
     (let [conn (d/connect cfg)]
-      (is (thrown-with-msg? Exception #"crypto-hash" (recount/recount! conn))
-          "a node's address does not cover its count there")
+      (when (pss? conn)
+        (is (thrown-with-msg? Exception #"crypto-hash" (recount/recount! conn))
+            "a node's address does not cover its count there"))
       (d/release conn))
     (d/delete-database cfg)))

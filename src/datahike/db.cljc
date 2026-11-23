@@ -1160,7 +1160,7 @@
         :system-entities system-entities
         :ref-ident-map ref-ident-map
         :ident-ref-map ident-ref-map
-        :meta (assoc (meta-data) :datahike/index-counts dii/counts-complete)
+        :meta (dii/mark-counts-complete (meta-data) index)
         :op-count (if attribute-refs? (count ref-datoms) 0)}
        (when keep-history?                                  ;; no difference for attribute references since no update possible
          {:temporal-eavt eavt
@@ -1209,7 +1209,7 @@
                       :op-count op-count
                       :hash (reduce #(+ %1 (hash %2)) 0 datoms)
                       :system-entities system-entities
-                      :meta (assoc (meta-data) :datahike/index-counts dii/counts-complete)
+                      :meta (dii/mark-counts-complete (meta-data) index)
                       :ref-ident-map ref-ident-map
                       :ident-ref-map ident-ref-map}
                      (when keep-history?

@@ -154,8 +154,10 @@
   "What a database's `:meta` holds under `:datahike/index-counts` once every branch
    of every index is stored with its element count: set when the database is created,
    and by `datahike.index.recount/recount!`. Writes keep every count
-   (persistent-sorted-set 0.5.148), and a Datahike older than the one that wrote a
-   store refuses to open it, so the mark stays true once it is set.
+   (persistent-sorted-set 0.5.148), and a runtime with an older
+   persistent-sorted-set refuses to open the database (`connector/version-check`
+   against `:persistent.set/version`, which a recount raises), so the mark stays
+   true once it is set. Only persistent-set databases carry it.
 
    A database without it was created by an earlier version. Its indices may hold
    branches stored without a count -- correct, but a range count that covers one
@@ -164,6 +166,23 @@
 
 (defn counts-complete? [db]
   (= counts-complete (get-in db [:meta :datahike/index-counts])))
+
+(defn mark-counts-complete
+  "`meta` with the mark, for an index type whose writes keep every count; `meta`
+   unchanged for any other, which the mark says nothing about."
+  [meta index-name]
+  (if (= :datahike.index/persistent-set index-name)
+    (assoc meta :datahike/index-counts counts-complete)
+    meta))
+
+(defmulti root-count-known?
+  "Does `index` carry its element count in its header? Reads NOTHING from the
+   store -- unlike `-has-subtree-counts?`, which may fetch the root node -- so it is
+   safe on an index root taken straight from a stored database record. True for
+   index types that keep no header count."
+  (fn [index-name _index] index-name))
+
+(defmethod root-count-known? :default [_index-name _index] true)
 
 (defmulti count-census
   "`{:branches n :unknown m}` for `index`: how many branches it has and how many are

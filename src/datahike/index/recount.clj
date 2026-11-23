@@ -43,16 +43,29 @@
    and commits. The commit carries no transaction: no datom changes, :max-tx stays.
    It then marks the database, so later connects are quiet. It applies to the
    branch this connection is on; run it once per branch. On a database whose
-   branches all have their counts it only sets the mark.
+   branches all have their counts it only sets the mark, and on one already marked
+   it does nothing.
+
+   It also raises the persistent-sorted-set version recorded with the database to
+   this runtime's, so that a runtime with an older one -- whose writes would again
+   store branches without counts -- refuses to open it. UPGRADE EVERY PROCESS THAT
+   WRITES TO THE DATABASE FIRST: that refusal happens at connect, and a process of
+   an older version that is already connected keeps writing.
+
+   The nodes it replaces stay in the store until an offline `d/gc-storage`.
 
    WHAT IT COSTS. It reads every branch of every index, plus the leaves under each
    lowest-level branch that has no count. On a remote store that is one request per
    node. The rewriting step runs on the writer, so transactions wait for it; run it
    at a quiet time. Once done it is done: writes keep every count.
 
-   LIMITS. It needs a connection with a local writer. It refuses a :crypto-hash?
-   store (rebuild that one with an export and an import), a connection with online
-   GC enabled, and a database with an AVET build running."
+   The census it returns was taken just before the writer's pass; where other
+   processes commit to the same branch the two can describe different heads.
+
+   LIMITS. JVM, persistent-set indices, and a connection with a local writer. It
+   refuses a :crypto-hash? store (rebuild that one with an export and an import)
+   and a database with an AVET build running. With :diff-buf-size > 0 a branch
+   whose count is supplied by a buffered edit above it counts as known."
   [conn]
   (let [db @(:wrapped-atom conn)
         _ (when (= :released db)
@@ -64,14 +77,16 @@
     (when (get-in db [:config :crypto-hash?])
       (log/raise "Index counts cannot be rewritten on a :crypto-hash? store: a node's address does not cover its count. Rebuild the store with an export and an import instead."
                  {:type :recount/crypto-hash}))
-    (when (get-in db [:config :online-gc :enabled?])
-      (log/raise "Index counts cannot be rewritten while online GC is enabled; connect with :online-gc {:enabled? false} for the recount."
-                 {:type :recount/online-gc}))
+    (when-not (= :datahike.index/persistent-set (get-in db [:config :index]))
+      (log/raise "Only persistent-set indices keep counts; there is nothing to recount."
+                 {:type :recount/unsupported-index :index (get-in db [:config :index])}))
     ;; The census runs here, outside the writer, and leaves every branch in the
     ;; node cache: the writer's own pass then reads little but the leaves under
     ;; uncounted branches.
-    (let [before (census conn)
-          report @(dw/recount-indices! conn)]
-      (when-not (map? report)
-        (throw report))
+    (let [before (census conn)]
+      (when-not (and (:complete? before)
+                     (every? (comp zero? :unknown) (vals (:indices before))))
+        (let [report @(dw/recount-indices! conn)]
+          (when-not (map? report)
+            (throw report))))
       before)))
