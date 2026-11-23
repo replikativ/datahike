@@ -1,5 +1,5 @@
 (ns ^:no-doc datahike.connector
-  (:require [datahike.connections :refer [get-connection add-connection! delete-connection! release-lease!
+  (:require [datahike.connections :refer [get-connection add-connection! release-lease!
                                           acquire-node-cache! abandon-reservation!
                                           *connections*]]
             [datahike.readers]
