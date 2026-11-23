@@ -605,6 +605,21 @@
                                       {:op op :pred pred})))))
                 strict-preds)))))
 
+(defn- build-pushdown-filter
+  "A post-filter for EVERY pushed-down predicate of a scan, inclusive ones too.
+
+   An index slice enforces `>=`, `<=` and `=` by its bounds, so a slice scan
+   post-filters only the strict predicates. A scan driven by per-key SEEKS
+   (`probe-driven-iterable`, the variable-attribute AVET seeks, the temporal
+   per-key sub-slices) never applies those bounds: it returns whatever the bound
+   entities or values lead to. Such a scan must check all of them here, or
+   `[?e :score ?s] [(<= ?s 10)]` with `?e` bound returns scores above 10."
+  [clause pushdown-preds]
+  (when (seq pushdown-preds)
+    (when-let [pushdown-var (first (keep :var pushdown-preds))]
+      (when-let [idx (get (rel/var-mapping clause (range)) pushdown-var)]
+        (build-strict-filter pushdown-preds idx)))))
+
 (defn- compute-slice-bounds
   "Compute [from-datom to-datom] for an index slice given clause, index, and pushdown."
   [clause index pushdown-bounds resolved-a resolved-e]
@@ -748,7 +763,12 @@
         [from to] (compute-slice-bounds clause index pushdown-bounds resolved-a resolved-e)
         db-index (get db index)
         scan-n (long (or scan-n (di/-count db-index)))
-        full (fn [] (di/-slice db-index from to index))]
+        full (fn [] (di/-slice db-index from to index))
+        ;; seeks bypass the slice bounds `from`/`to`; see `build-pushdown-filter`
+        bounded (fn [datoms]
+                  (if-let [f (build-pushdown-filter clause pushdown-preds)]
+                    (filter f datoms)
+                    datoms))]
     #?(:clj
        (if-let [avet-pairs (when (and (:avet db)
                                       (nil? resolved-a)
@@ -759,9 +779,10 @@
          ;; upstream (e.g. a reference-driven join whose attribute comes from the
          ;; data): AVET point-seek per (attr, value) pair instead of full-scanning
          ;; EAVT and filtering. O(pairs * log n) vs O(all datoms).
-         (mapcat (fn [[pa pv]]
-                   (di/-slice (:avet db) (datom e0 pa pv tx0) (datom emax pa pv txmax) :avet))
-                 avet-pairs)
+         (bounded
+          (mapcat (fn [[pa pv]]
+                    (di/-slice (:avet db) (datom e0 pa pv tx0) (datom emax pa pv txmax) :avet))
+                  avet-pairs))
          (if-let [probe (pattern-probe-set db clause resolved-a rels scan-n)]
            (let [k     (probe-set-size (:values probe))
                  field (int (:field probe))
@@ -776,7 +797,7 @@
                       (some? resolved-a)
                       (pss-instance? seek-index)
                       (< (* (long k) (long probe-driven-threshold)) scan-n))
-               (probe-driven-iterable seek-index resolved-a (:values probe) field)
+               (bounded (probe-driven-iterable seek-index resolved-a (:values probe) field))
                ;; `probe-set-contains?`, not a raw `.contains`: this bypassed
                ;; the key function entirely, which was correct only while arrays
                ;; were declined above. With the decline gone it would filter by
@@ -2705,6 +2726,12 @@
                   (di/-slice db-index from-datom to-datom index)))
         ;; When probe-driven, filtering is baked into the seeks — nil out probe-set
         probe-set (if use-probe-driven? nil probe-set)
+        ;; ... but the slice bounds are not: the seeks never see `from-datom` /
+        ;; `to-datom`, so the inclusive pushed-down predicates those bounds would
+        ;; have enforced are checked per datom; see `build-pushdown-filter`.
+        strict-filter (if use-probe-driven?
+                        (build-pushdown-filter clause pushdown-preds)
+                        strict-filter)
         max-n (int (or max-results -1))]
 
     (if temporal

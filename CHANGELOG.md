@@ -6,6 +6,16 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **A pattern whose entity or value is bound kept rows that an inclusive predicate should have removed.**
+  With the query planner on (the default, JVM), `[?e :score ?s] [(<= ?s 10)]`
+  with `?e` bound to a few entities — through `:in`, or by an earlier clause —
+  returned those entities' scores even above 10 once the attribute was large
+  enough (about 2,500 datoms per bound key) for the planner to seek per key
+  instead of scanning. The same held for `>=` and `=`, for a bound value, and
+  over history. `<` and `>` were checked and unaffected alone. The predicates
+  are now applied on every seek-driven scan.
+  (0.8.NNNN, [#TODO])
+
 - **`with-db` in the babashka pod failed under babashka 1.13.230 ([#1179]).**
   `(d/with-db [db (d/db conn)] …)` raised `Unable to resolve symbol:
   release-db` unless the caller had referred the pod's functions. The macro
