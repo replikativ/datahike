@@ -134,22 +134,6 @@
 
 (defmethod with-storage :default [_index-name index _storage] index)
 
-(defmulti ensure-root-count!
-  "Make `index` know its element count if it does not, and return nil. A no-op for an
-   index that knows it, and for index types that keep no cached counts.
-
-   Called once, when a connection with a local writer loads its database. It exists for
-   stores written before persistent-sorted-set 0.5.146, where a write after a reconnect
-   could store an index root with an unknown count (#1108): the planner then estimated
-   from heuristics for that store from then on. The count is computed here once, and the
-   writer's next transaction stores the root with it.
-
-   Not called for readers or historical commits: they could never store the result and
-   would pay for it on every load."
-  (fn [index-name _index] index-name))
-
-(defmethod ensure-root-count! :default [_index-name _index] nil)
-
 (def counts-complete
   "What a database's `:meta` holds under `:datahike/index-counts` once every branch
    of every index is stored with its element count: set when the database is created,
@@ -183,6 +167,24 @@
   (fn [index-name _index] index-name))
 
 (defmethod root-count-known? :default [_index-name _index] true)
+
+(def ^:const unknown-count-estimate
+  "What `estimated-count` answers for an index that does not know its count. The
+   planner needs a common scale to order joins by, not a true size."
+  1000000)
+
+(defn estimated-count
+  "The number of elements in `index`, FOR ESTIMATES ONLY: the true count where the
+   index knows it, `unknown-count-estimate` where it does not.
+
+   `-count` on an index whose root has no count (#1108) reads every child of every
+   branch that has none either -- minutes on a remote store. Nothing that merely
+   wants a size to plan with may pay that, or the first query on such a store
+   does. Code that needs the true number calls `-count` and says so."
+  [index-name index]
+  (if (root-count-known? index-name index)
+    (-count index)
+    unknown-count-estimate))
 
 (defmulti count-census
   "`{:branches n :unknown m}` for `index`: how many branches it has and how many are

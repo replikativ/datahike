@@ -747,7 +747,7 @@
         pushdown-bounds (when (seq pushdown-preds) (plan/pushdown-to-bounds pushdown-preds))
         [from to] (compute-slice-bounds clause index pushdown-bounds resolved-a resolved-e)
         db-index (get db index)
-        scan-n (long (or scan-n (di/-count db-index)))
+        scan-n (long (or scan-n (di/estimated-count (:index (dbi/-config db)) db-index)))
         full (fn [] (di/-slice db-index from to index))]
     #?(:clj
        (if-let [avet-pairs (when (and (:avet db)
@@ -2627,7 +2627,7 @@
                                          ;; costlier than per-value seeks — so prefer probe-driven
                                          ;; whenever the probe set is smaller than the attribute, not
                                          ;; just below the seek break-even for cheap current-DB slices.
-                                         (let [est (long (or scan-estimate (di/-count db-index)))]
+                                         (let [est (long (or scan-estimate (di/estimated-count (:index (dbi/-config index-db)) db-index)))]
                                            (and (pos? est)
                                                 (if temporal
                                                   (< (long (probe-set-size probe-set)) est)

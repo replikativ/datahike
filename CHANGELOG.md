@@ -27,7 +27,19 @@ When something is added, it's typically marked *Experimental*. When the API cont
   without writing anything. A `:crypto-hash?` store cannot be rewritten in
   place and is rebuilt with an export and an import instead. JVM and
   persistent-set indices only. *Experimental.*
-  (0.8.NNNN, [#TODO])
+  (0.8.NNNN, [#1181])
+
+- **`connect` no longer counts index roots, and neither does the query planner ([#1108]).**
+  Since 0.8.1927 a connection with a local writer computed the element count
+  of every index whose root had none. Counting reads every child of every
+  branch that has no count either, one request per node on a remote store,
+  and it ran on every connect until a transaction stored the result. A
+  connect now reads nothing for this, and where the planner only wants a size
+  to plan with it uses the count if the index has one and a fixed scale
+  otherwise, so the first query does not pay the walk either. Such a
+  database plans from heuristics until `datahike.index.recount/recount!` has
+  run; `(count db)` still returns the true number.
+  (0.8.NNNN, [#1181])
 
 - **`with-db` in the babashka pod failed under babashka 1.13.230 ([#1179]).**
   `(d/with-db [db (d/db conn)] …)` raised `Unable to resolve symbol:
@@ -1162,6 +1174,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1171]: https://github.com/replikativ/datahike/pull/1171
 [#1172]: https://github.com/replikativ/datahike/pull/1172
 [#1179]: https://github.com/replikativ/datahike/pull/1179
+[#1181]: https://github.com/replikativ/datahike/pull/1181
 [#1107]: https://github.com/replikativ/datahike/issues/1107
 [#938]: https://github.com/replikativ/datahike/issues/938
 [#1156]: https://github.com/replikativ/datahike/pull/1156

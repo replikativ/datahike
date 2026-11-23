@@ -40,13 +40,18 @@
   (when-not @heuristic-warned?
     (reset! heuristic-warned? true)
     (log/info :datahike/estimate-heuristic-fallback
-              "Index lacks precomputed subtree counts (old database format). Using heuristic estimates for query planning. Consider re-indexing for optimal performance."))
+              "An index root has no element count (#1108); planning from heuristics. For a persistent-set database, (datahike.index.recount/recount! conn) stores the counts."))
   (let [{:keys [e a v]} pattern-info
         ground? (fn [x] (and (some? x) (not (symbol? x))))
         e-ground? (ground? e)
         a-ground? (ground? a)
         v-ground? (ground? v)
-        total (max 1 (di/-count (:eavt db)))]
+        ;; O(1) only where the index knows its count. A root that lost it
+        ;; (#1108) answers `-count` by reading every child of every branch
+        ;; that lost it too -- minutes on a remote store, paid by the first
+        ;; query that got here. The factors below only need a common scale to
+        ;; order joins by, so a fixed one serves.
+        total (max 1 (di/estimated-count (:index (dbi/-config db)) (:eavt db)))]
     (cond
       ;; [e a ?v] — single datom for card-one, small fan-out for card-many
       (and e-ground? a-ground? (not v-ground?))
@@ -161,7 +166,17 @@
 
       ;; [?e ?a ?v] — full scan (worst case)
       :else
-      (di/-count (:eavt db)))))
+      (di/estimated-count (:index (dbi/-config db)) (:eavt db)))))
+
+(defn counted-indices?
+  "Do all of `db`'s current indices know their counts? The counted estimator picks
+   the index by pattern shape, so one counted index says nothing about the next:
+   `(count db)` gives EAVT its count and leaves AEVT and AVET as they were, and a
+   `-count-slice` over an uncounted one reads its way down (#1108)."
+  [db]
+  (and (di/-has-subtree-counts? (:eavt db))
+       (di/-has-subtree-counts? (:aevt db))
+       (or (nil? (:avet db)) (di/-has-subtree-counts? (:avet db)))))
 
 (defn estimate-pattern
   "Estimate the cardinality (number of matching datoms) for a pattern clause.
@@ -169,7 +184,7 @@
    subtree counts are available, otherwise falls back to O(1) heuristics.
    Returns a long estimate, or nil if estimation is not possible."
   [db pattern-info schema-info]
-  (if (di/-has-subtree-counts? (:eavt db))
+  (if (counted-indices? db)
     (estimate-pattern-counted db pattern-info schema-info)
     (estimate-pattern-heuristic db pattern-info schema-info)))
 
@@ -191,7 +206,12 @@
   [db pattern-info schema-info]
   (let [{:keys [a]} pattern-info
         ground? (fn [x] (and (some? x) (not (symbol? x))))]
-    (when (ground? a)
+    ;; Only where the index roots know their counts, the same test
+    ;; `estimate-pattern` uses. `-count-slice` over an attribute counts every
+    ;; fully covered branch that lost its count by reading its children (#1108),
+    ;; and in the heuristic regime that is most of them; the caller has a
+    ;; fallback for nil.
+    (when (and (ground? a) (counted-indices? db))
       (let [;; see `estimate-pattern-counted` on why this is `:allow-missing`
             resolved-a (if (and (:attribute-refs? (dbi/-config db)) (keyword? a))
                          (dbi/ref-for db a :allow-missing)
@@ -464,4 +484,4 @@
    for entities with many attributes but is acceptable for merge ordering."
   [db]
   (let [eavt (:eavt db)]
-    (max 1 (di/-count eavt))))
+    (max 1 (di/estimated-count (:index (dbi/-config db)) eavt))))
