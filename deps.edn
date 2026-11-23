@@ -206,7 +206,7 @@
                                 :exclusions [com.amazonaws/aws-xray-recorder-sdk-aws-sdk-v2]}
                                org.replikativ/konserve-redis {:mvn/version "0.1.29"}
                                org.replikativ/konserve-gcs
-                               {:mvn/version "0.1.19"}
+                               {:mvn/version "0.1.20"}
                                org.replikativ/konserve-azure-blob
                                {:mvn/version "0.1.5"}
                                org.postgresql/postgresql     {:mvn/version "42.7.13"}
@@ -289,7 +289,7 @@
                                       org.replikativ/konserve-redis
                                       {:mvn/version "0.1.29"}
                                       org.replikativ/konserve-gcs
-                                      {:mvn/version "0.1.19"}
+                                      {:mvn/version "0.1.20"}
                                       org.replikativ/konserve-azure-blob
                                       {:mvn/version "0.1.5"}
                                       org.postgresql/postgresql
