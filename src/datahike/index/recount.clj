@@ -63,8 +63,10 @@
    processes commit to the same branch the two can describe different heads.
 
    LIMITS. JVM, persistent-set indices, and a connection with a local writer. It
-   refuses a :crypto-hash? store (rebuild that one with an export and an import)
-   and a database with an AVET build running. With :diff-buf-size > 0 a branch
+   refuses a database with an AVET build running. On a :crypto-hash? store the
+   addresses do not cover the counts, so the blobs are overwritten in place under
+   the addresses they have; a replica that already holds them keeps uncounted
+   copies until it fetches them again. With :diff-buf-size > 0 a branch
    whose count is supplied by a buffered edit above it counts as known."
   [conn]
   (let [db @(:wrapped-atom conn)
@@ -74,9 +76,6 @@
       (log/raise "recount! needs a connection with a local writer."
                  {:type :recount/needs-local-writer
                   :writer (get-in db [:config :writer :backend])}))
-    (when (get-in db [:config :crypto-hash?])
-      (log/raise "Index counts cannot be rewritten on a :crypto-hash? store: a node's address does not cover its count. Rebuild the store with an export and an import instead."
-                 {:type :recount/crypto-hash}))
     (when-not (= :datahike.index/persistent-set (get-in db [:config :index]))
       (log/raise "Only persistent-set indices keep counts; there is nothing to recount."
                  {:type :recount/unsupported-index :index (get-in db [:config :index])}))

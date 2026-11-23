@@ -2236,10 +2236,12 @@
    persistent-sorted-set -- one whose writes would store branches without counts
    under the mark.
 
-   Refuses a :crypto-hash? store. There a node's address is the hash of its
-   content, and the count is not part of that content: a rewritten branch has the
-   address it had, and the store, and every replica that already holds the blob,
-   would keep the old bytes under it."
+   On a :crypto-hash? store a node's address is the hash of its content, and the
+   count is not part of that content: a rewritten branch has the address it had,
+   and its blob is overwritten in place with the same content plus the count. The
+   hints taken back below matter doubly there -- the freed addresses are the
+   very ones just rewritten. A replica that already holds a blob keeps its copy,
+   which is correct and merely uncounted."
   [old]
   #?(:cljs
      (throw (ex-info "Index counts can only be rewritten from the JVM."
@@ -2249,9 +2251,6 @@
        (when-not (= :datahike.index/persistent-set index)
          (throw (ex-info "Only persistent-set indices keep counts; there is nothing to recount."
                          {:type :recount/unsupported-index :index index})))
-       (when (get-in old [:config :crypto-hash?])
-         (throw (ex-info "Index counts cannot be rewritten on a :crypto-hash? store: a node's address does not cover its count. Rebuild the store with an export and an import instead."
-                         {:type :recount/crypto-hash})))
        ;; The writer treats any operation it does not know as one a running AVET
        ;; build cannot survive, and fails the build.
        (when (:avet-build old)

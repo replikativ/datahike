@@ -247,12 +247,35 @@
       (d/release conn)
       (is (thrown-with-msg? Exception #"released" (recount/recount! conn)))
       (is (thrown-with-msg? Exception #"released" (recount/census conn))))
-    (d/delete-database cfg))
+    (d/delete-database cfg)))
+
+(deftest a-content-addressed-store-is-recounted-in-place
+  ;; Under :crypto-hash? an address is the hash of a node's content, which does not
+  ;; include its count: the rewritten branches keep their addresses and their blobs
+  ;; are overwritten.
   (let [cfg (cfg {:crypto-hash? true})]
     (d/create-database cfg)
-    (let [conn (d/connect cfg)]
-      (when (pss? conn)
-        (is (thrown-with-msg? Exception #"crypto-hash" (recount/recount! conn))
-            "a node's address does not cover its count there"))
-      (d/release conn))
+    (let [conn (d/connect cfg)
+          pss (pss? conn)]
+      (fill! conn)
+      (let [erased (age! conn false)]
+        (d/release conn)
+        (when pss
+          (let [conn (d/connect cfg)
+                commit-id (get-in @conn [:meta :datahike/commit-id])
+                roots (mapv #(.-_address ^PersistentSortedSet (get @conn %)) [:eavt :aevt])
+                datoms (vec (d/datoms @conn :eavt))]
+            (is (= erased (unknown (recount/recount! conn))))
+            (is (= roots (mapv #(.-_address ^PersistentSortedSet (get @conn %)) [:eavt :aevt]))
+                "the roots keep their addresses")
+            (is (not= commit-id (get-in @conn [:meta :datahike/commit-id])) "and it is a commit of its own")
+            (d/transact conn [{:k 99999 :v "after"}])
+            (d/release conn)
+            (let [conn (d/connect cfg)
+                  c (recount/census conn)]
+              (is (:complete? c))
+              (is (zero? (unknown c)) "the counts are in the blobs")
+              (is (every? (set (d/datoms @conn :eavt)) datoms))
+              (is (= 1 (d/q '[:find (count ?e) . :where [?e :k 99999]] @conn)))
+              (d/release conn))))))
     (d/delete-database cfg)))

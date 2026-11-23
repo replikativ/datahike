@@ -24,9 +24,8 @@ When something is added, it's typically marked *Experimental*. When the API cont
   version recorded with the database, so a runtime with an older one — whose
   writes would store branches without counts again — refuses to open it.
   `datahike.index.recount/census` reports how many branches lack a count
-  without writing anything. A `:crypto-hash?` store cannot be rewritten in
-  place and is rebuilt with an export and an import instead. JVM and
-  persistent-set indices only. *Experimental.*
+  without writing anything. JVM and persistent-set indices only.
+  *Experimental.*
   (0.8.NNNN, [#1181])
 
 - **`connect` no longer counts index roots, and neither does the query planner ([#1108]).**
