@@ -14,7 +14,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
   instead of scanning. The same held for `>=` and `=`, for a bound value, and
   over history. `<` and `>` were checked and unaffected alone. The predicates
   are now applied on every seek-driven scan.
-  (0.8.NNNN, [#TODO])
+  (0.8.NNNN, [#1182])
 
 - **`with-db` in the babashka pod failed under babashka 1.13.230 ([#1179]).**
   `(d/with-db [db (d/db conn)] …)` raised `Unable to resolve symbol:
@@ -1149,6 +1149,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1171]: https://github.com/replikativ/datahike/pull/1171
 [#1172]: https://github.com/replikativ/datahike/pull/1172
 [#1179]: https://github.com/replikativ/datahike/pull/1179
+[#1182]: https://github.com/replikativ/datahike/pull/1182
 [#1107]: https://github.com/replikativ/datahike/issues/1107
 [#938]: https://github.com/replikativ/datahike/issues/938
 [#1156]: https://github.com/replikativ/datahike/pull/1156
