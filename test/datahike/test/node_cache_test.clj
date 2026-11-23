@@ -379,13 +379,8 @@
         existing (fn [writer-config]
                    (datahike.connector/->Connection (atom {:config {:writer writer-config}})))
         remote (fn [token] {:backend :datahike-server :url "http://localhost:4444" :token token})]
-    (is (interchangeable? {} (existing nil)) "two local writers")
-    (is (interchangeable? {:writer {:backend :self :writer-ownership :exclusive}}
-                          (existing {:backend :self}))
-        "ownership is settled by the reuse checks, not here")
-    (is (interchangeable? {:writer (remote "a")} (existing (remote "a"))))
-    (is (not (interchangeable? {:writer (remote "a")} (existing (remote "b"))))
-        "a remote writer sends with its own credentials")
-    (is (not (interchangeable? {:writer (remote "a")} (existing {:backend :self}))))
-    (is (not (interchangeable? {} (existing (remote "a")))))
-    (is (not (interchangeable? {} (atom :replica :meta {:datahike/retire! (fn [])}))))))
+    (is (interchangeable? (existing nil)))
+    (is (interchangeable? (existing (remote "a")))
+        "the writer config is not compared, as for a connect that finds a registered connection")
+    (is (not (interchangeable? (atom :replica :meta {:datahike/retire! (fn [])})))
+        "a Kabel replica is not shared")))

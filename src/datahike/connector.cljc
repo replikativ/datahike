@@ -460,25 +460,19 @@
          ident)))
 
 (defn- interchangeable?
-  "Can a connect with `config` take `existing` in place of the connection it
-   built? Only where the caller could not tell the two apart:
+  "Can a connect take `existing` in place of the connection it built? Yes,
+   unless `existing` is a Kabel replica, which can sit under the same id and
+   carries its own retirement hook.
 
-   - not a Kabel replica, which can sit under the same id and carries its own
-     retirement hook;
-   - both writers local, or the two writer configs equal. A remote writer
-     carries what it sends requests with -- a server url, a token -- and
-     `normalize-config` leaves :writer out of the config comparison, so two
-     callers with different credentials would otherwise share the winner's.
+   The writer config is not compared. A connect that finds a registered
+   connection has always been handed it whatever its own :writer says
+   (`normalize-config` leaves :writer out of the config comparison), and a
+   connect that loses the race is treated the same.
 
    Where the answer is no, this connect publishes its own connection over the
    registered one, as every publish did before."
-  [config existing]
-  (and (nil? (:datahike/retire! (meta existing)))
-       (let [mine   (:writer config)
-             theirs (some-> (:wrapped-atom existing) deref :config :writer)
-             local? #(= :self (:backend % :self))]
-         (or (and (local? mine) (local? theirs))
-             (= mine theirs)))))
+  [existing]
+  (nil? (:datahike/retire! (meta existing))))
 
 (defn- recover-building-indices!
   "Recovery: every :building index is reconstructed from the primary index.
@@ -608,7 +602,7 @@
                        (let [writer (w/create-writer (:writer config) conn)
                              _ (swap! (:wrapped-atom conn) assoc :writer writer)
                              building (building-indices conn)
-                             registered (add-connection! conn-id lease conn #(interchangeable? config %))]
+                             registered (add-connection! conn-id lease conn interchangeable?)]
                          (cond
                            (identical? registered conn)
                            (do (recover-building-indices! writer building)

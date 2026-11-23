@@ -193,8 +193,7 @@
    WHICH connection is debited. By default the one registered under the id,
    whether or not it is `conn`: that is what `release` has always done. The two
    differ only after a publish that could not reuse the registered connection
-   replaced it (a Kabel replica over its host's local connection, remote writers
-   with different configs); the replaced connection's leases went with its
+   replaced it (a Kabel replica over its host's local connection); the replaced connection's leases went with its
    entry, and its release then debits the successor. That is wrong, it is old,
    and it is not this function's to fix: the id itself would have to tell such
    connections apart. It applies only while `conn` is still live; one that has
