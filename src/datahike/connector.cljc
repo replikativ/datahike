@@ -124,6 +124,36 @@
 (s/def ::connection #(and (instance? Connection %)
                           (not= @(:wrapped-atom %) :released)))
 
+(defonce ^:private counts-warned (atom #{}))
+
+(defn- warn-incomplete-counts!
+  "Say ONCE per database and branch in this process that `stored-db` is not marked
+   as having every index count (see `dii/counts-complete`), and how to fix it. Reads
+   nothing: the mark and the root counts come with the database record."
+  [config stored-db]
+  (when-not (dii/counts-complete? stored-db)
+    (let [k [(get-in config [:store :id]) (:branch config)]
+          [old _] (swap-vals! counts-warned conj k)]
+      (when-not (contains? old k)
+        (let [roots (vec (for [ik [:eavt-key :aevt-key :avet-key
+                                   :temporal-eavt-key :temporal-aevt-key :temporal-avet-key]
+                               :let [ix (get stored-db ik)]
+                               :when (and ix (satisfies? dii/IIndex ix) (not (dii/-has-subtree-counts? ix)))]
+                           ik))]
+          (log/warn :datahike/index-counts-incomplete
+                    (str "This database was created before every index branch was stored with its element count (#1108). "
+                         "Its data is intact and queries are correct, but the query planner reads extra index nodes to count ranges"
+                         (when (seq roots) ", and estimates from heuristics because index roots have no count")
+                         ". "
+                         (if (:crypto-hash? config)
+                           "To fix it, rebuild the store with an export and an import."
+                           (str "To fix it, run once per branch, at a quiet time, on a connection with a local writer: "
+                                "(require 'datahike.index.recount) (datahike.index.recount/recount! conn) "
+                                "-- see its docstring for cost and limits.")))
+                    {:store-id (get-in config [:store :id])
+                     :branch (:branch config)
+                     :roots-without-count roots}))))))
+
 (defn version-check [{:keys [meta config] :as db}]
   (let [{dh-stored :datahike/version
          hh-stored :hitchhiker.tree/version
@@ -425,6 +455,7 @@
                                          (select-keys (:config stored-db)
                                                       (keys dc/default-value-caps)))
                            _ (version-check stored-db)
+                           _ (warn-incomplete-counts! config stored-db)
                            _ (when-not (:allow-unsafe-config config)
                                (ensure-stored-config-consistency config (:config stored-db)))
                            conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]

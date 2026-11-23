@@ -150,6 +150,37 @@
 
 (defmethod ensure-root-count! :default [_index-name _index] nil)
 
+(def counts-complete
+  "What a database's `:meta` holds under `:datahike/index-counts` once every branch
+   of every index is stored with its element count: set when the database is created,
+   and by `datahike.index.recount/recount!`. Writes keep every count
+   (persistent-sorted-set 0.5.148), and a Datahike older than the one that wrote a
+   store refuses to open it, so the mark stays true once it is set.
+
+   A database without it was created by an earlier version. Its indices may hold
+   branches stored without a count -- correct, but a range count that covers one
+   reads its children (#1108)."
+  :complete)
+
+(defn counts-complete? [db]
+  (= counts-complete (get-in db [:meta :datahike/index-counts])))
+
+(defmulti count-census
+  "`{:branches n :unknown m}` for `index`: how many branches it has and how many are
+   stored without their element count. Reads every branch and no leaf. nil for an
+   index type that keeps no counts."
+  (fn [index-name _index] index-name))
+
+(defmethod count-census :default [_index-name _index] nil)
+
+(defmulti recount
+  "`index` with every branch counted and every branch that had no count marked to be
+   written with it, or `index` itself when there is nothing to do. The caller commits
+   the result."
+  (fn [index-name _index] index-name))
+
+(defmethod recount :default [_index-name index] index)
+
 ;; Default handlers for missing index implementations
 
 (defn- hitchhiker-tree-missing-error []

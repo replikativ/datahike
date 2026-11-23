@@ -895,6 +895,18 @@
            (count p))))
      nil))
 
+#?(:clj
+   (defmethod di/count-census :datahike.index/persistent-set [_index-name pset]
+     (when (instance? PersistentSortedSet pset)
+       (psset/count-census pset))))
+
+#?(:clj
+   (defmethod di/recount :datahike.index/persistent-set [_index-name pset]
+     (if (instance? PersistentSortedSet pset)
+       ;; `recount` keeps the set's meta (:index-type) and storage.
+       (psset/recount pset)
+       pset)))
+
 (defmethod di/with-storage :datahike.index/persistent-set [_index-name pset storage]
   ;; A PSS root carries its IStorage in the `_storage` field — connection-
   ;; scoped context, not value state: the canonical write handler strips it

@@ -1019,7 +1019,9 @@
                            ;; bulk import: indexes built outside, substituted here.
                            ;; NOT wrapped — its :tx-data is empty by construction,
                            ;; so a tx-pred has nothing to judge (see w/publish-built-db!)
-                           'publish-built-db! w/publish-built-db!})
+                           'publish-built-db! w/publish-built-db!
+                           ;; NOT wrapped either: no datoms (see w/recount-indices!)
+                           'recount-indices! w/recount-indices!})
 
 (defmulti create-writer
   "Create the writer described by the connection's `:writer` config.
@@ -1462,6 +1464,18 @@
         writer (:writer @(:wrapped-atom connection))]
     (go
       (let [tx-report (<! (dispatch! writer {:op 'publish-built-db! :args [fields]}))]
+        (#?(:clj deliver :cljs put!) p tx-report)))
+    p))
+
+(defn recount-indices!
+  "Rewrite every uncounted index branch with its count through the writer; see
+   `datahike.index.recount/recount!`. The promise resolves once the commit is
+   published."
+  [connection]
+  (let [p (throwable-promise)
+        writer (:writer @(:wrapped-atom connection))]
+    (go
+      (let [tx-report (<! (dispatch! writer {:op 'recount-indices! :args []}))]
         (#?(:clj deliver :cljs put!) p tx-report)))
     p))
 

@@ -6,6 +6,25 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Every stored index branch keeps its element count; older databases say so once and `datahike.index.recount/recount!` repairs them ([#1108]).**
+  Until now a branch that split, or borrowed from a neighbour, while its
+  children were on disk was stored without its count (persistent-sorted-set
+  before 0.5.148). Nothing was lost, but the query planner sizes a pattern by
+  counting an index range, and a range covering such a branch read the
+  branch's children to count it, again in every fresh process. Writes now
+  keep every count, and a database is marked in its metadata when it is
+  created. A database without the mark logs
+  `:datahike/index-counts-incomplete` on connect — once per database and
+  branch in a process — naming the call that fixes it:
+  `(datahike.index.recount/recount! conn)`. That rewrites the uncounted
+  branches and commits without a transaction (no datom changes, `:max-tx`
+  stays), then sets the mark; run it once per branch, at a quiet time, on a
+  connection with a local writer. `datahike.index.recount/census` reports how
+  many branches lack a count without writing anything. A `:crypto-hash?`
+  store cannot be rewritten in place and is rebuilt with an export and an
+  import instead. JVM only. *Experimental.*
+  (0.8.NNNN, [#TODO])
+
 - **`with-db` in the babashka pod failed under babashka 1.13.230 ([#1179]).**
   `(d/with-db [db (d/db conn)] …)` raised `Unable to resolve symbol:
   release-db` unless the caller had referred the pod's functions. The macro

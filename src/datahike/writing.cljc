@@ -12,6 +12,7 @@
             [datahike.db.utils :as dbu]
             [datahike.db.interface :as dbi]
             [datahike.index :as di]
+            [datahike.index.interface :as dii]
             [datahike.index.persistent-set :as dip]
             [datahike.index.audit :as audit]
             [datahike.index.secondary :as sec]
@@ -2202,6 +2203,55 @@
              :tx-meta nil
              :migration migration}))]
     (complete-db-update old report)))
+
+(def ^:private index-keys
+  [:eavt :aevt :avet :temporal-eavt :temporal-aevt :temporal-avet])
+
+(defn ^:no-doc recount-indices!
+  "Writer operation: store every branch of every index of `old` with its element
+   count, mark the database `dii/counts-complete`, and commit. The front door is
+   `datahike.index.recount/recount!`.
+
+   Runs on the writer so that the database it recounts is the one it commits.
+
+   The commit carries NO transaction, like `publish-built-db!`: the database is the
+   same one, datom for datom, with the uncounted branches (and the path above each)
+   made dirty so that they are written with their counts. No tx entity, no :max-tx
+   step, nothing for a transaction predicate or a listener to see.
+
+   Refuses a :crypto-hash? store. There a node's address is the hash of its
+   content, and the count is not part of that content: a rewritten branch has the
+   address it had, and the store, and every replica that already holds the blob,
+   would keep the old bytes under it."
+  [old]
+  (when (get-in old [:config :crypto-hash?])
+    (throw (ex-info "Index counts cannot be rewritten on a :crypto-hash? store: a node's address does not cover its count. Rebuild the store with an export and an import instead."
+                    {:type :recount/crypto-hash})))
+  ;; Rewriting marks the replaced nodes free. If this commit then loses a head
+  ;; race, those hints outlive it in this connection's storage while the winning
+  ;; head still names the nodes, and online GC could later recycle them. A
+  ;; rejected transaction has the same exposure; a maintenance step need not.
+  (when (get-in old [:config :online-gc :enabled?])
+    (throw (ex-info "Index counts cannot be rewritten while online GC is enabled; connect with :online-gc {:enabled? false} for the recount."
+                    {:type :recount/online-gc})))
+  ;; The writer treats any operation it does not know as one a running AVET
+  ;; build cannot survive, and fails the build.
+  (when (:avet-build old)
+    (throw (ex-info "Index counts cannot be rewritten while an AVET build is running; wait for it to finish."
+                    {:type :recount/avet-build-active})))
+  (let [index (get-in old [:config :index])
+        counted (reduce (fn [db k]
+                          (if-let [ix (get db k)]
+                            (assoc db k (dii/recount index ix))
+                            db))
+                        old index-keys)]
+    (complete-db-update
+     old
+     {:db-before old
+      :db-after  (assoc-in counted [:meta :datahike/index-counts] dii/counts-complete)
+      :tx-data   []
+      :tempids   {}
+      :tx-meta   {:db/txInstant (dt/get-date)}})))
 
 (defn publish-built-db!
   "Replace `old`'s indexes and derived fields wholesale with ones built OUTSIDE
