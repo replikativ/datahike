@@ -215,11 +215,20 @@
       (when pss
         (let [conn (d/connect cfg)
               storage (get-in @conn [:store :storage])
-              hints (fn [] [@(:freed-set storage) (set (map first @(:freed-addresses storage)))])
-              before (hints)
-              datoms (vec (d/datoms @conn :eavt))]
-          (is (pos? (unknown (recount/recount! conn))) "precondition: branches were rewritten")
-          (is (= before (hints)) "no hint is left behind")
+              addresses (fn []
+                          (let [db @conn acc (atom #{})]
+                            (doseq [ik index-keys :let [p (get db ik)] :when p]
+                              (psset/walk-addresses p (fn [a] (swap! acc conj a) true)))
+                            @acc))
+              before (addresses)
+              datoms (vec (d/datoms @conn :eavt))
+              _ (is (pos? (unknown (recount/recount! conn))))
+              replaced (reduce disj before (addresses))]
+          (is (seq replaced) "precondition: the recount replaced nodes")
+          ;; the recount's own commit ran online GC, with no grace period
+          (is (empty? (filter replaced @(:freelist storage)))
+              "none of them was handed to the freelist")
+          (is (empty? (filter replaced @(:freed-set storage))) "and no hint is left behind")
           (testing "and transactions that run online GC afterwards recycle none of them"
             (dotimes [i 5]
               (d/transact conn (vec (for [j (range 100)] {:k (+ 9000 (* i 100) j) :v "z"}))))
