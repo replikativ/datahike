@@ -215,10 +215,14 @@
          (is (not (counts? conn)) "precondition: the store was written with unknown root counts")
          (d/release conn))
        (let [conn (d/connect cfg)]
-         (is (counts? conn) "a writer's connect gives the roots their counts back")
+         ;; Since persistent-sorted-set 0.5.148 `-has-subtree-counts?` answers for the
+         ;; STORED root, so the count the connect worked out in memory does not make it
+         ;; true; the write that stores the root with it does.
+         (is (every? #(>= (long %) 0) (header-counts conn))
+             "a writer's connect gives the roots their counts back")
          (is (= (count (d/datoms @conn :eavt)) (di/-count (:eavt @conn))) "and they are the true ones")
          (write! conn 11)
-         (is (counts? conn))
+         (is (counts? conn) "and its next transaction stores them")
          (d/release conn))
        (let [conn (d/connect cfg)]
          (is (every? #(>= (long %) 0) (header-counts conn))
