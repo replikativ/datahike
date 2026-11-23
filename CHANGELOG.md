@@ -12,8 +12,9 @@ When something is added, it's typically marked *Experimental*. When the API cont
   returned those entities' scores even above 10 once the attribute was large
   enough (about 2,500 datoms per bound key) for the planner to seek per key
   instead of scanning. The same held for `>=` and `=`, for a bound value, and
-  over history. `<` and `>` were checked and unaffected alone. The predicates
-  are now applied on every seek-driven scan.
+  over history. `<` and `>` were checked and unaffected alone. A ground value
+  was dropped the same way: `[?e :grade 3]` with `?e` bound returned entities
+  of any grade. Both are now checked on every seek-driven scan.
   (0.8.NNNN, [#1182])
 
 - **`with-db` in the babashka pod failed under babashka 1.13.230 ([#1179]).**

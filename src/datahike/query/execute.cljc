@@ -765,10 +765,16 @@
         scan-n (long (or scan-n (di/-count db-index)))
         full (fn [] (di/-slice db-index from to index))
         ;; seeks bypass the slice bounds `from`/`to`; see `build-pushdown-filter`
+        ;; ... and what the PLANNED index would have enforced by position: a
+        ;; ground value under AVET, a ground entity under EAVT. A seek goes through
+        ;; whichever index its bound key needs, so `build-ground-filter` is asked
+        ;; for no index at all and checks both.
         bounded (fn [datoms]
-                  (if-let [f (build-pushdown-filter clause pushdown-preds)]
-                    (filter f datoms)
-                    datoms))]
+                  (let [pf (build-pushdown-filter clause pushdown-preds)
+                        gf (build-ground-filter clause nil)]
+                    (cond->> datoms
+                      gf (filter gf)
+                      pf (filter pf))))]
     #?(:clj
        (if-let [avet-pairs (when (and (:avet db)
                                       (nil? resolved-a)
@@ -2732,6 +2738,12 @@
         strict-filter (if use-probe-driven?
                         (build-pushdown-filter clause pushdown-preds)
                         strict-filter)
+        ;; Likewise the ground value or entity that the planned index would have
+        ;; enforced by position: the seeks go through EAVT or AVET by the probed
+        ;; field, whatever `index` is.
+        ground-filter (if use-probe-driven?
+                        (build-ground-filter clause nil)
+                        ground-filter)
         max-n (int (or max-results -1))]
 
     (if temporal

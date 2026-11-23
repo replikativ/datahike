@@ -16,6 +16,8 @@
     (let [conn (d/connect cfg)]
       (d/transact conn [{:db/ident :score :db/valueType :db.type/long
                          :db/cardinality :db.cardinality/one :db/index true}
+                        {:db/ident :grade :db/valueType :db.type/long
+                         :db/cardinality :db.cardinality/one :db/index true}
                         {:db/ident :label :db/valueType :db.type/string
                          :db/cardinality :db.cardinality/one}])
       ;; many low scores, so that the pattern is large and a seek per bound key
@@ -23,6 +25,9 @@
       (doseq [part (partition-all 2000 (range n))]
         (d/transact conn (vec (for [i part]
                                 {:score (if (< i (- n 20)) (mod i 10) (+ 100 i))
+                                 ;; one value for nearly all, so that a ground
+                                 ;; value still leaves a large pattern
+                                 :grade (if (< i (- n 20)) 3 9)
                                  :label (str "l" (mod i 7))}))))
       [cfg conn])))
 
@@ -35,7 +40,11 @@
     [:find ?e ?s :in $ [?e ...] :where [?e :score ?s] [(<= ?s 10)] [(>= ?s 2)]]
     [:find ?e ?s ?l :in $ [?e ...] :where [?e :score ?s] [(<= ?s 10)] [?e :label ?l]]
     [:find ?e ?l :in $ [?e ...] :where [?e :label ?l] [?e :score ?s] [(<= ?s 10)]]
-    [:find ?e :in $ [?e ...] :where [?e :score 3]]])
+    [:find ?e :in $ [?e ...] :where [?e :score 3]]
+    ;; a ground value: the planned index (AVET) would enforce it by position
+    [:find ?e :in $ [?e ...] :where [?e :grade 3]]
+    [:find ?e ?l :in $ [?e ...] :where [?e :grade 3] [?e :label ?l]]
+    [:find ?e ?s :in $ [?e ...] :where [?e :grade 3] [?e :score ?s] [(<= ?s 10)]]])
 
 (def ^:private value-queries
   '[[:find ?e ?s :in $ [?s ...] :where [?e :score ?s] [(<= ?s 10)]]
@@ -60,7 +69,9 @@
             (is (= reference planned) (pr-str query)))))
       (testing "the inclusive bound alone rejects the high scores"
         (is (= #{} (d/q (first queries) db (vec (take 2 high)))))
-        (is (= 3 (count (d/q (first queries) db ids)))))
+        (is (= 3 (count (d/q (first queries) db ids))))
+        (is (= #{} (d/q '[:find ?e :in $ [?e ...] :where [?e :grade 3]] db (vec (take 2 high))))
+            "and the ground value rejects the entities that have another"))
       (testing (str "values bound, history " history?)
         (let [vals [3 7 (+ 100 (- n 1)) (+ 100 (- n 2))]]
           (doseq [query value-queries]
@@ -69,7 +80,7 @@
               (is (seq reference) "precondition: the reference finds rows")))))
       (when history?
         (testing "over the history"
-          (doseq [query (take 6 queries)]
+          (doseq [query (concat (take 6 queries) (drop 9 queries))]
             (let [h (d/history db)
                   [planned reference] (both query h ids)]
               (is (= reference planned) (pr-str query))))))
