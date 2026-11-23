@@ -56,8 +56,15 @@
 
    WHAT IT COSTS. It reads every branch of every index, plus the leaves under each
    lowest-level branch that has no count. On a remote store that is one request per
-   node. The rewriting step runs on the writer, so transactions wait for it; run it
-   at a quiet time. Once done it is done: writes keep every count.
+   node. Once done it is done: writes keep every count.
+
+   UNDER LOAD. It is safe to run while the database is in use. The rewriting step
+   runs on the writer, so transactions submitted meanwhile wait for it and commit
+   afterwards; none is rejected or lost. Queries keep running against the current
+   database value and share store I/O with it. Run it at a quiet time only to keep
+   that wait short. Where several PROCESSES write to the same branch, a commit by
+   another process can make the recount's commit lose the race for the head: it
+   then fails with a conflict, having changed nothing, and is simply run again.
 
    The census it returns was taken just before the writer's pass; where other
    processes commit to the same branch the two can describe different heads.

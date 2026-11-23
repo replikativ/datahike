@@ -18,9 +18,10 @@ When something is added, it's typically marked *Experimental*. When the API cont
   branch in a process — naming the call that fixes it:
   `(datahike.index.recount/recount! conn)`. That rewrites the uncounted
   branches and commits without a transaction (no datom changes, `:max-tx`
-  stays), then sets the mark; run it once per branch, at a quiet time, on a
+  stays), then sets the mark; run it once per branch, on a
   connection with a local writer, after every process that writes to the
-  database has been upgraded. The recount also raises the persistent-sorted-set
+  database has been upgraded. It is safe while the database is in use:
+  transactions wait while it runs. The recount also raises the persistent-sorted-set
   version recorded with the database, so a runtime with an older one — whose
   writes would store branches without counts again — refuses to open it.
   `datahike.index.recount/census` reports how many branches lack a count

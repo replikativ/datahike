@@ -150,9 +150,10 @@
                            "Its data is intact and queries are correct, but the query planner reads extra index nodes to count ranges"
                            (when (seq roots) ", and estimates from heuristics because index roots have no count")
                            ". "
-                           "To fix it, run once per branch, at a quiet time, on a JVM connection with a local writer: "
+                           "To fix it, run once per branch on a JVM connection with a local writer: "
                            "(require 'datahike.index.recount) (datahike.index.recount/recount! conn) "
-                           "-- see its docstring for cost and limits. Upgrade every process that writes to this database first.")
+                           "-- safe while the database is in use; transactions wait while it runs. See its docstring for cost and limits. "
+                           "Upgrade every process that writes to this database first.")
                       {:store-id (get-in config [:store :id])
                        :branch (:branch config)
                        :roots-without-count roots})))))
