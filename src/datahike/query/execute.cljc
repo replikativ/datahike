@@ -4919,7 +4919,7 @@
         a           (second scan-clause)
         resolved-a  (when (and (some? a) (not (symbol? a))) (resolve-attr index-db a))
         scan-n      (or (:estimated-card scan-op)
-                        (di/-count (get index-db (:index scan-op))))
+                        (di/estimated-count (:index (dbi/-config index-db)) (get index-db (:index scan-op))))
         ;; SIP probe-set is a JVM-only fast-path optimization (HashSet + ForwardCursor
         ;; seeks). On cljs fall back to a full temporal scan — slower but identical
         ;; results, since the probe only restricts the scan to already-bound values.

@@ -158,8 +158,9 @@
                       {:store-id (get-in config [:store :id])
                        :branch (:branch config)
                        :roots-without-count roots})))))
-    (catch #?(:clj Exception :cljs js/Error) e
-      (log/debug :datahike/index-counts-warning-failed {:error (ex-message e)}))))
+    (catch #?(:clj Exception :cljs js/Error) _
+      ;; a warning is not worth a connect: not even a log sink that throws
+      nil)))
 
 (defn version-check [{:keys [meta config] :as db}]
   (let [{dh-stored :datahike/version

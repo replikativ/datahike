@@ -2207,6 +2207,18 @@
 (def ^:private index-keys
   [:eavt :aevt :avet :temporal-eavt :temporal-aevt :temporal-avet])
 
+#?(:clj
+   (defn- counts-complete-meta
+     "`meta` for a persistent-set database whose every index branch is stored with
+      its count: the mark, and `:persistent.set/version` raised to this runtime's so
+      that `connector/version-check` refuses the database to a runtime with an older
+      persistent-sorted-set -- one whose writes would store branches without counts
+      under the mark."
+     [meta]
+     (cond-> (assoc meta :datahike/index-counts dii/counts-complete)
+       (neg? (compare (str (:persistent.set/version meta)) (str dt/persistent-set-version)))
+       (assoc :persistent.set/version dt/persistent-set-version))))
+
 (defn ^:no-doc recount-indices!
   "Writer operation: store every branch of every index of `old` with its element
    count, mark the database `dii/counts-complete`, and commit. The front door is
@@ -2248,11 +2260,21 @@
        (let [storage (get-in old [:store :storage])
              freed-set (:freed-set storage)
              freed-before (if freed-set @freed-set #{})
-             counted (reduce (fn [db k]
-                               (if-let [ix (get db k)]
-                                 (assoc db k (dii/recount index ix))
-                                 db))
-                             old index-keys)]
+             unhint! (fn []
+                       (when freed-set
+                         (let [mine (reduce disj @freed-set freed-before)]
+                           (when (seq mine)
+                             (swap! freed-set #(reduce disj % mine))
+                             (swap! (:freed-addresses storage) #(filterv (fn [[a _]] (not (contains? mine a))) %))
+                             (when-let [stacks (:freed-stacks storage)]
+                               (swap! stacks #(reduce dissoc % mine)))))))
+             counted (try
+                       (reduce (fn [db k]
+                                 (if-let [ix (get db k)]
+                                   (assoc db k (dii/recount index ix))
+                                   db))
+                               old index-keys)
+                       (finally (unhint!)))]
          ;; Rewriting reports each replaced node as freed. Take those hints back.
          ;; If this commit loses a head race, the winning head still names the
          ;; nodes, and online GC -- on this connection or a background collector on
@@ -2260,21 +2282,10 @@
          ;; transaction has that exposure; a maintenance step need not. The
          ;; replaced nodes are left to offline GC (`d/gc-storage`), which decides by
          ;; reachability.
-         (when freed-set
-           (let [mine (reduce disj @freed-set freed-before)]
-             (when (seq mine)
-               (swap! freed-set #(reduce disj % mine))
-               (swap! (:freed-addresses storage) #(filterv (fn [[a _]] (not (contains? mine a))) %))
-               (when-let [stacks (:freed-stacks storage)]
-                 (swap! stacks #(reduce dissoc % mine))))))
          (complete-db-update
           old
           {:db-before old
-           :db-after  (update counted :meta
-                              (fn [m]
-                                (cond-> (assoc m :datahike/index-counts dii/counts-complete)
-                                  (neg? (compare (str (:persistent.set/version m)) (str dt/persistent-set-version)))
-                                  (assoc :persistent.set/version dt/persistent-set-version))))
+           :db-after  (update counted :meta counts-complete-meta)
            :tx-data   []
            :tempids   {}
            :tx-meta   {:db/txInstant (dt/get-date)}})))))
@@ -2311,7 +2322,11 @@
   (complete-db-update
    old
    {:db-before old
-    :db-after  (tracking/forget (merge old fields))
+    ;; Every index is replaced by one built whole, so every branch has its count
+    ;; whatever the (empty) target looked like before.
+    :db-after  (cond-> (tracking/forget (merge old fields))
+                 #?(:clj (= :datahike.index/persistent-set (get-in old [:config :index])) :cljs false)
+                 (update :meta #?(:clj counts-complete-meta :cljs identity)))
     :tx-data   []
     :tempids   {}
     :tx-meta   {:db/txInstant (dt/get-date)}}))
