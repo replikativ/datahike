@@ -124,6 +124,43 @@
 (s/def ::connection #(and (instance? Connection %)
                           (not= @(:wrapped-atom %) :released)))
 
+(defonce ^:private counts-warned (atom #{}))
+
+(defn- warn-incomplete-counts!
+  "Say ONCE per database and branch in this process that `stored-db` is not marked
+   as having every index count (see `dii/counts-complete`), and how to fix it. Reads
+   nothing from the store: the mark and the header counts come with the database
+   record. Never fails a connect."
+  [config stored-db]
+  (try
+    (let [index (:index config)
+          k [(get-in config [:store :id]) (:branch config)]]
+      (when (and (= :datahike.index/persistent-set index)
+                 (not (dii/counts-complete? stored-db))
+                 (not (contains? @counts-warned k)))
+        (let [roots (vec (for [ik [:eavt-key :aevt-key :avet-key
+                                   :temporal-eavt-key :temporal-aevt-key :temporal-avet-key]
+                               :let [ix (get stored-db ik)]
+                               :when (and ix (not (dii/root-count-known? index ix)))]
+                           ik))
+              [old _] (swap-vals! counts-warned conj k)]
+          (when-not (contains? old k)
+            (log/warn :datahike/index-counts-incomplete
+                      (str "This database was created before every index branch was stored with its element count (#1108). "
+                           "Its data is intact and queries are correct, but the query planner reads extra index nodes to count ranges"
+                           (when (seq roots) ", and estimates from heuristics because index roots have no count")
+                           ". "
+                           "To fix it, run once per branch on a JVM connection with a local writer: "
+                           "(require 'datahike.index.recount) (datahike.index.recount/recount! conn) "
+                           "-- safe while the database is in use; transactions wait while it runs. See its docstring for cost and limits. "
+                           "Upgrade every process that writes to this database first.")
+                      {:store-id (get-in config [:store :id])
+                       :branch (:branch config)
+                       :roots-without-count roots})))))
+    (catch #?(:clj Exception :cljs js/Error) _
+      ;; a warning is not worth a connect: not even a log sink that throws
+      nil)))
+
 (defn version-check [{:keys [meta config] :as db}]
   (let [{dh-stored :datahike/version
          hh-stored :hitchhiker.tree/version
@@ -425,24 +462,12 @@
                                          (select-keys (:config stored-db)
                                                       (keys dc/default-value-caps)))
                            _ (version-check stored-db)
+                           _ (warn-incomplete-counts! config stored-db)
                            _ (when-not (:allow-unsafe-config config)
                                (ensure-stored-config-consistency config (:config stored-db)))
                            conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]
                        (swap! (:wrapped-atom conn) assoc :writer
                               (w/create-writer (:writer config) conn))
-                     ;; A store written before persistent-sorted-set 0.5.146 can hold
-                     ;; index roots with an unknown count (#1108). Give them back
-                     ;; here, once, where the result can be stored: only a local
-                     ;; writer's next transaction writes the roots. See
-                     ;; `dii/ensure-root-count!` for why this costs a healthy store
-                     ;; nothing.
-                       (when (= :self (get-in config [:writer :backend] :self))
-                         (let [db @(:wrapped-atom conn)
-                               index (:index config)]
-                           (doseq [k [:eavt :aevt :avet :temporal-eavt :temporal-aevt :temporal-avet]
-                                   :let [ix (get db k)]
-                                   :when ix]
-                             (dii/ensure-root-count! index ix))))
                      ;; Recovery: every :building index is reconstructed from
                      ;; the primary index. Its stored key-map, if any was written
                      ;; by an older release, is deliberately ignored by
