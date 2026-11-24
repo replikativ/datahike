@@ -13,6 +13,7 @@
   (:require [clojure.set :as set]
             [clojure.test :refer [deftest testing is]]
             [datahike.api :as d]
+            [datahike.datom :as dd]
             [datahike.index.interface :as di]))
 
 (def ^:private instant #inst "2026-01-01T00:00:00.000-00:00")
@@ -25,9 +26,22 @@
    {:db/ident :tags :db/valueType :db.type/long :db/cardinality :db.cardinality/many
     :db/index true}
    {:db/ident :quiet :db/valueType :db.type/long :db/cardinality :db.cardinality/one
-    :db/noHistory true}])
+    :db/noHistory true}
+   {:db/ident :blob :db/valueType :db.type/bytes :db/cardinality :db.cardinality/many}
+   {:db/ident :u :db/valueType :db.type/long :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :self :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}
+   {:db/ident :a :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+   {:db/ident :b :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+   {:db/ident :a+b :db/valueType :db.type/tuple :db/tupleAttrs [:a :b]
+    :db/cardinality :db.cardinality/one}])
 
-(def ^:private user-attrs #{:one :many :idx :tags :quiet})
+(def ^:private user-attrs #{:one :many :idx :tags :quiet :blob :u :self :a :b :a+b})
+
+(defn- bytes-of [& xs] #?(:clj (byte-array xs) :cljs (js/Uint8Array. (clj->js xs))))
+
+(defn- comparable [v]
+  (if #?(:clj (bytes? v) :cljs (instance? js/Uint8Array v)) [:bytes (vec v)] v))
 
 (defn- base-db
   "A history database with two entities (ids 101 and 102) and some earlier history."
@@ -38,7 +52,10 @@
         conn (d/connect cfg)]
     (d/transact conn schema)
     (d/transact conn [[:db/add 101 :one 24] [:db/add 101 :many :x] [:db/add 101 :idx 5]
-                      [:db/add 101 :tags 1] [:db/add 101 :quiet 7] [:db/add 102 :one 30]])
+                      [:db/add 101 :tags 1] [:db/add 101 :quiet 7] [:db/add 102 :one 30]
+                      [:db/add 101 :blob (bytes-of 1 2 3)] [:db/add 101 :u 1]
+                      [:db/add 101 :self 101] [:db/add 102 :self 101]
+                      {:db/id 102 :a 1 :b 2}])
     ;; an earlier overwrite and an earlier retraction, so history is not empty
     (d/transact conn [[:db/add 102 :one 31] [:db/add 102 :many :old]])
     (d/transact conn [[:db/add 102 :one 30] [:db/retract 102 :many :old]])
@@ -46,7 +63,7 @@
       (d/release conn)
       db)))
 
-(defn- full [d] [(:e d) (:a d) (:v d) (:tx d) (:added d)])
+(defn- full [d] [(:e d) (:a d) (comparable (:v d)) (:tx d) (:added d)])
 
 (defn- user-datoms [datoms]
   (set (map full (filter #(user-attrs (:a %)) datoms))))
@@ -65,7 +82,9 @@
            :temporal-avet (user-datoms (di/-seq (:temporal-avet db))))))
 
 (defn- eav-set [db]
-  (set (map (juxt :e :a :v) (filter #(user-attrs (:a %)) (di/-seq (:eavt db))))))
+  ;; the composite tuple is derived, never written directly
+  (set (map (juxt :e :a :v) (filter #(and (user-attrs (:a %)) (not= :a+b (:a %)))
+                                    (di/-seq (:eavt db))))))
 
 (defn- run [db ops]
   (d/with db {:tx-data ops :tx-meta {:db/txInstant instant}}))
@@ -73,9 +92,11 @@
 (defn- net-ops
   "The net change between two current states, as retractions then assertions."
   [db-before db-after]
-  (let [b (eav-set db-before) a (eav-set db-after)]
-    (concat (for [[e at v] (sort-by str (set/difference b a))] [:db/retract e at v])
-            (for [[e at v] (sort-by str (set/difference a b))] [:db/add e at v]))))
+  (let [key (fn [[e a v]] [e a (comparable v)])
+        b (into {} (map (juxt key identity)) (eav-set db-before))
+        a (into {} (map (juxt key identity)) (eav-set db-after))]
+    (concat (for [k (sort-by str (keys b)) :when (not (contains? a k))] (into [:db/retract] (b k)))
+            (for [k (sort-by str (keys a)) :when (not (contains? b k))] (into [:db/add] (a k))))))
 
 (defn- check-against-oracle [db ops]
   (let [actual (run db ops)
@@ -107,6 +128,13 @@
    "noHistory set twice"                        [[:db/add 101 :quiet 8] [:db/add 101 :quiet 9]]
    "noHistory away and back"                    [[:db/add 101 :quiet 8] [:db/add 101 :quiet 7]]
    "retractEntity then one attribute again"     [[:db/retractEntity 101] [:db/add 101 :one 24]]
+   "bytes retract, add equal contents"          [[:db/retract 101 :blob (bytes-of 1 2 3)] [:db/add 101 :blob (bytes-of 1 2 3)]]
+   "bytes add, retract"                         [[:db/add 101 :blob (bytes-of 9)] [:db/retract 101 :blob (bytes-of 9)]]
+   "unique value moved and moved back"          [[:db/add 101 :u 2] [:db/add 102 :u 1] [:db/add 102 :u 3] [:db/add 101 :u 1]]
+   "tuple source set twice"                     [[:db/add 102 :a 5] [:db/add 102 :a 6]]
+   "tuple source away and back"                 [[:db/add 102 :b 7] [:db/add 102 :b 2]]
+   "tuple built from nothing"                   [{:db/id 101 :a 3 :b 4}]
+   "retractEntity with a reference to itself"   [[:db/retractEntity 101]]
    "untouched keys alongside a cancelled one"   [[:db/add 102 :many :a] [:db/add 101 :many :n] [:db/retract 101 :many :n] [:db/add 102 :one 33]]})
 
 (deftest a-transaction-records-its-net-effect
@@ -175,3 +203,45 @@
         (let [rnd (lcg (+ 17 seed))
               ops (random-ops rnd (+ 2 (rnd 7)))]
           (check-against-oracle db ops))))))
+
+(deftest operations-still-see-each-other
+  (testing "a transaction function runs on the state the earlier operations left"
+    (let [db (base-db true)
+          seen (atom nil)
+          r (run db [[:db/add 101 :one 25]
+                     [:db.fn/call (fn [db]
+                                    (reset! seen (:v (first (d/datoms db :eavt 101 :one))))
+                                    [[:db/add 101 :one 21]])]])]
+      (is (= 25 @seen))
+      (is (= #{[101 :one 24 false] [101 :one 21 true]}
+             (set (map (juxt :e :a :v :added) (filter #(= :one (:a %)) (:tx-data r)))))))))
+
+(deftest retracting-what-is-not-there-reports-nothing
+  (let [db (base-db true)
+        r (run db [(dd/datom 101 :many :absent (inc (:max-tx db)) false)])]
+    (is (empty? (filter #(user-attrs (:a %)) (:tx-data r))))))
+
+(deftest a-write-dated-to-another-transaction-is-stored-as-given
+  (testing "such input replays recorded data; the transaction is not netted"
+    (let [db (base-db true)
+          earlier (dec (:max-tx db))
+          r (run db [[:db/add 101 :many :n earlier] [:db/retract 101 :many :n]])]
+      (is (= [true false] (map :added (filter #(= :n (:v %)) (:tx-data r))))))))
+
+(deftest a-purge-leaves-nothing-of-the-value
+  (let [db (base-db true)
+        about (fn [db v] (filter #(= v (:v %)) (di/-seq (:temporal-eavt db))))]
+    (testing "asserted, then purged"
+      (let [r (run db [[:db/add 101 :many :n] [:db/purge 101 :many :n]])]
+        (is (empty? (filter #(= :n (:v %)) (:tx-data r))))
+        (is (empty? (about (:db-after r) :n)))
+        (is (empty? (d/datoms (:db-after r) :eavt 101 :many :n)))))
+    (testing "retracted, then purged"
+      (let [r (run db [[:db/retract 101 :many :x] [:db/purge 101 :many :x]])]
+        (is (empty? (filter #(= :x (:v %)) (:tx-data r))))
+        (is (empty? (about (:db-after r) :x)))))
+    (testing "purged, then asserted again"
+      (let [r (run db [[:db/purge 101 :many :x] [:db/add 101 :many :x]])]
+        (is (= [true] (map :added (filter #(= :x (:v %)) (:tx-data r)))))
+        (is (empty? (about (:db-after r) :x)))
+        (is (seq (d/datoms (:db-after r) :eavt 101 :many :x)))))))
