@@ -1001,13 +1001,14 @@
              ^Datom old (if (and upsert? (= ::not-looked-up old))
                           (current-datom-for-ea db (.-e datom) (.-a datom))
                           (when upsert? old))
-             ^Datom prim (if (and track? added?)
+             ^Datom prim (if (and (not as-given?) added?)
                            (project-primary (dbu/secondary-only? db a-ident) datom)
                            datom)
              ;; an unequal value whose stored form hashes like the one it
              ;; supersedes: the upsert takes it for a restatement and drops
              ;; the old term
-             collision? (and track? upsert? (some? old) hist?
+             collision? (and (not as-given?) upsert? (some? old) hist?
+                             (not= :db/txInstant a-ident)
                              (not (zero? (dd/compare-value (.-v old) (.-v prim))))
                              (= (hash old) (hash prim)))
              write   (fn [db]
@@ -1550,8 +1551,18 @@
             [db net] (reduce (fn [[db net] [^Datom k entry]]
                                (let [ident (when (:net? entry) (ident-of k))]
                                  (if (and ident (not (contains? written-idents ident)))
-                                   (let [[db n] (net-key db db-before ident k entry tx)]
-                                     [db (assoc net k n)])
+                                   ;; `net-key` first looks the key up, and
+                                   ;; changes nothing before that. Where the
+                                   ;; index cannot compare the key with what
+                                   ;; it holds now (two unequal maps of equal
+                                   ;; hash), the key is left as written.
+                                   (if-let [[db n] (try (net-key db db-before ident k entry tx)
+                                                        (catch ExceptionInfo ex
+                                                          (when-not (= :datahike/incomparable-values
+                                                                       (:error (ex-data ex)))
+                                                            (throw ex))))]
+                                     [db (assoc net k n)]
+                                     [db net])
                                    [db net])))
                              [db-after (sorted-map-by cmp-keys)]
                              touched)]

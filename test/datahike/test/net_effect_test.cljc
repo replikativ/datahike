@@ -302,3 +302,17 @@
                                        [:db/add 101 :n 1] [:db/retract 101 :n 1]]})]
         (is (= [{:v "BB"}] (map :v (d/datoms (:db-after r) :eavt 101 :m)))))
       (d/release conn))))
+
+(deftest a-key-the-index-cannot-compare-is-left-as-written
+  (testing "the removed map and the surviving one have equal hashes and cannot
+            be ordered; the transaction is accepted, as it was before"
+    (let [cfg {:store {:backend :memory :id (random-uuid)}
+               :keep-history? true :schema-flexibility :read}
+          _ (d/create-database cfg)
+          conn (d/connect cfg)]
+      (d/transact conn [{:db/ident :m :db/cardinality :db.cardinality/many}])
+      (let [r (d/with @conn {:tx-data [[:db/add 101 :m {:v "Aa"}]
+                                       [:db/retract 101 :m {:v "Aa"}]
+                                       [:db/add 101 :m {:v "BB"}]]})]
+        (is (= [{:v "BB"}] (map :v (d/datoms (:db-after r) :eavt 101 :m)))))
+      (d/release conn))))
