@@ -306,8 +306,24 @@
         ;; processing loop
         (go-try S
          ;; delay processing until the writer we are part of in connection is set
-                (while (not (:writer @(:wrapped-atom connection)))
+                ;; ...or until the connection is released without ever having
+                ;; shown it to us: a connect that lost the publication race
+                ;; discards its connection at once, and this loop would poll a
+                ;; :released atom forever.
+                (while (let [db @(:wrapped-atom connection)]
+                         (and (not= :released db) (not (:writer db))))
                   (<! (timeout 10)))
+                ;; Released before we started: there is no database to apply
+                ;; anything to. Close the queue ourselves rather than rely on
+                ;; the releaser having got that far, and answer whatever was
+                ;; already queued, so the loop below ends on its first take
+                ;; instead of applying an operation to :released.
+                (when (= :released @(:wrapped-atom connection))
+                  (close! transaction-queue)
+                  #?(:clj (fail-queued-invocations!
+                           transaction-queue
+                           (ex-info "Writer is shut down (its connection was released before it started); release and reconnect."
+                                    {:type :writer-shut-down}))))
                 ;; needs-reload? — has our previous batch committed, so the head
                 ;;   must be re-read before applying anything else? INVARIANT:
                 ;;   needs-reload? is true exactly when pending is 0, so a failed
@@ -1019,7 +1035,9 @@
                            ;; bulk import: indexes built outside, substituted here.
                            ;; NOT wrapped — its :tx-data is empty by construction,
                            ;; so a tx-pred has nothing to judge (see w/publish-built-db!)
-                           'publish-built-db! w/publish-built-db!})
+                           'publish-built-db! w/publish-built-db!
+                           ;; NOT wrapped either: no datoms (see w/recount-indices!)
+                           'recount-indices! w/recount-indices!})
 
 (defmulti create-writer
   "Create the writer described by the connection's `:writer` config.
@@ -1462,6 +1480,18 @@
         writer (:writer @(:wrapped-atom connection))]
     (go
       (let [tx-report (<! (dispatch! writer {:op 'publish-built-db! :args [fields]}))]
+        (#?(:clj deliver :cljs put!) p tx-report)))
+    p))
+
+(defn recount-indices!
+  "Rewrite every uncounted index branch with its count through the writer; see
+   `datahike.index.recount/recount!`. The promise resolves once the commit is
+   published."
+  [connection]
+  (let [p (throwable-promise)
+        writer (:writer @(:wrapped-atom connection))]
+    (go
+      (let [tx-report (<! (dispatch! writer {:op 'recount-indices! :args []}))]
         (#?(:clj deliver :cljs put!) p tx-report)))
     p))
 

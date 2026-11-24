@@ -879,21 +879,25 @@
         (assoc store :storage storage :datahike/store-id store-id
                :datahike/branching-factor bf :datahike/diff-buf-size dbs)))))
 
+(defmethod di/root-count-known? :datahike.index/persistent-set [_index-name pset]
+  #?(:clj  (if (instance? PersistentSortedSet pset)
+             (>= (.-_count ^PersistentSortedSet pset) 0)
+             true)
+     :cljs (if (instance? BTSet pset)
+             (let [c (.-cnt pset)] (and (some? c) (>= c 0)))
+             true)))
+
 #?(:clj
-   (defmethod di/ensure-root-count! :datahike.index/persistent-set [_index-name pset]
+   (defmethod di/count-census :datahike.index/persistent-set [_index-name pset]
      (when (instance? PersistentSortedSet pset)
-       (let [^PersistentSortedSet p pset]
-         ;; Gated on the SET's count, which travels in the index header: a healthy store
-         ;; has it, and then this returns without reading a single node — not even the
-         ;; root. In a store damaged by #1108 the header went unknown at the same moment
-         ;; the root did, so an unknown header is the signal worth a read.
-         (when (neg? (.-_count p))
-           ;; `count` sums the root's children's counts, descending only into a child
-           ;; whose own count is unknown, and caches the result on the set and on the
-           ;; root. Bounded by the number of unknown branches, not by the size of the
-           ;; tree; one root read when only the header had lost it.
-           (count p))))
-     nil))
+       (psset/count-census pset))))
+
+#?(:clj
+   (defmethod di/recount :datahike.index/persistent-set [_index-name pset]
+     (if (instance? PersistentSortedSet pset)
+       ;; `recount` keeps the set's meta (:index-type) and storage.
+       (psset/recount pset)
+       pset)))
 
 (defmethod di/with-storage :datahike.index/persistent-set [_index-name pset storage]
   ;; A PSS root carries its IStorage in the `_storage` field — connection-

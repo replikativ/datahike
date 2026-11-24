@@ -1,5 +1,5 @@
 (ns ^:no-doc datahike.connector
-  (:require [datahike.connections :refer [get-connection add-connection! delete-connection!
+  (:require [datahike.connections :refer [get-connection add-connection! release-lease!
                                           acquire-node-cache! abandon-reservation!
                                           *connections*]]
             [datahike.readers]
@@ -123,6 +123,43 @@
 
 (s/def ::connection #(and (instance? Connection %)
                           (not= @(:wrapped-atom %) :released)))
+
+(defonce ^:private counts-warned (atom #{}))
+
+(defn- warn-incomplete-counts!
+  "Say ONCE per database and branch in this process that `stored-db` is not marked
+   as having every index count (see `dii/counts-complete`), and how to fix it. Reads
+   nothing from the store: the mark and the header counts come with the database
+   record. Never fails a connect."
+  [config stored-db]
+  (try
+    (let [index (:index config)
+          k [(get-in config [:store :id]) (:branch config)]]
+      (when (and (= :datahike.index/persistent-set index)
+                 (not (dii/counts-complete? stored-db))
+                 (not (contains? @counts-warned k)))
+        (let [roots (vec (for [ik [:eavt-key :aevt-key :avet-key
+                                   :temporal-eavt-key :temporal-aevt-key :temporal-avet-key]
+                               :let [ix (get stored-db ik)]
+                               :when (and ix (not (dii/root-count-known? index ix)))]
+                           ik))
+              [old _] (swap-vals! counts-warned conj k)]
+          (when-not (contains? old k)
+            (log/warn :datahike/index-counts-incomplete
+                      (str "This database was created before every index branch was stored with its element count (#1108). "
+                           "Its data is intact and queries are correct, but the query planner reads extra index nodes to count ranges"
+                           (when (seq roots) ", and estimates from heuristics because index roots have no count")
+                           ". "
+                           "To fix it, run once per branch on a JVM connection with a local writer: "
+                           "(require 'datahike.index.recount) (datahike.index.recount/recount! conn) "
+                           "-- safe while the database is in use; transactions wait while it runs. See its docstring for cost and limits. "
+                           "Upgrade every process that writes to this database first.")
+                      {:store-id (get-in config [:store :id])
+                       :branch (:branch config)
+                       :roots-without-count roots})))))
+    (catch #?(:clj Exception :cljs js/Error) _
+      ;; a warning is not worth a connect: not even a log sink that throws
+      nil)))
 
 (defn version-check [{:keys [meta config] :as db}]
   (let [{dh-stored :datahike/version
@@ -310,6 +347,185 @@
          :index-config :fuse-index-roots? :commit-graph?
          (cons :value-caps (keys dc/default-value-caps))))
 
+(declare release*)
+
+(defn- check-reused-connection!
+  "The checks a caller must pass before it is handed a connection that another
+   connect built: its config must agree with that connection's, and a fencing
+   demand is judged against the writer the caller actually gets."
+  [config conn]
+  (let [conn-config (:config @(:wrapped-atom conn))
+  ;; replace store config with its identity
+        cfg (normalize-config config)
+        conn-cfg (normalize-config conn-config)]
+    (when-not (= cfg conn-cfg)
+      (log/raise "Configuration does not match existing connections."
+                 {:type :config-does-not-match-existing-connections
+                  :config cfg
+                  :existing-connections-config conn-cfg
+                  :diff (diff cfg conn-cfg)}))
+        ;; normalize-config dissocs :writer, so a second connect
+        ;; asking for DIFFERENT ownership gets the cached connection's
+        ;; writer. Say so rather than let the caller believe shared
+        ;; ownership took effect (release the connection to change it).
+    (let [existing (some-> (:writer @(:wrapped-atom conn)) w/writer-ownership)
+          requested (get-in config [:writer :writer-ownership] :shared)]
+      (when (and (some? existing)
+                 (= :self (get-in config [:writer :backend] :self))
+                 (not= requested existing))
+        (log/warn :datahike/writer-ownership-ignored
+                  "Reusing the existing connection and its writer; the requested :writer-ownership is ignored. Release the connection everywhere first if you need different ownership."
+                  {:requested requested
+                   :existing  existing}))
+          ;; A DEMAND, not a preference, so it is checked against the
+          ;; writer this caller actually gets — which on this path is
+          ;; the cached one, whatever it was built with. Checking it
+          ;; only where a writer is created skipped it precisely
+          ;; here: `:require-fencing` exists for deployments with
+          ;; more than one writer, and the second `connect` in a
+          ;; process is the one that comes out of the cache.
+          ;;
+          ;; `existing` rather than the requested ownership: what
+          ;; matters is whether the writer in hand re-reads the head,
+          ;; and the warning above has already said the request is ignored.
+          ;;
+          ;; SCOPED to the :self backend, matching where the option is
+          ;; legal at all: `normalize-writer-config` refuses
+          ;; :require-fencing on a remote writer before any connect
+          ;; path runs, and checking it here against the LOCAL store
+          ;; would be judging a remote writer's guarantee by a store
+          ;; it does not write to — a refusal or a pass, both about
+          ;; the wrong thing.
+      (when (= :self (get-in config [:writer :backend] :self))
+        (w/check-fencing! (get-in config [:writer :require-fencing])
+                          (or existing :shared)
+                          (:store @(:wrapped-atom conn)))))
+    nil))
+
+(defn- reuse-connection!
+  "`conn` is a registered connection on which this caller already holds one
+   lease. Return it if the caller's config is compatible; otherwise give the
+   lease back and rethrow, so a refused connect does not pin the connection."
+  [config conn]
+  (try
+    (check-reused-connection! config conn)
+    conn
+    (catch #?(:clj Exception :cljs :default) e
+      ;; Strict: only this connection is debited. The lease was taken a moment
+      ;; ago; if the registry has moved on since, there is nothing to give back.
+      (release* conn false true)
+      (throw e))))
+
+(defn- close-connection-resources!
+  "Close what a connection owns outside the registry: secondary index writers
+   (file locks such as Lucene's write.lock), and for a local connection its
+   writer and store handle. `db` is the connection's value from before it was
+   marked :released."
+  [connection db]
+  #?(:clj
+     (doseq [[_ident idx] (:secondary-indices db)]
+       (when (instance? java.io.Closeable idx)
+         (try (.close ^java.io.Closeable idx)
+              (catch Exception e
+                (log/warn :datahike/secondary-index-close-failed {:error (.getMessage e)}))))))
+  (if (:datahike/retire! (meta connection))
+    ;; Kabel owns fence -> subscription drain -> registry lease ->
+    ;; native close. Never close its store before asynchronous drain.
+    nil
+    (do
+      (w/shutdown (:writer db))
+      ;; Release the underlying store to clean up resources (memory registry, etc.).
+      ;; Native store decoders are lexical and own no wire-registry lease.
+      (ks/release-store (get-in db [:config :store]) (:store db))
+      nil)))
+
+(defn- discard-unpublished!
+  "Tear down a connection this connect built but did not publish. Nobody else
+   can hold it, so everything it opened is closed here. A failure to close is
+   logged, not raised: the caller's outcome is already decided."
+  [conn]
+  (let [db @(:wrapped-atom conn)]
+    (reset! conn :released)
+    (try
+      (close-connection-resources! conn db)
+      (catch #?(:clj Exception :cljs :default) e
+        (log/warn :datahike/unpublished-connection-close-failed
+                  {:error (ex-message e)})))))
+
+(defn- building-indices [conn]
+  (vec (for [[ident entry] (:schema @(:wrapped-atom conn))
+             :when (and (map? entry)
+                        (:db.secondary/type entry)
+                        (= :building (:db.secondary/status entry)))]
+         ident)))
+
+(defn- interchangeable?
+  "Can a connect take `existing` in place of the connection it built? Yes,
+   unless `existing` is a Kabel replica, which can sit under the same id and
+   carries its own retirement hook.
+
+   The writer config is not compared. A connect that finds a registered
+   connection has always been handed it whatever its own :writer says
+   (`normalize-config` leaves :writer out of the config comparison), and a
+   connect that loses the race is treated the same.
+
+   Where the answer is no, this connect publishes its own connection over the
+   registered one, as every publish did before."
+  [existing]
+  (nil? (:datahike/retire! (meta existing))))
+
+(defn- recover-building-indices!
+  "Recovery: every :building index is reconstructed from the primary index.
+   Its stored key-map, if any was written by an older release, is deliberately
+   ignored by stored->db because it may describe a partial backfill.
+
+   Started only by the connect that published `conn`. A connect that lost the
+   race discards its connection, and a backfill dispatched to that writer
+   would be cut off by its shutdown.
+
+   `idents` are the indices that were :building in the STORED database, read
+   before publication (`building-indices`). Once the connection is published
+   another caller can declare a new index through it, whose own build is
+   already scheduled; reading the schema here would recover that one too.
+
+   `writer` is the one this connect created, handed in: once published, the
+   connection can be released by another caller, and its atom then holds no
+   writer to read. Only a local writer rebuilds. A remote one (the
+   :datahike-server writer sends nothing but transactions) leaves recovery to
+   the process that runs the writer, which does it in its own connect."
+  [writer idents]
+  #?(:clj
+     (when (instance? datahike.writer.LocalWriter writer)
+       (doseq [ident idents]
+         (log/trace :datahike/secondary-index-backfill {:ident ident})
+         (go
+         ;; The delta journal that covered transactions
+         ;; after the stored boundary died with the
+         ;; previous process. Re-anchor the boundary at
+         ;; this head first so the scan picks those
+         ;; datoms up from the primary index; only
+         ;; transactions after this point are journaled.
+           (let [reset-result (<! (w/dispatch! writer
+                                               {:op 'reset-secondary-index-build-boundary!
+                                                :args [ident]}))
+                 build-result (if (map? reset-result)
+                                (<! (w/dispatch! writer
+                                                 {:op 'build-secondary-index!
+                                                  :args [ident]}))
+                                reset-result)]
+             (if-not (map? build-result)
+               (log/warn :datahike/secondary-index-recovery-failed
+                         {:ident ident :error build-result})
+               (let [install-result
+                     (<! (w/dispatch! writer
+                                      {:op 'install-secondary-index!
+                                       :args [build-result]}))]
+                 (when-not (map? install-result)
+                   (log/warn :datahike/secondary-index-recovery-failed
+                             {:ident ident :error install-result})
+                   (dsi/finish-secondary-index-build!
+                    build-result))))))))))
+
 (defn -connect-impl* [config opts]
   (async+sync (:sync? opts) *default-sync-translation*
               (go-try-
@@ -319,53 +535,7 @@
                      conn-id [store-id (:branch config)]
                      lease* (volatile! nil)]
                  (if-let [conn (get-connection conn-id)]
-                   (let [conn-config (:config @(:wrapped-atom conn))
-               ;; replace store config with its identity
-                         cfg (normalize-config config)
-                         conn-cfg (normalize-config conn-config)]
-                     (when-not (= cfg conn-cfg)
-                       (log/raise "Configuration does not match existing connections."
-                                  {:type :config-does-not-match-existing-connections
-                                   :config cfg
-                                   :existing-connections-config conn-cfg
-                                   :diff (diff cfg conn-cfg)}))
-                     ;; normalize-config dissocs :writer, so a second connect
-                     ;; asking for DIFFERENT ownership gets the cached connection's
-                     ;; writer. Say so rather than let the caller believe shared
-                     ;; ownership took effect (release the connection to change it).
-                     (let [existing (some-> (:writer @(:wrapped-atom conn)) w/writer-ownership)
-                           requested (get-in config [:writer :writer-ownership] :shared)]
-                       (when (and (some? existing)
-                                  (= :self (get-in config [:writer :backend] :self))
-                                  (not= requested existing))
-                         (log/warn :datahike/writer-ownership-ignored
-                                   "Reusing the existing connection and its writer; the requested :writer-ownership is ignored. Release the connection everywhere first if you need different ownership."
-                                   {:requested requested
-                                    :existing  existing}))
-                       ;; A DEMAND, not a preference, so it is checked against the
-                       ;; writer this caller actually gets — which on this path is
-                       ;; the cached one, whatever it was built with. Checking it
-                       ;; only where a writer is created skipped it precisely
-                       ;; here: `:require-fencing` exists for deployments with
-                       ;; more than one writer, and the second `connect` in a
-                       ;; process is the one that comes out of the cache.
-                       ;;
-                       ;; `existing` rather than the requested ownership: what
-                       ;; matters is whether the writer in hand re-reads the head,
-                       ;; and the warning above has already said the request is ignored.
-                       ;;
-                       ;; SCOPED to the :self backend, matching where the option is
-                       ;; legal at all: `normalize-writer-config` refuses
-                       ;; :require-fencing on a remote writer before any connect
-                       ;; path runs, and checking it here against the LOCAL store
-                       ;; would be judging a remote writer's guarantee by a store
-                       ;; it does not write to — a refusal or a pass, both about
-                       ;; the wrong thing.
-                       (when (= :self (get-in config [:writer :backend] :self))
-                         (w/check-fencing! (get-in config [:writer :require-fencing])
-                                           (or existing :shared)
-                                           (:store @(:wrapped-atom conn)))))
-                     conn)
+                   (reuse-connection! config conn)
                    (try
                      (let [raw-store (<?- (ks/connect-store store-config opts))
                            _         (when-not raw-store
@@ -425,72 +595,31 @@
                                          (select-keys (:config stored-db)
                                                       (keys dc/default-value-caps)))
                            _ (version-check stored-db)
+                           _ (warn-incomplete-counts! config stored-db)
                            _ (when-not (:allow-unsafe-config config)
                                (ensure-stored-config-consistency config (:config stored-db)))
                            conn      (conn-from-db (dsi/stored->db (assoc stored-db :config config) store))]
-                       (swap! (:wrapped-atom conn) assoc :writer
-                              (w/create-writer (:writer config) conn))
-                     ;; A store written before persistent-sorted-set 0.5.146 can hold
-                     ;; index roots with an unknown count (#1108). Give them back
-                     ;; here, once, where the result can be stored: only a local
-                     ;; writer's next transaction writes the roots. See
-                     ;; `dii/ensure-root-count!` for why this costs a healthy store
-                     ;; nothing.
-                       (when (= :self (get-in config [:writer :backend] :self))
-                         (let [db @(:wrapped-atom conn)
-                               index (:index config)]
-                           (doseq [k [:eavt :aevt :avet :temporal-eavt :temporal-aevt :temporal-avet]
-                                   :let [ix (get db k)]
-                                   :when ix]
-                             (dii/ensure-root-count! index ix))))
-                     ;; Recovery: every :building index is reconstructed from
-                     ;; the primary index. Its stored key-map, if any was written
-                     ;; by an older release, is deliberately ignored by
-                     ;; stored->db because it may describe a partial backfill.
-                       #?(:clj
-                          (let [db @(:wrapped-atom conn)
-                                schema (:schema db)
-                                writer (:writer db)]
-                            (doseq [[ident entry] schema
-                                    :when (and (map? entry)
-                                               (:db.secondary/type entry)
-                                               (= :building (:db.secondary/status entry)))]
-                              (log/trace :datahike/secondary-index-backfill {:ident ident})
-                              (go
-                              ;; The delta journal that covered transactions
-                              ;; after the stored boundary died with the
-                              ;; previous process. Re-anchor the boundary at
-                              ;; this head first so the scan picks those
-                              ;; datoms up from the primary index; only
-                              ;; transactions after this point are journaled.
-                                (let [reset-result (<! (w/dispatch! writer
-                                                                    {:op 'reset-secondary-index-build-boundary!
-                                                                     :args [ident]}))
-                                      build-result (if (map? reset-result)
-                                                     (<! (w/dispatch! writer
-                                                                      {:op 'build-secondary-index!
-                                                                       :args [ident]}))
-                                                     reset-result)]
-                                  (if-not (map? build-result)
-                                    (log/warn :datahike/secondary-index-recovery-failed
-                                              {:ident ident :error build-result})
-                                    (let [install-result
-                                          (<! (w/dispatch! writer
-                                                           {:op 'install-secondary-index!
-                                                            :args [build-result]}))]
-                                      (when-not (map? install-result)
-                                        (log/warn :datahike/secondary-index-recovery-failed
-                                                  {:ident ident :error install-result})
-                                        (dsi/finish-secondary-index-build!
-                                         build-result)))))))))
-                       (if (add-connection! conn-id lease conn)
-                         conn
-                         (do
-                           (w/shutdown (:writer @(:wrapped-atom conn)))
-                           (reset! conn :released)
-                           (log/raise "Database was deleted while connecting."
-                                      {:type :database-deleted-during-connect
-                                       :config config}))))
+                       (let [writer (w/create-writer (:writer config) conn)
+                             _ (swap! (:wrapped-atom conn) assoc :writer writer)
+                             building (building-indices conn)
+                             registered (add-connection! conn-id lease conn interchangeable?)]
+                         (cond
+                           (identical? registered conn)
+                           (do (recover-building-indices! writer building)
+                               conn)
+
+                           ;; Another connect published first, and this caller
+                           ;; now holds one lease on that connection.
+                           registered
+                           (do (discard-unpublished! conn)
+                               (reuse-connection! config registered))
+
+                           :else
+                           (do
+                             (discard-unpublished! conn)
+                             (log/raise "Database was deleted while connecting."
+                                        {:type :database-deleted-during-connect
+                                         :config config})))))
                      ;; Any failure between reserving the node cache and
                      ;; registering the connection -- a missing branch, a bad
                      ;; stored config, `ready-store`, writer creation -- would
@@ -530,33 +659,20 @@
          loaded (dissoc (dc/load-config normalized) :initial-tx :remote-peer :name)]
      (-connect* loaded opts))))
 
+(defn- release* [connection release-all? strict?]
+  ;; ONE read: between two, another release can mark the connection :released,
+  ;; and the second would hand that keyword on as the database to close.
+  (let [db @(:wrapped-atom connection)]
+    (when-not (= db :released)
+      (log/trace :datahike/release-connection {:backend (get-in db [:config :store :backend])})
+      (let [conn-id [(ds/store-identity (get-in db [:config :store]))
+                     (get-in db [:config :branch])]]
+        (case (release-lease! conn-id connection release-all? strict?)
+          :held nil
+          :absent (log/trace :datahike/connection-already-released {:conn-id conn-id})
+          :removed (close-connection-resources! connection db))))))
+
 (defn release
   ([connection] (release connection false))
   ([connection release-all?]
-   (when-not (= @(:wrapped-atom connection) :released)
-     (let [db      @(:wrapped-atom connection)
-           _ (log/trace :datahike/release-connection {:backend (get-in db [:config :store :backend])})
-           conn-id [(ds/store-identity (get-in db [:config :store]))
-                    (get-in db [:config :branch])]]
-       (if-not (get @*connections* conn-id)
-         (log/trace :datahike/connection-already-released {:conn-id conn-id})
-         (let [new-conns (swap! *connections* update-in [conn-id :count] dec)]
-           (when (or release-all? (zero? (get-in new-conns [conn-id :count])))
-             (delete-connection! conn-id)
-             ;; Close secondary index writers to release file locks (e.g., Lucene write.lock)
-             #?(:clj
-                (doseq [[_ident idx] (:secondary-indices db)]
-                  (when (instance? java.io.Closeable idx)
-                    (try (.close ^java.io.Closeable idx)
-                         (catch Exception e
-                           (log/warn :datahike/secondary-index-close-failed {:error (.getMessage e)}))))))
-             (if (:datahike/retire! (meta connection))
-               ;; Kabel owns fence -> subscription drain -> registry lease ->
-               ;; native close. Never close its store before asynchronous drain.
-               nil
-               (do
-                 (w/shutdown (:writer db))
-             ;; Release the underlying store to clean up resources (memory registry, etc.).
-             ;; Native store decoders are lexical and own no wire-registry lease.
-                 (ks/release-store (get-in db [:config :store]) (:store db))
-                 nil)))))))))
+   (release* connection release-all? false)))

@@ -12,6 +12,7 @@
    [datahike.db.utils :as dbu]
    [datahike.dependency-tracking :as tracking]
    [datahike.index :as di]
+   [datahike.index.interface :as dii]
    [datahike.index.secondary :as sec]
    [datahike.schema :as ds]
    [datahike.store :as store]
@@ -1159,7 +1160,7 @@
         :system-entities system-entities
         :ref-ident-map ref-ident-map
         :ident-ref-map ident-ref-map
-        :meta (meta-data)
+        :meta (dii/mark-counts-complete (meta-data) index)
         :op-count (if attribute-refs? (count ref-datoms) 0)}
        (when keep-history?                                  ;; no difference for attribute references since no update possible
          {:temporal-eavt eavt
@@ -1208,7 +1209,7 @@
                       :op-count op-count
                       :hash (reduce #(+ %1 (hash %2)) 0 datoms)
                       :system-entities system-entities
-                      :meta (meta-data)
+                      :meta (dii/mark-counts-complete (meta-data) index)
                       :ref-ident-map ref-ident-map
                       :ident-ref-map ident-ref-map}
                      (when keep-history?

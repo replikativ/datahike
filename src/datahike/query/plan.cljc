@@ -119,7 +119,7 @@
         ;; merge-est / total-entities, which assumes merge-est is the full
         ;; attribute count, not a bound-aware filtered count).
         base-est (or (estimate/estimate-pattern db pattern-info schema-info)
-                     (di/-count (:eavt db)))
+                     (di/estimated-count (:index (dbi/-config db)) (:eavt db)))
         ;; Build a partial scan-op for sampling context
         scan-ctx {:clause (:clause pattern-info) :index index}
         est (if (seq effective-preds)
@@ -334,7 +334,7 @@
     (let [{:keys [classified db bound-var-cards]} source
           si (analyze/pattern-schema-info db classified)
           base (or (estimate/estimate-pattern db classified si)
-                   (di/-count (:eavt db)))
+                   (di/estimated-count (:index (dbi/-config db)) (:eavt db)))
           ;; BOUND-AWARE when the caller knows what is bound entering this
           ;; clause. A scan cannot OUTPUT more rows than it matches, so
           ;; advertising the unconstrained attribute extent over-states every

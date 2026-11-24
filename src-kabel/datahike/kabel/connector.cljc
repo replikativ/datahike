@@ -393,7 +393,13 @@
              _ (log/trace "Connection atom set, ongoing sync enabled")]
 
       ;; 7. Register connection
-         (when-not (add-connection! conn-id lease conn)
+         ;; A replica never takes a registered connection in place of its own.
+         ;; The id can belong to the server's local connection in the same
+         ;; process, or to a replica over another local peer; neither can stand
+         ;; in for this one. A second replica over the SAME local peer does not
+         ;; get this far: kabel refuses its subscription to the topic. So this
+         ;; publish replaces the entry, as it always has.
+         (when-not (add-connection! conn-id lease conn (constantly false))
            (w/shutdown writer)
            (reset! conn :released)
            (log/raise "Database was deleted while connecting."

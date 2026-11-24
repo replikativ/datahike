@@ -4,6 +4,7 @@
       :clj  [clojure.test :as t :refer        [is deftest testing]])
    [datahike.api :as d]
    #?(:clj [datahike.index.interface :as di])
+   #?(:clj [datahike.index.recount :as recount])
    #?(:clj [org.replikativ.persistent-sorted-set :as psset])
    [datahike.migrate.fs :as fs]))
 
@@ -179,12 +180,12 @@
          (d/delete-database cfg)))))
 
 #?(:clj
-   (deftest test-writer-connect-repairs-unknown-root-counts
+   (deftest test-unknown-root-counts-are-left-alone-until-recounted
      ;; A store written before persistent-sorted-set 0.5.146 can hold index roots whose
      ;; count is unknown, in the root node and in the index header alike (#1108). The
      ;; library no longer produces that state, so it is produced here by erasing both
-     ;; caches before a write. A connection with a local writer must give the counts
-     ;; back, and its next transaction must store them.
+     ;; caches before a write. Nothing counts such an index unasked -- not the
+     ;; connect, not the planner -- and `recount!` gives the counts back.
      (let [cfg {:store {:backend :file
                         :path (fs/temp-store-path! "dh-subtree-counts-repair")
                         :id #uuid "d1ffb000-0000-0000-0000-000000001109"}
@@ -215,14 +216,20 @@
          (is (not (counts? conn)) "precondition: the store was written with unknown root counts")
          (d/release conn))
        (let [conn (d/connect cfg)]
-         (is (counts? conn) "a writer's connect gives the roots their counts back")
+         ;; Neither the connect nor a query counts such an index: counting reads
+         ;; every child of every branch without a count, and nobody asked for it.
+         (is (every? neg? (take 2 (header-counts conn))) "a connect leaves the roots as they are stored")
+         (is (= 11 (count (d/q '[:find ?e :where [?e :v "x7"] [?e :k ?k] [(< ?k 100000)]] @conn))))
+         (is (every? neg? (take 2 (header-counts conn))) "and so does a query, which plans from heuristics")
+         (is (not (counts? conn)))
+         (recount/recount! conn)
+         (is (counts? conn) "the recount stores them")
          (is (= (count (d/datoms @conn :eavt)) (di/-count (:eavt @conn))) "and they are the true ones")
          (write! conn 11)
          (is (counts? conn))
          (d/release conn))
        (let [conn (d/connect cfg)]
-         (is (every? #(>= (long %) 0) (header-counts conn))
-             "after one transaction the counts are stored: the next connect has nothing to repair")
+         (is (every? #(>= (long %) 0) (header-counts conn)) "the next connect finds them")
          (is (counts? conn))
          (is (= (count (d/datoms @conn :eavt)) (di/-count (:eavt @conn))))
          (d/release conn))

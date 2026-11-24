@@ -23,6 +23,51 @@ When something is added, it's typically marked *Experimental*. When the API cont
   showed `false` as asserted and never retracted, and a history query for
   retractions missed it. Current-state queries and `as-of` were not
   affected. (0.8.1943, [#1180])
+- **A pattern whose entity or value is bound kept rows that an inclusive predicate should have removed.**
+  With the query planner on (the default, JVM), `[?e :score ?s] [(<= ?s 10)]`
+  with `?e` bound to a few entities — through `:in`, or by an earlier clause —
+  returned those entities' scores even above 10 once the attribute was large
+  enough (about 2,500 datoms per bound key) for the planner to seek per key
+  instead of scanning. The same held for `>=` and `=`, for a bound value, and
+  over history. `<` and `>` were checked and unaffected alone. A ground value
+  was dropped the same way: `[?e :grade 3]` with `?e` bound returned entities
+  of any grade. Both are now checked on every seek-driven scan.
+  (0.8.NNNN, [#1182])
+- **Concurrent `connect` calls for one database share one connection** — two or more connects for the same store and branch that started before any of them finished each built a connection and each published it, replacing the one before and resetting the count to 1. The replaced connections were lost with their writers running, and the first `release` removed the database from the registry while other callers still held it (datahike-server then answered HTTP 400 for their handles). The connect that publishes first now wins: every other one counts a lease on that connection, passes the same config and fencing checks as a later connect would, closes what it built (writer, store handle, secondary indices) and returns the registered connection. A connect refused because its config does not match the existing connection no longer keeps a lease on it. `release` gives back its lease and removes the last one in a single registry step: a connect can no longer take a lease on a connection that a concurrent last release is about to remove. Each connect still builds before it learns that it lost. A `:kabel` replica publishes as before. The server and test classpaths move to konserve-gcs 0.1.20, which shares storage clients and no longer closes one on release, so closing the store handle of a discarded connection cannot take a caller-supplied client from the connection that won; applications that bring their own konserve-gcs should use 0.1.20 or later. A connection with a remote writer no longer tries to rebuild a secondary index that is still building, and no longer logs that the rebuild failed: the process that runs the writer does it. ([#1175], [#1183])
+
+- **Every stored index branch keeps its element count; older databases say so once and `datahike.index.recount/recount!` repairs them ([#1108]).**
+  Until now a branch that split, or borrowed from a neighbour, while its
+  children were on disk was stored without its count (persistent-sorted-set
+  before 0.5.148). Nothing was lost, but the query planner sizes a pattern by
+  counting an index range, and a range covering such a branch read the
+  branch's children to count it, again in every fresh process. Writes now
+  keep every count, and a database is marked in its metadata when it is
+  created. A database without the mark logs
+  `:datahike/index-counts-incomplete` on connect — once per database and
+  branch in a process — naming the call that fixes it:
+  `(datahike.index.recount/recount! conn)`. That rewrites the uncounted
+  branches and commits without a transaction (no datom changes, `:max-tx`
+  stays), then sets the mark; run it once per branch, on a
+  connection with a local writer, after every process that writes to the
+  database has been upgraded. It is safe while the database is in use:
+  transactions wait while it runs. The recount also raises the persistent-sorted-set
+  version recorded with the database, so a runtime with an older one — whose
+  writes would store branches without counts again — refuses to open it.
+  `datahike.index.recount/census` reports how many branches lack a count
+  without writing anything. JVM and persistent-set indices only.
+  (0.8.NNNN, [#1181])
+
+- **`connect` no longer counts index roots, and neither does the query planner ([#1108]).**
+  Since 0.8.1927 a connection with a local writer computed the element count
+  of every index whose root had none. Counting reads every child of every
+  branch that has no count either, one request per node on a remote store,
+  and it ran on every connect until a transaction stored the result. A
+  connect now reads nothing for this, and where the planner only wants a size
+  to plan with it uses the count if the index has one and a fixed scale
+  otherwise, so the first query does not pay the walk either. Such a
+  database plans from heuristics until `datahike.index.recount/recount!` has
+  run; `(count db)` still returns the true number.
+  (0.8.NNNN, [#1181])
 
 - **`with-db` in the babashka pod failed under babashka 1.13.230 ([#1179]).**
   `(d/with-db [db (d/db conn)] …)` raised `Unable to resolve symbol:
@@ -1156,7 +1201,12 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1170]: https://github.com/replikativ/datahike/pull/1170
 [#1171]: https://github.com/replikativ/datahike/pull/1171
 [#1172]: https://github.com/replikativ/datahike/pull/1172
+[#1175]: https://github.com/replikativ/datahike/issues/1175
 [#1179]: https://github.com/replikativ/datahike/pull/1179
+[#1182]: https://github.com/replikativ/datahike/pull/1182
+[#1181]: https://github.com/replikativ/datahike/pull/1181
+[#1183]: https://github.com/replikativ/datahike/pull/1183
+[#1180]: https://github.com/replikativ/datahike/pull/1180
 [#1107]: https://github.com/replikativ/datahike/issues/1107
 [#938]: https://github.com/replikativ/datahike/issues/938
 [#1156]: https://github.com/replikativ/datahike/pull/1156
