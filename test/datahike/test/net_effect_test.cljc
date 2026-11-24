@@ -135,6 +135,7 @@
    "tuple source away and back"                 [[:db/add 102 :b 7] [:db/add 102 :b 2]]
    "tuple built from nothing"                   [{:db/id 101 :a 3 :b 4}]
    "retractEntity with a reference to itself"   [[:db/retractEntity 101]]
+   "a tempid resolved late, by upsert"          [[:db/add "t" :one 5] [:db/add "t" :one 6] [:db/add "t" :u 1]]
    "untouched keys alongside a cancelled one"   [[:db/add 102 :many :a] [:db/add 101 :many :n] [:db/retract 101 :many :n] [:db/add 102 :one 33]]})
 
 (deftest a-transaction-records-its-net-effect
