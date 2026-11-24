@@ -153,52 +153,74 @@
   [time-point]
   (complement (as-of-pred time-point)))
 
-(defn- live-now?
-  "Is this history entry actually the LIVE datom, merged in from the current
-   tree rather than read out of a temporal one?
+(defn- present-after-pair?
+  "A database written before transactions recorded their net effect can hold one
+   `[e a v]` both asserted and retracted under one transaction id, and a history
+   is a set: it does not say which of the two came last. `d` is the assertion of
+   such a pair. Was the value there after that transaction?
 
-   `distinct-datoms` unions the current datoms of card-many and `:db/noHistory`
-   attributes into the history stream, and after that merge nothing distinguishes
-   a superseded assertion from a live one — they are both `[e a v tx true]`. The
-   current tree answers it: if it holds this exact `[e a v]` at this exact `tx`,
-   this entry IS the live datom.
+   What happened to the value LATER settles it. A retraction can only be
+   recorded for a value that was there, and an assertion only for one that was
+   not, so the next transaction that only retracts it, or only asserts it,
+   says how the pair ended. A transaction that again does both says nothing and
+   is skipped.
 
-   `=` on Datoms compares `[e a v]` only, so the tx has to be compared
-   explicitly."
-  [db ^Datom d]
-  (when-let [^Datom c (first (dbi/search db [(.-e d) (.-a d) (.-v d)]))]
-    (= (datom-tx c) (datom-tx d))))
+   When nothing later settles it: if no later transaction touches the value at
+   all, it is there exactly when the current index holds it. If only pairs
+   follow, the value is taken to have ended as it began (`before?`); that is a
+   guess, and the only one made here.
+
+   Costs one read of the value's history, and is asked for pairs only."
+  [db ^Datom d before?]
+  (let [e (.-e d) a (.-a d) v (.-v d)
+        pair-tx (datom-tx d)
+        current (first (dbi/search db [e a v]))
+        later (reduce (fn [m ^Datom x]
+                        (if (> (datom-tx x) pair-tx)
+                          (update m (datom-tx x) (fnil conj #{}) (boolean (datom-added x)))
+                          m))
+                      (sorted-map)
+                      (cond->> (dbs/search-temporal-indices db [e a v])
+                        current (cons current)))
+        settled (some (fn [[_ flags]] (when (= 1 (count flags)) flags)) later)]
+    (cond
+      settled (= #{false} settled)
+      (seq later) (boolean before?)
+      :else (some? current))))
+
+(defn- held-before-pair?
+  "Was the value of `d`, the assertion of a same-transaction pair, there before
+   that transaction, going by the earlier records among `datoms`? Only asked
+   when nothing later settles the pair."
+  [datoms ^Datom d]
+  (let [pair-tx (datom-tx d)
+        v (.-v d)
+        ^Datom prior (reduce (fn [^Datom best ^Datom x]
+                               (if (and (< (datom-tx x) pair-tx)
+                                        (zero? (dd/compare-value v (.-v x)))
+                                        (or (nil? best)
+                                            (> (datom-tx x) (datom-tx best))
+                                            (and (= (datom-tx x) (datom-tx best))
+                                                 (not (datom-added x)))))
+                                 x
+                                 best))
+                             nil datoms)]
+    (boolean (and prior (datom-added prior)))))
 
 (defn assemble-datoms-xform [db]
   (mapcat
    (fn [[[_ a] datoms]]
      (if (dbu/multival? db a)
-       ;; Sorted so that within one transaction ASSERTIONS are folded before
-       ;; RETRACTIONS, which makes the retraction win on a tie. A temporal
-       ;; assertion and retraction sharing a tx can only mean the datom was
-       ;; created and removed inside that transaction, so absent is right.
-       ;;
-       ;; That alone would be wrong for the other order — retract-then-assert,
-       ;; where the re-assertion is live and must survive. It is not in the
-       ;; temporal tree at all; it arrives from the current tree via the merge,
-       ;; and `live-now?` is what tells the two apart. Only values the fold
-       ;; dropped are probed, so the lookup is paid on retracted values only.
        ;; Sorted so that within one transaction ASSERTIONS fold before
-       ;; RETRACTIONS, which makes the retraction win on a tie. A temporal
-       ;; assertion and retraction sharing a tx can only mean the datom was
-       ;; created and removed inside that transaction, so absent is right.
+       ;; RETRACTIONS. A value asserted and retracted under one transaction id
+       ;; is then dropped by the fold, and noted: when that pair is the last
+       ;; thing the view knows about the value, `present-after-pair?` decides
+       ;; whether it was there. Any later record in the view decides it by
+       ;; itself, so an ordinary retraction costs no lookup.
        ;;
-       ;; That alone would be wrong for the other order — retract-then-assert,
-       ;; where the re-assertion is live and must survive. It is not in the
-       ;; temporal tree at all; it arrives from the current tree via the merge,
-       ;; and only `live-now?` tells the two apart.
-       ;;
-       ;; The fold itself reports which values need that probe: a `dissoc` whose
-       ;; victim was asserted at the SAME tx is precisely the ambiguous case.
-       ;; Anything else the fold already resolves, so an ordinary retraction
-       ;; costs no lookup. Written with an explicit comparator and no grouping
-       ;; because both allocate per datom on a hot path — with `juxt` keys and a
-       ;; `group-by` this scan measured 30ms against a 19ms baseline.
+       ;; Written with an explicit comparator and no grouping because both
+       ;; allocate per datom on a hot path — with `juxt` keys and a `group-by`
+       ;; this scan measured 30ms against a 19ms baseline.
        (let [ordered (sort (fn [^Datom a ^Datom b]
                              (let [c (compare (datom-tx a) (datom-tx b))]
                                (if (zero? c)
@@ -206,24 +228,29 @@
                                           (if (datom-added b) 0 1))
                                  c)))
                            datoms)
-             ;; a volatile rather than a tuple accumulator: the fold runs per
-             ;; datom and a `[cur amb]` pair allocated on every step, which cost
-             ;; more than the probe it was there to avoid
-             ambiguous (volatile! nil)
+             ;; value -> [assertion of its pair, was it there before]. A
+             ;; volatile rather than a tuple accumulator: the fold runs per
+             ;; datom, and it stays nil unless a pair shows up.
+             pairs (volatile! nil)
              surviving (reduce (fn [cur ^Datom d]
-                                 (if (datom-added d)
-                                   (assoc cur (.-v d) d)
-                                   (let [^Datom prev (get cur (.-v d))]
-                                     (when (and prev (= (datom-tx prev) (datom-tx d)))
-                                       (vswap! ambiguous conj prev))
-                                     (dissoc cur (.-v d)))))
+                                 (let [v (.-v d)
+                                       ^Datom prev (get cur v)]
+                                   (if (datom-added d)
+                                     (do (when @pairs
+                                           (vswap! pairs dissoc v))
+                                         (assoc cur v d))
+                                     (do (if (and prev (= (datom-tx prev) (datom-tx d)))
+                                           (vswap! pairs assoc v prev)
+                                           (when @pairs (vswap! pairs dissoc v)))
+                                         (dissoc cur v)))))
                                {}
                                ordered)
-             ambiguous @ambiguous
-             revived (when ambiguous
-                       (reduce (fn [m ^Datom d]
-                                 (if (live-now? db d) (assoc m (.-v d) d) m))
-                               {} ambiguous))]
+             revived (when-let [pairs (seq @pairs)]
+                       (reduce (fn [m [v ^Datom d]]
+                                 (if (present-after-pair? db d (held-before-pair? datoms d))
+                                   (assoc m v d)
+                                   m))
+                               {} pairs))]
          (vals (if revived (merge surviving revived) surviving)))
        ;; Cardinality-one, same rule but PER VALUE. The group is keyed by
        ;; [e a], so a transaction that retracts one value and asserts another
@@ -240,12 +267,11 @@
          (if survivor
            [survivor]
            ;; No assertion survived the tx on its own, so every one of them was
-           ;; also retracted in it. Such a value is still live if the retraction
-           ;; came FIRST — retract-then-assert — and only the current indices can
-           ;; say. Deliberately inside this branch: as a `let` binding it ran on
-           ;; every cardinality-one group, one index probe per group, even though
-           ;; a survivor makes the answer irrelevant. That is the common case.
-           (if-let [live (first (filter #(live-now? db %) added-at-last))]
+           ;; also retracted in it: pairs, see `present-after-pair?`. Deliberately
+           ;; inside this branch: a survivor makes the answer irrelevant, and
+           ;; that is the common case.
+           (if-let [live (first (filter #(present-after-pair? db % (held-before-pair? datoms %))
+                                        added-at-last))]
              [live]
              [])))))))
 
