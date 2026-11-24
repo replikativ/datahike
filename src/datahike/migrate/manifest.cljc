@@ -410,6 +410,69 @@
 
                 :else (refuse-unresolvable! attr eid stored-hash idx :not-addressable)))))))))
 
+;; ---------------------------------------------------------------------------
+;; same-transaction pairs
+
+(defn- net-run
+  "One `[e a v]`'s history records, in transaction order, with every
+   same-transaction pair replaced by its net effect. See `net-same-tx-pairs`."
+  [db run]
+  (let [events (partition-by d/datom-tx run)
+        pair?  (fn [event] (and (some d/datom-added event) (some (complement d/datom-added) event)))
+        ^datahike.datom.Datom k (first run)]
+    (loop [events events, present? false, out []]
+      (if-let [event (first events)]
+        (if (pair? event)
+          (let [nxt   (second events)
+                after (cond
+                        ;; nothing later: the current index holds the answer
+                        (nil? nxt) (boolean
+                                    (some (fn [^datahike.datom.Datom c]
+                                            (zero? (d/compare-value (.-v k) (.-v c))))
+                                          (dbi/search db [(.-e k) (.-a k) (.-v k)])))
+                        ;; another pair: nothing settles it, taken as unchanged
+                        (pair? nxt) present?
+                        ;; a lone retraction needs the value there, a lone
+                        ;; assertion needs it gone
+                        :else (not (d/datom-added (first nxt))))]
+            (recur (rest events) after
+                   (cond
+                     (and after (not present?)) (conj out (first (filter d/datom-added event)))
+                     (and present? (not after)) (conj out (first (remove d/datom-added event)))
+                     :else out)))
+          (recur (rest events) (boolean (d/datom-added (last event))) (into out event)))
+        out))))
+
+(defn net-same-tx-pairs
+  "`datoms` — a history in `:eavt` order — with every value that one transaction
+   both asserted and retracted reduced to what that transaction did to it.
+
+   A database written before transactions recorded their net effect can hold
+   `[e a v t true]` and `[e a v t false]` side by side, and a history is a set:
+   it does not say which came last. An import cannot know either, and read every
+   such pair as \"ended present\" — wrong for a cardinality-one attribute set
+   twice in one transaction, whose passing value came back as a second current
+   value. The exporter can know, because it holds the database: what the value's
+   NEXT record needed (a lone retraction needs it present, a lone assertion
+   absent), or, when nothing follows, whether the current index holds it. So
+   the dump is written without pairs: one assertion, one retraction, or nothing.
+
+   Only a pair followed directly by another pair is a guess, taken as having
+   left the value as it found it.
+
+   Records of one `[e a v]` are adjacent in `:eavt`, and `=` on datoms compares
+   exactly `[e a v]`, so `partition-by identity` groups them without building a
+   key per datom. A run without a pair passes through untouched."
+  [db datoms]
+  (mapcat (fn [run]
+            (if (and (next run)
+                     (some (fn [[x y]] (and (== (d/datom-tx x) (d/datom-tx y))
+                                            (not= (d/datom-added x) (d/datom-added y))))
+                           (partition 2 1 run)))
+              (net-run db run)
+              run))
+          (partition-by identity datoms)))
+
 (defn export-records
   "Lazy seq of encoded record vectors for `db` (UNSORTED — the external merge sort
    in `export-db` imposes the `(t, txInstant-first, e, a, op)` order). Emits only
@@ -423,7 +486,7 @@
         sidents  (system-idents db)
         sec-read (secondary-only-reader db)
         renamed  (not-empty (set (keys (ident-timeline db))))]
-    (->> (api/datoms src :eavt)
+    (->> (cond->> (api/datoms src :eavt) history? (net-same-tx-pairs db))
          (filter (fn [dm] (> (d/datom-tx dm) c/tx0)))
          (map (fn [dm] (datom->record db sys-ents sidents sec-read renamed dm))))))
 
@@ -450,10 +513,11 @@
                             (or (ds/schema-attr? a) (ds/meta-attr? a))))
         sec-read (secondary-only-reader db)
         renamed  (not-empty (set (keys (ident-timeline db))))
-        make     (fn [dm] (datom->record db sys-ents sidents sec-read renamed dm))]
+        make     (fn [dm] (datom->record db sys-ents sidents sec-read renamed dm))
+        datoms   (fn [] (cond->> (api/datoms src :eavt) history? (net-same-tx-pairs db)))]
     (concat
-     (->> (api/datoms src :eavt) (filter user?) (filter schema-or-meta?) (map make))
-     (->> (api/datoms src :eavt) (filter user?) (remove schema-or-meta?) (map make)))))
+     (->> (datoms) (filter user?) (filter schema-or-meta?) (map make))
+     (->> (datoms) (filter user?) (remove schema-or-meta?) (map make)))))
 
 (defn ident-schema
   "The user schema as an ident->attr-map, keyed by keyword ident only (drops the

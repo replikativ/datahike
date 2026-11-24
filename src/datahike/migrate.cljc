@@ -1227,7 +1227,11 @@
   ([db] (user-datom-count db false))
   ([db history?]
    (let [src (if history? (api/history db) db)]
-     (count (filter #(> (d/datom-tx %) c/tx0) (api/datoms src :eavt))))))
+     ;; netted like the export itself: a same-transaction pair the dump does
+     ;; not carry is not a record it lost
+     (count (filter #(> (d/datom-tx %) c/tx0)
+                    (cond->> (api/datoms src :eavt)
+                      history? (mman/net-same-tx-pairs db)))))))
 
 (defn- with-source-count
   "Add an INDEPENDENT witness of how much the source held.
@@ -3856,7 +3860,9 @@
                                          (if (> (d/datom-tx dm) c/tx0)
                                            (fp-step fp [(nth dm 0) (a-ident db (nth dm 1)) (nth dm 2) (nth dm 4)] ref?)
                                            fp))
-                                       (fp-init) (api/datoms src :eavt)))
+                                       (fp-init)
+                                       (cond->> (api/datoms src :eavt)
+                                         hist? (mman/net-same-tx-pairs db))))
              t2-ok  (and (= (:digest dump-fp) (:digest live-fp))
                          (= (:ref-counts dump-fp) (:ref-counts live-fp))
                          (= (:out-degree dump-fp) (:out-degree live-fp)))
