@@ -4,7 +4,7 @@
    [clojure.string :as str]
    [datahike.index :as di]
    [datahike.datom :as dd :refer [datom datom-tx datom-added datom?]]
-   #?(:cljs [datahike.db :refer [HistoricalDB]])
+   [datahike.db :as db #?@(:cljs [:refer [HistoricalDB]])]
    [datahike.array :as arr]
    [datahike.backfill.effects :as effects]
    #?(:clj [datahike.backfill.admission :as admission])
@@ -1298,6 +1298,7 @@
 
 (def builtin-op?
   #{:db.fn/call
+    :db.fn/call-with-tempids
     :db.fn/cas
     :db/cas
     :db/add
@@ -1643,6 +1644,13 @@
 
       :db.fn/call (let [[_ f & args] op-vec]
                     [report (apply f db args)])
+
+      ;; Like :db.fn/call, with this execution's allocated tempid bindings.
+      ;; Pass the immutable map so the callback can validate values on the
+      ;; writer basis before returning the operations that use those IDs.
+      :db.fn/call-with-tempids
+      (let [[_ f & args] op-vec]
+        [report (apply f db (:tempids report) args)])
 
       (if (and (keyword? op)
                (not (builtin-op? op)))
@@ -2071,7 +2079,7 @@
                           :db.valid/from vf
                           :db.valid/to vt})))
         meta-entities (flush-tx-meta initial-report)]
-    (loop [report (update initial-report :db-after transient)
+    (loop [report (update initial-report :db-after db/db-transient)
            es (if (dbi/-keep-history? db-before)
                 (concat meta-entities
                         initial-es')
@@ -2105,7 +2113,7 @@
                 (dissoc ::pending-vt-validation)
                 (assoc-in [:tempids :db/current-tx] (current-tx report))
                 (update-in [:db-after :max-tx] inc)
-                (update :db-after persistent!)
+                (update :db-after db/db-persistent!)
                 (update :db-after finalize-secondary-indices)
                 (#?(:clj (fn [report] (admission/finish prepared report))
                     :cljs identity))
@@ -2140,16 +2148,26 @@
               (recur (allocate-eid report v (current-tx report)) (cons [op e a (current-tx report)] entities))
 
               (tempid? e)
-              (if (not= op :db/add)
-                (log/raise "Can't use tempid in '" entity "'. Tempids are allowed in :db/add only"
-                           {:error :transact/syntax, :op entity})
-                (let [upserted-eid (when (dbu/is-attr? db a :db.unique/identity)
-                                     (:e (first (dbi/datoms db :avet [a v]))))
-                      allocated-eid (get tempids e)]
-                  (if (and upserted-eid allocated-eid (not= upserted-eid allocated-eid))
-                    (retry-with-tempid initial-report report initial-es e upserted-eid tx-options prepared)
-                    (let [eid (or upserted-eid allocated-eid (next-eid db))]
-                      (recur (allocate-eid report e eid) (cons [op eid a v] entities))))))
+              (let [allocated-eid (get tempids e)]
+                (cond
+                  (= op :db/add)
+                  (let [upserted-eid (when (dbu/is-attr? db a :db.unique/identity)
+                                       (:e (first (dbi/datoms db :avet [a v]))))]
+                    (if (and upserted-eid allocated-eid (not= upserted-eid allocated-eid))
+                      (retry-with-tempid initial-report report initial-es e upserted-eid tx-options prepared)
+                      (let [eid (or upserted-eid allocated-eid (next-eid db))]
+                        (recur (allocate-eid report e eid) (cons [op eid a v] entities)))))
+
+                  (contains? #{:db/retract :db.fn/retractAttribute
+                               :db/retractEntity :db.fn/retractEntity} op)
+                  (if allocated-eid
+                    (recur report (cons (into [op allocated-eid] (nnext entity)) entities))
+                    (log/raise "Cannot retract an unresolved tempid: " e
+                               {:error :transact/syntax, :op entity}))
+
+                  :else
+                  (log/raise "Can't use tempid in '" entity "'. Tempids are allowed in :db/add only"
+                             {:error :transact/syntax, :op entity})))
 
               (and (dbu/ref? db a) (tempid? v))
               (if-let [vid (get tempids v)]
@@ -2268,7 +2286,7 @@
   [initial-report initial-es]
   (loop [report (-> initial-report
                     (update :datahike/tx-ops #(or % #{}))
-                    (update :db-after transient))
+                    (update :db-after db/db-transient))
          ;; Only on the IMPORT path (`:migration` present). The public
          ;; `load-entities` takes records in whatever order its caller gives and
          ;; replays them as given.
@@ -2292,7 +2310,7 @@
       ;; already produced.
       (-> report
           (assoc :migration migration-state)
-          (update :db-after persistent!)
+          (update :db-after db/db-persistent!)
           (update :db-after finalize-secondary-indices)
           (update :db-after #(tracking/schema-transition (:db-before initial-report) %)))
       (let [[entity & entities] es

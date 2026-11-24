@@ -23,6 +23,257 @@ When something is added, it's typically marked *Experimental*. When the API cont
   keeps the value current (as before), which is wrong for the first reading.
   This needs an explicit retraction of a value the same transaction asserted,
   or one value revisited within a transaction; see `datahike.migrate.history`.
+- **`:db.fn/call-with-tempids`** *(Experimental)* — a local transaction
+  function that also receives the tempids allocated so far in the
+  transaction: `[:db.fn/call-with-tempids f arg ...]` calls
+  `(f tx-db tempids arg ...)` and applies the transaction data it returns.
+  The map holds only the bindings made by operations before it, and the
+  function can run more than once when a tempid is resolved by upsert, so
+  it has to read the map on each call. Like `:db.fn/call` it takes a
+  function value and therefore runs only where the transaction is
+  executed. (0.8.1943, [#1180])
+
+- **Overwriting a `false` value lost its retraction in history.** For a
+  cardinality-one attribute, replacing `false` with another value wrote
+  the new assertion to the temporal indexes but not the retraction of
+  `false`, because the old value was tested for truthiness. History then
+  showed `false` as asserted and never retracted, and a history query for
+  retractions missed it. Current-state queries and `as-of` were not
+  affected. (0.8.1943, [#1180])
+
+- **A pattern whose entity or value is bound kept rows that an inclusive predicate should have removed.**
+  With the query planner on (the default, JVM), `[?e :score ?s] [(<= ?s 10)]`
+  with `?e` bound to a few entities — through `:in`, or by an earlier clause —
+  returned those entities' scores even above 10 once the attribute was large
+  enough (about 2,500 datoms per bound key) for the planner to seek per key
+  instead of scanning. The same held for `>=` and `=`, for a bound value, and
+  over history. `<` and `>` were checked and unaffected alone. A ground value
+  was dropped the same way: `[?e :grade 3]` with `?e` bound returned entities
+  of any grade. Both are now checked on every seek-driven scan.
+  (0.8.NNNN, [#1182])
+- **Concurrent `connect` calls for one database share one connection** — two or more connects for the same store and branch that started before any of them finished each built a connection and each published it, replacing the one before and resetting the count to 1. The replaced connections were lost with their writers running, and the first `release` removed the database from the registry while other callers still held it (datahike-server then answered HTTP 400 for their handles). The connect that publishes first now wins: every other one counts a lease on that connection, passes the same config and fencing checks as a later connect would, closes what it built (writer, store handle, secondary indices) and returns the registered connection. A connect refused because its config does not match the existing connection no longer keeps a lease on it. `release` gives back its lease and removes the last one in a single registry step: a connect can no longer take a lease on a connection that a concurrent last release is about to remove. Each connect still builds before it learns that it lost. A `:kabel` replica publishes as before. The server and test classpaths move to konserve-gcs 0.1.20, which shares storage clients and no longer closes one on release, so closing the store handle of a discarded connection cannot take a caller-supplied client from the connection that won; applications that bring their own konserve-gcs should use 0.1.20 or later. A connection with a remote writer no longer tries to rebuild a secondary index that is still building, and no longer logs that the rebuild failed: the process that runs the writer does it. ([#1175], [#1183])
+
+- **Every stored index branch keeps its element count; older databases say so once and `datahike.index.recount/recount!` repairs them ([#1108]).**
+  Until now a branch that split, or borrowed from a neighbour, while its
+  children were on disk was stored without its count (persistent-sorted-set
+  before 0.5.148). Nothing was lost, but the query planner sizes a pattern by
+  counting an index range, and a range covering such a branch read the
+  branch's children to count it, again in every fresh process. Writes now
+  keep every count, and a database is marked in its metadata when it is
+  created. A database without the mark logs
+  `:datahike/index-counts-incomplete` on connect — once per database and
+  branch in a process — naming the call that fixes it:
+  `(datahike.index.recount/recount! conn)`. That rewrites the uncounted
+  branches and commits without a transaction (no datom changes, `:max-tx`
+  stays), then sets the mark; run it once per branch, on a
+  connection with a local writer, after every process that writes to the
+  database has been upgraded. It is safe while the database is in use:
+  transactions wait while it runs. The recount also raises the persistent-sorted-set
+  version recorded with the database, so a runtime with an older one — whose
+  writes would store branches without counts again — refuses to open it.
+  `datahike.index.recount/census` reports how many branches lack a count
+  without writing anything. JVM and persistent-set indices only.
+  (0.8.NNNN, [#1181])
+
+- **`connect` no longer counts index roots, and neither does the query planner ([#1108]).**
+  Since 0.8.1927 a connection with a local writer computed the element count
+  of every index whose root had none. Counting reads every child of every
+  branch that has no count either, one request per node on a remote store,
+  and it ran on every connect until a transaction stored the result. A
+  connect now reads nothing for this, and where the planner only wants a size
+  to plan with it uses the count if the index has one and a fixed scale
+  otherwise, so the first query does not pay the walk either. Such a
+  database plans from heuristics until `datahike.index.recount/recount!` has
+  run; `(count db)` still returns the true number.
+  (0.8.NNNN, [#1181])
+
+- **`with-db` in the babashka pod failed under babashka 1.13.230 ([#1179]).**
+  `(d/with-db [db (d/db conn)] …)` raised `Unable to resolve symbol:
+  release-db` unless the caller had referred the pod's functions. The macro
+  now names `datahike.pod/release-db` and itself in full, so it works from
+  any namespace on old and new babashka.
+  (0.8.NNNN, [#1179])
+
+- **Transaction and `added` slots on patterns that share an entity ([#1172]).**
+  Several patterns on one entity are answered by one scan and a seek per
+  further pattern, and the seek dropped what a pattern said beyond attribute
+  and value. A literal transaction on such a pattern was ignored
+  (`[?e :k "a"] [?e :t _ 536870914]`, also under `not`); an `added` variable
+  shared by two patterns was not unified on a history database; two patterns
+  with a variable attribute on one entity (`[?e ?a 1] [?e ?b 4]`), or one under
+  `not`, raised a NullPointerException; and the index-ordered and
+  secondary-index aggregates read neither slot. A `not` with a local variable
+  on a history database raised too when the entity came from a collection
+  input. Separately, on an `as-of` or `since` database `[?e :a v _ true]`
+  returned a value the view no longer holds when the planner was not used.
+  (0.8.NNNN, [#1172])
+
+- **A fixed `added` slot on a history database ignored the rest of its pattern ([#1171]).**
+  In 0.8.1931 only, `[?e :x/i 1] [?e :x/s 4 _ false]` on `(d/history db)`
+  returned every entity that had ever held `:x/s`, whatever the value and
+  whether it was asserted or retracted. It again returns the entities whose
+  `:x/s 4` was retracted. Current databases were not affected.
+  (0.8.NNNN, [#1171])
+
+- **`_` after an indexed lookup matched nothing ([#1168], [#1170]).** Since
+  0.8.1930, `[?s :stmt/item ?si] [?s :stmt/status _]` with `?si` from `:in`
+  (or written into the query) returned no rows when `:stmt/item` is indexed and
+  `:stmt/status` is cardinality one: the point-lookup fast path compared the
+  stored value with the symbol `_`. The same held for `_x` and for a pattern
+  without a value slot, `[?s :stmt/status]`. All three now only require the
+  attribute to be present, as they do everywhere else in the engine.
+- **Wrong answers around an indexed lookup ([#1170]).** Found reviewing the
+  fix above; each is the planner answering differently from the data. An
+  entity passed through `:in` was ignored by the point lookup:
+  `:in $ ?e ?i … [?e :i ?i] [?e :s ?v]` returned whichever entities had that
+  `?i` (since 0.8.1930). A symbol passed as an input *value* was read as a
+  blank or a variable. A pattern fixing the `added` slot
+  (`[?e :a ?v _ false]`) matched as if the slot were absent when it was merged
+  with another pattern on the same entity, and in the reference engine's point
+  lookup. `[:find ?e :where [?e :tags _]]` on a cardinality-many attribute
+  returned an entity once per value, which under `:limit` displaced other
+  entities.
+- **A scalar `:in` value stays a binding; one plan serves every value ([#1167]).**
+  A scalar input such as `?name` in `:in $ ?name` was written into the `:where`
+  clauses before planning, so the plan cache was keyed by the value and every
+  new value planned again. It now stays a variable bound per call. Measured on
+  300,000 entities with a different value on every call, three runs: a lookup
+  by three scalars 0.44–0.65 ms → 0.18–0.19 ms, the same lookup beside a
+  collection input 0.72–0.98 ms → 0.26–0.43 ms. A range predicate against an
+  input and a repeated value are unchanged. Inputs that shape the plan
+  are still written in: a function, and a variable in attribute position.
+  `datahike.query/*fold-scalar-ins*` bound to `true` restores the old path for
+  comparison. Supersedes [#1161]; addresses [#1107].
+- **Breaking: a scalar input used inside `or-join` / `not-join` must be declared
+  ([#1167]).** `(or-join [?e] [?e :name ?x] …)` with `?x` from `:in` used to
+  see the input, because its value had been written into the clause. By the
+  rule those forms state — only the declared variables unify with the rest of
+  the query — `?x` is a fresh variable there, which is how Datomic evaluates
+  it. Such a query is now refused with a message naming the fix:
+  `(or-join [?e ?x] …)`. Plain `or` / `not`, rule bodies, collection inputs and
+  pattern-bound variables are unaffected. Related: [#938].
+- **Queries that answered wrongly with value-free inputs ([#1167]).** Found
+  while making it the default; until now it was an opt-in mode, the one the
+  PostgreSQL wire server runs in. A predicate against an input combined with a
+  `not-join` returned nothing. An input in attribute position matched every
+  attribute. A predicate between components that named an input raised
+  "Post-filter references unknown var". On the base engine, an `or-join`
+  whose branches use different declared variables raised "Can't sum relations
+  with different attrs" and now answers as the planner and Datomic do. A
+  scalar lookup ref in entity position that resolves to nothing raises on
+  every path, as it did when folded.
+
+- **clj-kondo resolves the `datahike.api` functions ([#1160]).** The exported
+  clj-kondo config now has a hook for the macro that defines the API, so
+  `d/q` and the other API functions no longer show as unresolved vars in
+  clj-kondo and clojure-lsp. Calls are checked against the arities of the
+  implementation.
+- **A collection binding is built in one pass ([#1156]).** A collection binding
+  such as `[?x ...]` or `[[?a ?b] ...]` built one relation for each value, and
+  folded them together. A function clause did the same for each input tuple.
+  A collection of scalars, or of flat tuples of scalars, now becomes one
+  relation, and a function clause keeps one accumulator for the whole call.
+  Results and errors do not change. A query that binds 10000 tuples runs about
+  3 to 4 times faster, on the JVM and on node. Fixes [#1155].
+- **Relation tuples are read without reflection ([#1154]).** A tuple is an
+  `Object[]`, and `get` on an array goes through `java.lang.reflect.Array` on
+  the JVM. In a profile of a 10,000-row fn-clause query that was about 23 % of
+  the samples. `join-tuples`, `getter-fn`, `sum-rel` and `-call-fn` now use
+  `aget` on arrays, on both engines: the planner and the base engine now share
+  one copy of each, in `datahike.query.relation`. `rel-prod-by-attrs` removes
+  relations by identity, not by hashing them. A fn-clause query over 10,000
+  rows is about 12 % faster. Fixes [#1153].
+- **`merge` and `into` on a database work on Clojure 1.13 ([#1159]).**
+  A `DB` claimed to be an editable collection, but `transient` returned a
+  `DB` rather than a transient map. Clojure 1.13's `merge` transients any
+  editable collection, so `(merge db {...})` raised a `ClassCastException`.
+  `into` on a database failed on every Clojure version. malli goes to 0.20.3,
+  whose Swagger generation no longer `merge`s a map entry, so the HTTP
+  server's `/swagger.json` also answers on 1.13. Fixes [#1157].
+- **A variable passed twice to a rule call makes the two arguments equal
+  ([#1151]).** `(selfie ?e ?e)` with the rule `[(selfie ?a ?b) [?a :friend ?b]]`
+  should match only the entities that are their own friend. It matched every
+  entity that had a friend. The planner got this wrong in every query shape
+  tested, and the base engine got it wrong whenever `?e` was unbound at the
+  call. The fix covers recursive rules, nested calls, constant arguments, and
+  calls inside `not`, `not-join` and `or`. The planner also no longer raises
+  "Cannot resolve any more clauses" in two shapes: a negation whose body follows a rule call with a function clause
+  over that call's output, and a function clause over the output of a
+  recursive rule when nothing is bound before the call, where the error used
+  to depend on the variable names. Fixes [#1150].
+- **JSON clients keep the lists in a query, and a call spelled as a vector
+  fails with a clear error ([#1149]).** JSON has no list type, so the JVM
+  client sent the call `(count ?v)` as the vector `[count ?v]`. The planner
+  read a one-argument call as an inline lookup ref ("Invalid entid") and an
+  `or` of predicates as data patterns, which answered wrongly without an
+  error. Datahike's tagged JSON now writes lists as `["!list", [...]]`. Lazy
+  seqs, which most results are, stay plain arrays. A call, rule call or
+  `not`/`or`/`and` clause written as a vector now raises an `ex-info` of
+  `:type :datahike.query/vector-call` that names the clause, wherever it
+  stands and whichever spelling ran first in the process; send such a query
+  as EDN or in a format that keeps lists. Upgrade the server before JSON
+  clients: an older server reads the tag as the vector `["!list" [...]]` and
+  raises, for example "Lookup ref attribute should be marked as :db/unique:
+  ["!list" [count ?v]]". CBOR keeps lists since the boring 0.1.31 bump
+  ([#1152]). Fixes [#1145].
+- **A proximum `knn` filtered after retractions finds every survivor
+  ([#1152]).** Proximum built the filter for a top-k search with room for only
+  as many vectors as were LIVE, but vector ids are never reused, so after
+  deletes a surviving entity's id could fall outside it and never match: with
+  100 vectors and the 60 oldest retracted, a `knn` restricted to the newest
+  three returned nothing. Fixed in proximum 0.1.39.
+- **Seqs survive CBOR as seqs ([#1152]).** With boring 0.1.31, a list, lazy
+  seq or cons is written as the tag-27 `clojure/seq` marker on the HTTP CBOR
+  wire, on the kabel wire and in export dumps, and reads back as a seq rather
+  than a vector. A query's call forms such as `(count ?v)` now reach the server
+  as lists, `d/datoms` over `:format :cbor` returns a seq as transit and edn
+  already did, and a list or lazy seq stored under `:schema-flexibility :read`
+  is a seq again after export and import. Dumps of databases that hold no seq
+  values are byte-identical to before. **Upgrade every CBOR peer together, the
+  server and any peer that reads dumps first.** A reader on an older boring
+  does not know the marker: the HTTP CBOR client and server reject it with an
+  error, while a kabel peer or an import decodes it SILENTLY as a
+  `#clojure/seq [...]` tagged literal, which is not `=` to the seq. Transit,
+  edn and json are unaffected.
+- **A proximum `knn` after clauses that match nothing returns no rows
+  ([#1148]).** When the clauses before `knn` bound no entity, the empty entity
+  filter reached Proximum as `nil`. A top-k search threw "search-filtered
+  requires a predicate fn, Set, or ArrayBitSet", for both the `[?e ...]` and
+  `[[?e ?d]]` binding forms and in a database with no entities. A candidate
+  scan read `nil` as no filter and returned unfiltered candidates. Both now
+  return an empty result without calling Proximum. Fixes [#1144].
+- **The JVM HTTP client no longer sends a body with a GET ([#1141]).**
+  A read went out as a GET with its arguments in the body. Google's front end
+  (Cloud Run, load balancers) answers that with a 400 or closes the stream, and
+  a proxy or cache may drop the body, so no read could reach a server behind
+  one. Arguments that fit `url-args-limit` (2048 bytes) now go in the URL's
+  `args` parameter, as the ClojureScript client already sends them, and larger
+  ones go by POST. The server accepts both and is unchanged. A server older
+  than 0.8.1873 does not read `args`, so upgrade the server before the client.
+- **The HTTP client accepts `:headers-fn` in `:remote-peer` and `:writer` ([#1139]).**
+  A function of no arguments that returns extra request headers, run on every
+  request. It lets a client reach a server behind a gateway that wants its own
+  credential, for example an identity token for Cloud Run IAM sent in
+  `X-Serverless-Authorization`, while `authorization` still carries the
+  server's `:token`. The function is never sent to the server.
+- **A remote query on the head commit reuses the connection's database
+  ([#1147]).** The server rebuilt a database argument from the store on every
+  request, restoring every secondary index, even when it named the commit the
+  connection already holds; with five `:proximum` indexes a trivial query took
+  seconds. The head commit now resolves to the connection's database; any
+  other commit is read from the store as before. Fixes [#1146].
+- **A scalar string result reaches the HTTP client intact ([#1143]).** A
+  `:find ?x .` query whose result is a string went out as raw text rather than
+  in the negotiated format, because ring treats a `String` as an already
+  encoded body. The client could not parse it: transit and json failed with a
+  `JsonParseException`, cbor with a truncated-input error, and edn read the
+  bare text. Fixes [#1142].
+- **Offline GC keeps what a buffered index needs ([#1123]).** With
+  `:diff-buf-size`, `gc-storage!` marked the index nodes the connection held
+  in memory, not the ones the stored head names. A buffered slot is rebuilt
+  on a cold read from the node it was stored against, which the in-memory
+  walk never visits, so GC could delete it and a reopened database failed
+  with "Node not found". The mark now follows the stored nodes. Fixes [#1112].
 - **Schema-on-read stores retract vector values of any length ([#1105]).**
   An attribute without a declared `:db/valueType` can hold a vector of any
   length. `:db/retract`, `:db.fn/retractAttribute` and
@@ -429,6 +680,10 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ### Notable fixes
 
+- **A selective pattern keeps the scan against a collection input** — when a relation bound a variable of an entity group at run time, the engine re-chose the group's driving pattern by comparing the number of bound *keys* with the planned scan's estimated *rows*. A two-element collection on a low-cardinality attribute therefore displaced a constant that selected 15 rows and the query walked a third of the database: 40 ms instead of 0.7 ms on 300k entities, about 100 times slower than the relational engine. Candidates are now scored in rows, counted on the index. The cost was in executing the plan, not in making it. ([#1107], [#1165])
+- **A prepared query with a collection input seeks its scalar parameters** — with `*prepared-execution*` on (as the PostgreSQL wire server runs), a query with scalar parameters and a collection input, such as `name = $1 AND kind IN (...)`, fell back to the relation executor with the scalar values substituted into the patterns. The executor finds and prices a bound pattern through its variable, so the substituted pattern was priced at the whole attribute and a far less selective pattern took the scan: 63 ms instead of 0.2 ms on 300k entities. The fallback now keeps the pattern variables and binds only range bounds. ([#1166])
+- **Index subtree counts survive a write after a reconnect** — the first transaction after reopening a store left each index root with an unknown element count, and it was stored that way, so the query planner estimated from heuristics for that store from then on. Fixed in persistent-sorted-set 0.5.146, where a write on a tree whose nodes are still on disk now keeps the root's count. Stores already written this way are repaired when a connection with a local writer opens them: the counts are computed once and stored by its next transaction; a store that has its counts pays nothing for the check. Thanks to Mark Addleman for the report, the reproduction and the regression test. ([#1108], [#1164])
+- **`/health/ready` fails once a connection's writer has shut down** — a fatal commit error (for example a storage 503) closes a local writer for good, and every later transaction then fails with `:writer-shut-down`; the readiness probe only read the store, which still answered, so an orchestrator never restarted the instance. The probe now also reports 503 when a connection's `LocalWriter` has a closed transaction queue. Remote and custom writers are not checked, and `/health/live` is unchanged. ([#1158])
 - **A negation whose body has no solution excludes nothing again** — `not-join` decided satisfiability *after* projecting its body to the join variables, and the relation that makes a body unsolvable is usually one the join variables do not reach: a scan over an unrelated entity. Projected away, the body looked satisfiable and the clause excluded **every** row — `(not-join [?e] [?e :name] [?o :city "nowhere"])` answered `#{}` where nothing should have been excluded. The base engine has guarded this since `(not-join [?g] [?g :name "a"] [999 :city ?c])`; the planner grew its own NOT-JOIN executor and did not. It bites wherever the body is a cross product by construction — lowering a SQL outer join whose `ON` condition is not an equality asks "is there ANY row of the right table satisfying it", so the left rows that should have been null-extended disappeared instead — and wherever a join variable is bound by a function rather than a pattern. ([#1092])
 - **A commit can no longer name a schema that was never written** — every commit record points at its schema through `:schema-meta-key`, an out-of-line content-addressed blob, and whether to write that blob was decided by a process-local cache that was marked *before* the write and keyed by the store's `:id` rather than by the store. Three consequences, all of them silent while the writing process lived (the in-memory read cache answers) and all of them fatal on the next cold start, where `stored->db` produced a database with `:schema nil` / `:rschema nil` and the first query threw `NullPointerException: … because "this.rschema" is null` from deep inside `_attrs_by`: **(1)** a commit that threw after `db->stored` — the writer shuts down, but the claim outlived the connection, so a supervisor's reconnect committed a head naming a key nothing had stored, and every commit after it named the same missing key; **(2)** two stores at different paths sharing an `:id` shared one cache, so the second database was born with a dangling key — no error, no GC, no concurrency involved; **(3)** projecting a db onto the wire (`datahike.cbor`) marked the key as written and discarded it. Durability is now **proven rather than assumed**: the claim is recorded only after a write has been *awaited* or a read has actually reached the store, and it lives on the store object, so it cannot be borrowed by a different store and dies with the one it describes. Steady-state write volume is unchanged under `:writer-ownership :exclusive` — the only deleter is then your own collection, whose mark unions every branch head's `:schema-meta-key`, and which withdraws the claim anyway. Under `:shared` ownership (the default) or a remote writer the claim expires on the same clock as the GC sweep floor, so a commit re-asserts the blob periodically; because the key is content-addressed, that single write retroactively repairs *every* commit that named it. Finally, a record that names a `:schema-meta-key` the store cannot produce now raises `:schema-meta-missing` with the key, branch and commit id instead of opening a schema-less database — nothing inside datahike deletes a live schema-meta blob, but a collector outside it sweeping by its own allow-list would not know to follow that field. The garbage collector gets the same treatment rather than a silent degradation: the mark derives which attributes hold `:db.type/store-ref` from the record's schema, so a missing blob made it report that a snapshot names NO blobs — the sweep then deleted objects the database still referenced, `reachable-store-refs` handed the same short set to an application that deletes its own S3 prefix against it, and a sync walker shipped a head's datoms without the blobs they name. The same nil also hid a head's `:building` secondary index from the deferral check. All three now raise `:schema-meta-missing` instead. The guard is conditioned on the key being NAMED, not on the schema being nil, because a nil schema is ordinary: a bulk-import checkpoint record carries no schema by construction (its blobs travel in `:datahike.gc/keys`), and refusing on that would break every index build. Records predating the out-of-lining carry `:schema` inline and are unaffected. The `:schema-write-cache-size` / `DATAHIKE_SCHEMA_WRITE_CACHE_SIZE` setting is gone; it configured the removed cache and is now ignored. ([#1090])
 - **A secondary index that has not been backfilled is no longer queried** — a schema-declared secondary index is created with status `:building` and backfilled by the writer, so a database built with `d/db-with` (no connection, hence no writer) stays `:building` indefinitely and holds only the datoms of transactions made *after* the index was declared. The aggregate path never checked the status, so it answered from that partial index: `(min ?x)` returned `nil` on the declaring transaction and, after a further transaction, the minimum of just the later datoms — a silent wrong answer rather than a stale one. An index whose status is `:building` or `:disabled` is now skipped, matching the check the transaction path already makes; the query falls back to a path that reads the primary indices and is correct. A hand-assembled index (no status) is complete by construction and a `:ready` one has been backfilled, so both keep using the fast path. ([#914])
@@ -941,5 +1196,47 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#980]: https://github.com/replikativ/datahike/pull/980
 [#1092]: https://github.com/replikativ/datahike/pull/1092
 [#1090]: https://github.com/replikativ/datahike/pull/1090
+[#1154]: https://github.com/replikativ/datahike/pull/1154
+[#1153]: https://github.com/replikativ/datahike/issues/1153
+[#1141]: https://github.com/replikativ/datahike/pull/1141
+[#1139]: https://github.com/replikativ/datahike/pull/1139
+[#1143]: https://github.com/replikativ/datahike/pull/1143
+[#1142]: https://github.com/replikativ/datahike/issues/1142
+[#1147]: https://github.com/replikativ/datahike/pull/1147
+[#1146]: https://github.com/replikativ/datahike/issues/1146
+[#1123]: https://github.com/replikativ/datahike/pull/1123
+[#1112]: https://github.com/replikativ/datahike/issues/1112
 [#1105]: https://github.com/replikativ/datahike/issues/1105
+[#1151]: https://github.com/replikativ/datahike/pull/1151
+[#1150]: https://github.com/replikativ/datahike/issues/1150
+[#1149]: https://github.com/replikativ/datahike/pull/1149
+[#1145]: https://github.com/replikativ/datahike/issues/1145
+[#1148]: https://github.com/replikativ/datahike/pull/1148
+[#1160]: https://github.com/replikativ/datahike/pull/1160
+[#1161]: https://github.com/replikativ/datahike/pull/1161
+[#1167]: https://github.com/replikativ/datahike/pull/1167
+[#1168]: https://github.com/replikativ/datahike/issues/1168
+[#1170]: https://github.com/replikativ/datahike/pull/1170
+[#1171]: https://github.com/replikativ/datahike/pull/1171
+[#1172]: https://github.com/replikativ/datahike/pull/1172
+[#1175]: https://github.com/replikativ/datahike/issues/1175
+[#1179]: https://github.com/replikativ/datahike/pull/1179
+[#1182]: https://github.com/replikativ/datahike/pull/1182
+[#1181]: https://github.com/replikativ/datahike/pull/1181
+[#1183]: https://github.com/replikativ/datahike/pull/1183
+[#1180]: https://github.com/replikativ/datahike/pull/1180
+[#1107]: https://github.com/replikativ/datahike/issues/1107
+[#938]: https://github.com/replikativ/datahike/issues/938
+[#1156]: https://github.com/replikativ/datahike/pull/1156
+[#1155]: https://github.com/replikativ/datahike/issues/1155
+[#1144]: https://github.com/replikativ/datahike/issues/1144
+[#1152]: https://github.com/replikativ/datahike/pull/1152
+[#1158]: https://github.com/replikativ/datahike/pull/1158
+[#1159]: https://github.com/replikativ/datahike/pull/1159
+[#1157]: https://github.com/replikativ/datahike/issues/1157
+[#1107]: https://github.com/replikativ/datahike/issues/1107
+[#1165]: https://github.com/replikativ/datahike/pull/1165
+[#1108]: https://github.com/replikativ/datahike/issues/1108
+[#1164]: https://github.com/replikativ/datahike/pull/1164
+[#1166]: https://github.com/replikativ/datahike/pull/1166
 [#1132]: https://github.com/replikativ/datahike/pull/1132
