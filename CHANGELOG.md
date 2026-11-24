@@ -6,6 +6,24 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **`:db.fn/call-with-tempids`** *(Experimental)* — a local transaction
+  function that also receives the tempids allocated so far in the
+  transaction: `[:db.fn/call-with-tempids f arg ...]` calls
+  `(f tx-db tempids arg ...)` and applies the transaction data it returns.
+  The map holds only the bindings made by operations before it, and the
+  function can run more than once when a tempid is resolved by upsert, so
+  it has to read the map on each call. Like `:db.fn/call` it takes a
+  function value and therefore runs only where the transaction is
+  executed. (0.8.1943, [#1180])
+
+- **Overwriting a `false` value lost its retraction in history.** For a
+  cardinality-one attribute, replacing `false` with another value wrote
+  the new assertion to the temporal indexes but not the retraction of
+  `false`, because the old value was tested for truthiness. History then
+  showed `false` as asserted and never retracted, and a history query for
+  retractions missed it. Current-state queries and `as-of` were not
+  affected. (0.8.1943, [#1180])
+
 - **`with-db` in the babashka pod failed under babashka 1.13.230 ([#1179]).**
   `(d/with-db [db (d/db conn)] …)` raised `Unable to resolve symbol:
   release-db` unless the caller had referred the pod's functions. The macro
