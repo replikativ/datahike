@@ -473,6 +473,38 @@
               run))
           (partition-by identity datoms)))
 
+(defn- same-tx-pair?
+  "Does this `:eavt` history hold any value asserted and retracted under one
+   transaction id? One reduce comparing neighbours, cheapest test first."
+  [datoms]
+  (let [prev (volatile! nil)]
+    (boolean
+     (reduce (fn [_ dm]
+               (let [p @prev]
+                 (vreset! prev dm)
+                 (when (and p
+                            (== (d/datom-tx p) (d/datom-tx dm))
+                            (not= (d/datom-added p) (d/datom-added dm))
+                            (= p dm))
+                   (reduced true))))
+             nil datoms))))
+
+(defn export-datoms
+  "The datoms an export of `db` reads, in `:eavt` order: the history with
+   same-transaction pairs netted when `history?`, the current datoms otherwise.
+
+   Grouping every value's records costs as much again as reading them, and
+   nearly every database has no pair, so the history is scanned once for one
+   first. Without a pair the index seq is handed on as it is. The seq is made
+   anew for each pass and never bound, so the scan does not hold it."
+  [db history?]
+  (if history?
+    (let [src (api/history db)]
+      (if (same-tx-pair? (api/datoms src :eavt))
+        (net-same-tx-pairs db (api/datoms src :eavt))
+        (api/datoms src :eavt)))
+    (api/datoms db :eavt)))
+
 (defn export-records
   "Lazy seq of encoded record vectors for `db` (UNSORTED — the external merge sort
    in `export-db` imposes the `(t, txInstant-first, e, a, op)` order). Emits only
@@ -481,12 +513,11 @@
    translated (#508/#531) rather than re-inserted — and is a no-op for plain dbs,
    whose bootstrap never appears in :eavt."
   [db {:keys [history?]}]
-  (let [src      (if history? (api/history db) db)
-        sys-ents (if (attribute-refs? db) (dbi/-system-entities db) #{})
+  (let [sys-ents (if (attribute-refs? db) (dbi/-system-entities db) #{})
         sidents  (system-idents db)
         sec-read (secondary-only-reader db)
         renamed  (not-empty (set (keys (ident-timeline db))))]
-    (->> (cond->> (api/datoms src :eavt) history? (net-same-tx-pairs db))
+    (->> (export-datoms db history?)
          (filter (fn [dm] (> (d/datom-tx dm) c/tx0)))
          (map (fn [dm] (datom->record db sys-ents sidents sec-read renamed dm))))))
 
@@ -504,8 +535,7 @@
    re-assert of the same [e a] in one tx), which the sorting exporter orders
    explicitly; if a history has those, use the default (sorted) export."
   [db {:keys [history?]}]
-  (let [src      (if history? (api/history db) db)
-        sys-ents (if (attribute-refs? db) (dbi/-system-entities db) #{})
+  (let [sys-ents (if (attribute-refs? db) (dbi/-system-entities db) #{})
         sidents  (system-idents db)
         user?    (fn [dm] (> (d/datom-tx dm) c/tx0))
         schema-or-meta? (fn [dm]
@@ -514,7 +544,7 @@
         sec-read (secondary-only-reader db)
         renamed  (not-empty (set (keys (ident-timeline db))))
         make     (fn [dm] (datom->record db sys-ents sidents sec-read renamed dm))
-        datoms   (fn [] (cond->> (api/datoms src :eavt) history? (net-same-tx-pairs db)))]
+        datoms   (fn [] (export-datoms db history?))]
     (concat
      (->> (datoms) (filter user?) (filter schema-or-meta?) (map make))
      (->> (datoms) (filter user?) (remove schema-or-meta?) (map make)))))
