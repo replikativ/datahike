@@ -23,6 +23,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
   showed `false` as asserted and never retracted, and a history query for
   retractions missed it. Current-state queries and `as-of` were not
   affected. (0.8.1943, [#1180])
+
 - **A pattern whose entity or value is bound kept rows that an inclusive predicate should have removed.**
   With the query planner on (the default, JVM), `[?e :score ?s] [(<= ?s 10)]`
   with `?e` bound to a few entities — through `:in`, or by an earlier clause —
