@@ -159,53 +159,51 @@
    is a set: it does not say which of the two came last. `d` is the assertion of
    such a pair. Was the value there after that transaction?
 
-   What happened to the value LATER settles it. A retraction can only be
-   recorded for a value that was there, and an assertion only for one that was
-   not, so the next transaction that only retracts it, or only asserts it,
-   says how the pair ended. A transaction that again does both says nothing and
-   is skipped.
+   The NEXT transaction that touches the value settles it, when it does only one
+   thing. A retraction can only be recorded for a value that was there, and an
+   assertion only for one that was not. With no later record at all, the value
+   is there exactly when the current index holds it.
 
-   When nothing later settles it: if no later transaction touches the value at
-   all, it is there exactly when the current index holds it. If only pairs
-   follow, the value is taken to have ended as it began (`before?`); that is a
-   guess, and the only one made here.
+   When the next transaction is again a pair, nothing settles it, and this is
+   the one guess made here: every pair is taken to have left the value as it
+   found it, so the answer is what the last earlier transaction that did only
+   one thing left behind (absent when there is none). The guess reads the whole
+   history of the value, not the view, so every view gives the same answer.
 
-   Costs one read of the value's history, and is asked for pairs only."
-  [db ^Datom d before?]
+   The inference assumes the records of the value are complete. History removed
+   by a purge, or not written while the attribute was `:db/noHistory`, can
+   mislead it.
+
+   Reads the history of this one `[e a v]`, and is asked for pairs only."
+  [db ^Datom d]
   (let [e (.-e d) a (.-a d) v (.-v d)
         pair-tx (datom-tx d)
         current (first (dbi/search db [e a v]))
-        later (reduce (fn [m ^Datom x]
-                        (if (> (datom-tx x) pair-tx)
-                          (update m (datom-tx x) (fnil conj #{}) (boolean (datom-added x)))
+        ;; tx -> 1 asserted, 2 retracted, 3 both. The value is compared again:
+        ;; an index bound on `false` can let other values through.
+        by-tx (reduce (fn [m ^Datom x]
+                        (if (zero? (dd/compare-value v (.-v x)))
+                          (assoc m (datom-tx x)
+                                 (bit-or (get m (datom-tx x) 0)
+                                         (if (datom-added x) 1 2)))
                           m))
-                      (sorted-map)
+                      {}
                       (cond->> (dbs/search-temporal-indices db [e a v])
                         current (cons current)))
-        settled (some (fn [[_ flags]] (when (= 1 (count flags)) flags)) later)]
+        next-tx (reduce (fn [best t] (if (and (> t pair-tx) (or (nil? best) (< t best))) t best))
+                        nil (keys by-tx))
+        next-ops (when next-tx (get by-tx next-tx))]
     (cond
-      settled (= #{false} settled)
-      (seq later) (boolean before?)
-      :else (some? current))))
-
-(defn- held-before-pair?
-  "Was the value of `d`, the assertion of a same-transaction pair, there before
-   that transaction, going by the earlier records among `datoms`? Only asked
-   when nothing later settles the pair."
-  [datoms ^Datom d]
-  (let [pair-tx (datom-tx d)
-        v (.-v d)
-        ^Datom prior (reduce (fn [^Datom best ^Datom x]
-                               (if (and (< (datom-tx x) pair-tx)
-                                        (zero? (dd/compare-value v (.-v x)))
-                                        (or (nil? best)
-                                            (> (datom-tx x) (datom-tx best))
-                                            (and (= (datom-tx x) (datom-tx best))
-                                                 (not (datom-added x)))))
-                                 x
-                                 best))
-                             nil datoms)]
-    (boolean (and prior (datom-added prior)))))
+      (nil? next-tx) (some? current)
+      (= 2 next-ops) true
+      (= 1 next-ops) false
+      :else (let [prior (reduce (fn [best t]
+                                  (if (and (< t pair-tx)
+                                           (not= 3 (get by-tx t))
+                                           (or (nil? best) (> t best)))
+                                    t best))
+                                nil (keys by-tx))]
+              (and (some? prior) (= 1 (get by-tx prior)))))))
 
 (defn assemble-datoms-xform [db]
   (mapcat
@@ -228,7 +226,7 @@
                                           (if (datom-added b) 0 1))
                                  c)))
                            datoms)
-             ;; value -> [assertion of its pair, was it there before]. A
+             ;; value -> the assertion of its pair. A
              ;; volatile rather than a tuple accumulator: the fold runs per
              ;; datom, and it stays nil unless a pair shows up.
              pairs (volatile! nil)
@@ -247,7 +245,7 @@
                                ordered)
              revived (when-let [pairs (seq @pairs)]
                        (reduce (fn [m [v ^Datom d]]
-                                 (if (present-after-pair? db d (held-before-pair? datoms d))
+                                 (if (present-after-pair? db d)
                                    (assoc m v d)
                                    m))
                                {} pairs))]
@@ -270,8 +268,7 @@
            ;; also retracted in it: pairs, see `present-after-pair?`. Deliberately
            ;; inside this branch: a survivor makes the answer irrelevant, and
            ;; that is the common case.
-           (if-let [live (first (filter #(present-after-pair? db % (held-before-pair? datoms %))
-                                        added-at-last))]
+           (if-let [live (first (filter #(present-after-pair? db %) added-at-last))]
              [live]
              [])))))))
 

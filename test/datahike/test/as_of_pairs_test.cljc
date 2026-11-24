@@ -13,6 +13,7 @@
 
 (def ^:private schema
   [{:db/ident :many :db/valueType :db.type/keyword :db/cardinality :db.cardinality/many}
+   {:db/ident :flags :db/valueType :db.type/boolean :db/cardinality :db.cardinality/many}
    {:db/ident :one :db/valueType :db.type/long :db/cardinality :db.cardinality/one}])
 
 (defn- history-of
@@ -33,7 +34,7 @@
                                                 (for [[a v added] ops] [1001 a v t added]))]
                                   rec)))
     (let [db @conn
-          e (:e (first (filter #(#{:many :one} (:a %)) (d/datoms (d/history db) :eavt))))
+          e (:e (first (filter #(#{:many :one :flags} (:a %)) (d/datoms (d/history db) :eavt))))
           txs (vec (sort (distinct (map :tx (filter #(= e (:e %)) (d/datoms (d/history db) :eavt))))))]
       (d/release conn)
       [db e txs])))
@@ -80,6 +81,27 @@
            (states (history-of [[[:many :x true]]
                                 [[:many :x false] [:many :x true]]])
                    :many))))
+  (testing "a pair followed by a pair is not settled by what comes after both"
+    ;; the first pair is a guess (left as found: absent); the second is settled
+    ;; by the retraction that follows it
+    (is (= [#{} #{:x} #{}]
+           (states (history-of [[[:many :x true] [:many :x false]]
+                                [[:many :x true] [:many :x false] [:many :x true]]
+                                [[:many :x false]]])
+                   :many))))
+  (testing "only pairs follow: every view makes the same guess"
+    (is (= [#{:x} #{:x} #{:x} #{:x}]
+           (states (history-of [[[:many :x true]]
+                                [[:many :x false] [:many :x true]]
+                                [[:many :x false] [:many :x true]]
+                                [[:many :x false] [:many :x true]]])
+                   :many))))
+  (testing "the history of true says nothing about false"
+    (is (= [#{false} #{false true} #{false}]
+           (states (history-of [[[:flags false true] [:flags false false] [:flags false true]]
+                                [[:flags true true]]
+                                [[:flags true false]]])
+                   :flags))))
   (testing "other values are not disturbed"
     (is (= [#{:x :y} #{:x :y} #{:y}]
            (states (history-of [[[:many :x true] [:many :y true]]
