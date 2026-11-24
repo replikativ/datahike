@@ -145,6 +145,7 @@
    "false retract, add"                         [[:db/retract 101 :flag false] [:db/add 101 :flag false]]
    "false add, retract next to true"            [[:db/add 102 :flag true] [:db/add 102 :flag false] [:db/retract 102 :flag false]]
    "true add, retract next to false"            [[:db/add 101 :flag true] [:db/retract 101 :flag true]]
+   "false kept while true is added"             [[:db/retract 101 :flag false] [:db/add 101 :flag false] [:db/retract 101 :flag false] [:db/add 101 :flag true]]
    "untouched keys alongside a cancelled one"   [[:db/add 102 :many :a] [:db/add 101 :many :n] [:db/retract 101 :many :n] [:db/add 102 :one 33]]})
 
 (deftest a-transaction-records-its-net-effect
@@ -238,34 +239,27 @@
           r (run db [[:db/add 101 :many :n earlier] [:db/retract 101 :many :n]])]
       (is (= [true false] (map :added (filter #(= :n (:v %)) (:tx-data r))))))))
 
-(deftest a-purge-leaves-nothing-of-the-value
-  (let [db (base-db true)
-        about (fn [db v] (filter #(= v (:v %)) (di/-seq (:temporal-eavt db))))]
-    (testing "asserted, then purged"
-      (let [r (run db [[:db/add 101 :many :n] [:db/purge 101 :many :n]])]
-        (is (empty? (filter #(= :n (:v %)) (:tx-data r))))
-        (is (empty? (about (:db-after r) :n)))
-        (is (empty? (d/datoms (:db-after r) :eavt 101 :many :n)))))
-    (testing "retracted, then purged: the value was held and is gone, which is
-              reported once"
-      (let [r (run db [[:db/retract 101 :many :x] [:db/purge 101 :many :x]])]
-        (is (= [false] (map :added (filter #(= :x (:v %)) (:tx-data r)))))
-        (is (empty? (about (:db-after r) :x)))))
-    (testing "purged, asserted, retracted"
-      (let [r (run db [[:db/purge 101 :many :x] [:db/add 101 :many :x] [:db/retract 101 :many :x]])]
-        (is (= [false] (map :added (filter #(= :x (:v %)) (:tx-data r)))))
-        (is (empty? (about (:db-after r) :x)))
-        (is (empty? (d/datoms (:db-after r) :eavt 101 :many :x)))))
-    (testing "asserted, retracted, purged: as if it never happened"
-      (let [r (run db [[:db/add 101 :many :n] [:db/retract 101 :many :n] [:db/purge 101 :many :n]])]
-        (is (empty? (filter #(= :n (:v %)) (:tx-data r))))
-        (is (empty? (about (:db-after r) :n)))
-        (is (= (:hash (:db-after (run db []))) (:hash (:db-after r))))))
-    (testing "purged, then asserted again"
-      (let [r (run db [[:db/purge 101 :many :x] [:db/add 101 :many :x]])]
-        (is (= [true] (map :added (filter #(= :x (:v %)) (:tx-data r)))))
-        (is (empty? (about (:db-after r) :x)))
-        (is (seq (d/datoms (:db-after r) :eavt 101 :many :x)))))))
+(deftest a-transaction-that-purges-is-left-as-written
+  (testing "a purge rewrites history itself; such a transaction is not netted"
+    (let [db (base-db true)
+          about (fn [db v] (filter #(= v (:v %)) (di/-seq (:temporal-eavt db))))]
+      (testing "asserted, then purged: nothing of the value is left"
+        (let [r (run db [[:db/add 101 :many :n] [:db/purge 101 :many :n]])]
+          (is (empty? (about (:db-after r) :n)))
+          (is (empty? (d/datoms (:db-after r) :eavt 101 :many :n)))
+          (is (= (:hash (:db-after (run db []))) (:hash (:db-after r))))))
+      (testing "retracted, then purged"
+        (let [r (run db [[:db/retract 101 :many :x] [:db/purge 101 :many :x]])]
+          (is (= [false] (map :added (filter #(= :x (:v %)) (:tx-data r)))))
+          (is (empty? (about (:db-after r) :x)))))
+      (testing "purged, then asserted again"
+        (let [r (run db [[:db/purge 101 :many :x] [:db/add 101 :many :x]])]
+          (is (= [true] (map :added (filter #(= :x (:v %)) (:tx-data r)))))
+          (is (seq (d/datoms (:db-after r) :eavt 101 :many :x)))))
+      (testing "other values in the same transaction are written step by step"
+        (let [r (run db [[:db/add 101 :many :n] [:db/retract 101 :many :n]
+                         [:db/purge 101 :many :x]])]
+          (is (= [true false] (map :added (filter #(= :n (:v %)) (:tx-data r))))))))))
 
 (deftest a-foreign-dated-operation-that-changes-nothing-does-not-count
   (let [db (base-db true)

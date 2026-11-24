@@ -26,8 +26,8 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
   Not netted, and stored as before: imports (`import-db`, `load-entities`),
   a transaction containing a write dated to another transaction
-  (`[:db/add e a v tx]`), attributes covered by a valid-time secondary
-  index, and attributes whose schema the same transaction changes. Pairs
+  (`[:db/add e a v tx]`) or a purge, attributes covered by a valid-time
+  secondary index, and attributes whose schema the same transaction changes. Pairs
   already in a database stay as they are. (0.8.1944, [#1185])
 
 - **`:db.fn/call-with-tempids`** *(Experimental)* — a local transaction
