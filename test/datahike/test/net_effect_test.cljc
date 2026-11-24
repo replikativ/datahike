@@ -30,18 +30,18 @@
 (def ^:private user-attrs #{:one :many :idx :tags :quiet})
 
 (defn- base-db
-  "A history database with two entities (ids 1 and 2) and some earlier history."
+  "A history database with two entities (ids 101 and 102) and some earlier history."
   [history?]
   (let [cfg {:store {:backend :memory :id (random-uuid)}
              :keep-history? history? :schema-flexibility :write}
         _ (d/create-database cfg)
         conn (d/connect cfg)]
     (d/transact conn schema)
-    (d/transact conn [[:db/add 1 :one 24] [:db/add 1 :many :x] [:db/add 1 :idx 5]
-                      [:db/add 1 :tags 1] [:db/add 1 :quiet 7] [:db/add 2 :one 30]])
+    (d/transact conn [[:db/add 101 :one 24] [:db/add 101 :many :x] [:db/add 101 :idx 5]
+                      [:db/add 101 :tags 1] [:db/add 101 :quiet 7] [:db/add 102 :one 30]])
     ;; an earlier overwrite and an earlier retraction, so history is not empty
-    (d/transact conn [[:db/add 2 :one 31] [:db/add 2 :many :old]])
-    (d/transact conn [[:db/add 2 :one 30] [:db/retract 2 :many :old]])
+    (d/transact conn [[:db/add 102 :one 31] [:db/add 102 :many :old]])
+    (d/transact conn [[:db/add 102 :one 30] [:db/retract 102 :many :old]])
     (let [db @conn]
       (d/release conn)
       db)))
@@ -90,24 +90,24 @@
     actual))
 
 (def ^:private fixed-cases
-  {"add, retract a new value (card-many)"       [[:db/add 1 :many :n] [:db/retract 1 :many :n]]
-   "retract, add a present value (card-many)"   [[:db/retract 1 :many :x] [:db/add 1 :many :x]]
-   "add, retract, add (card-many)"              [[:db/add 1 :many :n] [:db/retract 1 :many :n] [:db/add 1 :many :n]]
-   "retract, add, retract (card-many)"          [[:db/retract 1 :many :x] [:db/add 1 :many :x] [:db/retract 1 :many :x]]
-   "add, retract a new value (card-one)"        [[:db/add 2 :idx 9] [:db/retract 2 :idx 9]]
-   "retract, add the present value (card-one)"  [[:db/retract 1 :one 24] [:db/add 1 :one 24]]
-   "card-one set twice"                         [[:db/add 1 :one 25] [:db/add 1 :one 21]]
-   "card-one away and back"                     [[:db/add 1 :one 25] [:db/add 1 :one 24]]
-   "card-one revisits a passing value"          [[:db/add 2 :one 40] [:db/add 2 :one 35] [:db/add 2 :one 40]]
-   "card-one set then retracted"                [[:db/add 1 :one 25] [:db/retract 1 :one 25]]
-   "indexed card-one set twice"                 [[:db/add 1 :idx 6] [:db/add 1 :idx 7]]
-   "indexed card-one away and back"             [[:db/add 1 :idx 6] [:db/add 1 :idx 5]]
-   "indexed card-many retract, add"             [[:db/retract 1 :tags 1] [:db/add 1 :tags 1]]
-   "indexed card-many add, retract"             [[:db/add 1 :tags 2] [:db/retract 1 :tags 2]]
-   "noHistory set twice"                        [[:db/add 1 :quiet 8] [:db/add 1 :quiet 9]]
-   "noHistory away and back"                    [[:db/add 1 :quiet 8] [:db/add 1 :quiet 7]]
-   "retractEntity then one attribute again"     [[:db/retractEntity 1] [:db/add 1 :one 24]]
-   "untouched keys alongside a cancelled one"   [[:db/add 2 :many :a] [:db/add 1 :many :n] [:db/retract 1 :many :n] [:db/add 2 :one 33]]})
+  {"add, retract a new value (card-many)"       [[:db/add 101 :many :n] [:db/retract 101 :many :n]]
+   "retract, add a present value (card-many)"   [[:db/retract 101 :many :x] [:db/add 101 :many :x]]
+   "add, retract, add (card-many)"              [[:db/add 101 :many :n] [:db/retract 101 :many :n] [:db/add 101 :many :n]]
+   "retract, add, retract (card-many)"          [[:db/retract 101 :many :x] [:db/add 101 :many :x] [:db/retract 101 :many :x]]
+   "add, retract a new value (card-one)"        [[:db/add 102 :idx 9] [:db/retract 102 :idx 9]]
+   "retract, add the present value (card-one)"  [[:db/retract 101 :one 24] [:db/add 101 :one 24]]
+   "card-one set twice"                         [[:db/add 101 :one 25] [:db/add 101 :one 21]]
+   "card-one away and back"                     [[:db/add 101 :one 25] [:db/add 101 :one 24]]
+   "card-one revisits a passing value"          [[:db/add 102 :one 40] [:db/add 102 :one 35] [:db/add 102 :one 40]]
+   "card-one set then retracted"                [[:db/add 101 :one 25] [:db/retract 101 :one 25]]
+   "indexed card-one set twice"                 [[:db/add 101 :idx 6] [:db/add 101 :idx 7]]
+   "indexed card-one away and back"             [[:db/add 101 :idx 6] [:db/add 101 :idx 5]]
+   "indexed card-many retract, add"             [[:db/retract 101 :tags 1] [:db/add 101 :tags 1]]
+   "indexed card-many add, retract"             [[:db/add 101 :tags 2] [:db/retract 101 :tags 2]]
+   "noHistory set twice"                        [[:db/add 101 :quiet 8] [:db/add 101 :quiet 9]]
+   "noHistory away and back"                    [[:db/add 101 :quiet 8] [:db/add 101 :quiet 7]]
+   "retractEntity then one attribute again"     [[:db/retractEntity 101] [:db/add 101 :one 24]]
+   "untouched keys alongside a cancelled one"   [[:db/add 102 :many :a] [:db/add 101 :many :n] [:db/retract 101 :many :n] [:db/add 102 :one 33]]})
 
 (deftest a-transaction-records-its-net-effect
   (doseq [history? [true false]]
@@ -119,9 +119,9 @@
 
 (deftest a-value-retracted-and-asserted-again-keeps-its-transaction
   (let [db (base-db true)
-        before (first (d/datoms db :eavt 1 :many :x))
-        after (first (d/datoms (:db-after (run db [[:db/retract 1 :many :x] [:db/add 1 :many :x]]))
-                               :eavt 1 :many :x))]
+        before (first (d/datoms db :eavt 101 :many :x))
+        after (first (d/datoms (:db-after (run db [[:db/retract 101 :many :x] [:db/add 101 :many :x]]))
+                               :eavt 101 :many :x))]
     (is (= (:tx before) (:tx after)))))
 
 (deftest as-of-a-transaction-is-what-it-left
@@ -130,17 +130,17 @@
                :keep-history? true :schema-flexibility :write}
           _ (d/create-database cfg)
           conn (d/connect cfg)
-          cur (fn [db a] (set (map :v (d/datoms db :eavt 1 a))))]
+          cur (fn [db a] (set (map :v (d/datoms db :eavt 101 a))))]
       (d/transact conn schema)
-      (d/transact conn [[:db/add 1 :many :x] [:db/add 1 :one 30]])
-      (let [r (d/transact conn [[:db/retract 1 :many :x] [:db/add 1 :many :x]
-                                [:db/add 1 :one 40] [:db/add 1 :one 35] [:db/add 1 :one 40]])
+      (d/transact conn [[:db/add 101 :many :x] [:db/add 101 :one 30]])
+      (let [r (d/transact conn [[:db/retract 101 :many :x] [:db/add 101 :many :x]
+                                [:db/add 101 :one 40] [:db/add 101 :one 35] [:db/add 101 :one 40]])
             t (:max-tx (:db-after r))]
-        (d/transact conn [[:db/retract 1 :many :x] [:db/add 1 :one 50]])
+        (d/transact conn [[:db/retract 101 :many :x] [:db/add 101 :one 50]])
         (is (= #{:x} (cur (d/as-of @conn t) :many)))
         (is (= #{40} (cur (d/as-of @conn t) :one)))
-        (is (= #{[:x]} (d/q '[:find ?v :where [1 :many ?v]] (d/as-of @conn t))))
-        (is (= #{[40]} (d/q '[:find ?v :where [1 :one ?v]] (d/as-of @conn t)))))
+        (is (= #{[:x]} (d/q '[:find ?v :where [101 :many ?v]] (d/as-of @conn t))))
+        (is (= #{[40]} (d/q '[:find ?v :where [101 :one ?v]] (d/as-of @conn t)))))
       (d/release conn))))
 
 ;; ---------------------------------------------------------------------------
@@ -159,7 +159,7 @@
   (vec (repeatedly
         n
         (fn []
-          (let [e (inc (rnd 2))
+          (let [e (+ 101 (rnd 2))
                 [a vs] (nth [[:one [24 25 21 30]] [:many [:x :n :m]] [:idx [5 6 7]]
                              [:tags [1 2 3]] [:quiet [7 8]]]
                             (rnd 5))
