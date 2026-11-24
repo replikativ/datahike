@@ -63,9 +63,9 @@
     ;; create an entity and set multiple attributes (in a single transaction
     ;; equal tempids will be replaced with the same unused yet entid)
     ;; `:likes` has no schema here, so it is cardinality-one: "pizza"
-    ;; supersedes "fries", and that retraction is part of the report.
-    (is (= '([7 :name "Ivan" true] [7 :likes "fries" true]
-                                   [7 :likes "fries" false] [7 :likes "pizza" true] [7 :friend 296 true])
+    ;; supersedes "fries". The report is the transaction's net effect, so
+    ;; "fries", which was never in the database, is not part of it.
+    (is (= '([7 :name "Ivan" true] [7 :likes "pizza" true] [7 :friend 296 true])
            (map dvec+ (:tx-data (d/transact conn {:tx-data [[:db/add -1 :name "Ivan"]
                                                             [:db/add -1 :likes "fries"]
                                                             [:db/add -1 :likes "pizza"]
@@ -112,16 +112,14 @@
                                                             {:db/id 296, :friend -1}]})))))
 
     ;; deprecated api
-    (is (= '([301 :name "Oleg" true] [301 :likes "pie" true]
-                                     [301 :likes "pie" false] [301 :likes "dates" true] [301 :friend 297 true])
+    (is (= '([301 :name "Oleg" true] [301 :likes "dates" true] [301 :friend 297 true])
            (map dvec+ (:tx-data (d/transact conn [[:db/add -1 :name "Oleg"]
                                                   [:db/add -1 :likes "pie"]
                                                   [:db/add -1 :likes "dates"]
                                                   [:db/add -1 :friend 297]])))))
 
     ;; lazy sequence
-    (is (= '([302 :name "Oleg" true] [302 :likes "pie" true]
-                                     [302 :likes "pie" false] [302 :likes "dates" true] [302 :friend 297 true])
+    (is (= '([302 :name "Oleg" true] [302 :likes "dates" true] [302 :friend 297 true])
            (map dvec+ (:tx-data (d/transact conn (take 4 [[:db/add -1 :name "Oleg"]
                                                           [:db/add -1 :likes "pie"]
                                                           [:db/add -1 :likes "dates"]
@@ -832,7 +830,11 @@
                                                               temporal-count)
                                                             (if attribute-refs?
                                                               (+ temporal-count sys-attr-count)
-                                                              0)))
+                                                              ;; schema-on-read: `:parents` is
+                                                              ;; cardinality-one there, and the
+                                                              ;; transaction that sets it to 1 and
+                                                              ;; then 2 records only the 2
+                                                              -2)))
                                   :temporal-avet-count (if schema-on-write?
                                                          (if attribute-refs?
                                                            sys-attr-avet-count
