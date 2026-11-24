@@ -916,6 +916,17 @@
     (some (fn [^Datom d] (when (zero? (dd/cmp-datoms-eavt-prefix probe d)) d))
           (di/-slice (:eavt db) probe (dd/datom e a v txmax) :eavt))))
 
+(defn- cmp-keys
+  "Order of the bookkeeping's keys: datoms on `[e a v]`. Two values the index
+   comparator cannot order — two unequal maps of equal hash, which never meet
+   in an index — are ordered by their printed form, so tracking a transaction
+   cannot throw where writing it does not."
+  [^Datom x ^Datom y]
+  (try
+    (dd/cmp-datoms-eavt-prefix x y)
+    (catch #?(:clj Exception :cljs :default) _
+      (compare (pr-str (.-v x)) (pr-str (.-v y))))))
+
 (defn- history-kept?
   "Does a write to this attribute reach the history indexes?"
   [db a-ident]
@@ -934,7 +945,7 @@
    A removal of a datom that carries this transaction's id and is not in
    `db-before` is the second write to a key this transaction asserted."
   [report ^Datom k hash-delta]
-  (let [touched (or (::touched report) (sorted-map-by dd/cmp-datoms-eavt-prefix))
+  (let [touched (or (::touched report) (sorted-map-by cmp-keys))
         entry (get touched k)
         db-before (:db-before report)]
     (assoc report ::touched
@@ -984,6 +995,7 @@
              hist?*  (when-not as-given? (history-kept? db a-ident))
              hist?   hist?*
              track?  (and (not as-given?)
+                          (not (::as-written report))
                           (not= :db/txInstant a-ident)
                           (not (vt-mode-attr? db a-ident)))
              ^Datom old (if (and upsert? (= ::not-looked-up old))
@@ -1006,7 +1018,9 @@
                          :else    (with-datom db datom tx-meta removing)))
              report' (cond-> report
                        (and track? (not added?))
-                       (track-removal removing (if hist? 0 (- (hash removing))))
+                       ;; what `with-datom` does to `:hash`: the stored datom's
+                       ;; term goes, and with history the retraction's own comes
+                       (track-removal removing (- (if hist? (hash datom) 0) (hash removing)))
 
                        ;; a cardinality-one assertion over another value removes it
                        (and track? upsert? (some? old)
@@ -1019,10 +1033,14 @@
                        (not as-given?) (foreign-tx datom)
                        ;; a write to an attribute's own entity: its keys are
                        ;; left as written (see `net-transaction`)
-                       (and (not as-given?)
-                            (or (ds/schema-attr? a-ident)
-                                (ds/secondary-index-attr? a-ident)))
+                       (and (not as-given?) (ds/schema-attr? a-ident))
                        (update ::schema-entities (fnil conj #{}) (.-e datom))
+                       ;; a rename, or a change to a secondary index, reaches
+                       ;; attributes other than the entity written to: the
+                       ;; whole transaction is left as written
+                       (and (not as-given?)
+                            (or (= :db/ident a-ident) (ds/secondary-index-attr? a-ident)))
+                       (assoc ::as-written true)
                        true (update-in [:db-after] write)
                        collision? (update-in [:db-after :hash] + (hash old))
                        true (update-in [:tx-data] conj datom))]
@@ -1460,7 +1478,7 @@
    its first entry. An assertion is reported as it was last written, which for
    a `:db.secondary/only` attribute is the full value, not the stored hash."
   [db tx-data net]
-  (let [cmp dd/cmp-datoms-eavt-prefix
+  (let [cmp cmp-keys
         ;; only entries of a netted attribute of a netted entity are keyed, so
         ;; no value of another attribute is projected here
         netted-ea (into #{} (map (fn [[^Datom k _]] [(.-e k) (.-a k)])) net)
@@ -1502,9 +1520,15 @@
 
    Left as written: the import path (`::as-given`) and a transaction holding a
    write dated to another transaction, which both replay recorded data; a
-   transaction that purges, which rewrites history itself; and the keys of an
-   attribute whose own entity this transaction wrote to (a schema change, even
-   one it took back, decides how each step was recorded)."
+   transaction that purges, which rewrites history itself; one that renames an
+   attribute or changes a secondary index; and the keys of an attribute whose
+   own entity this transaction wrote to (a schema change, even one it took
+   back, decides how each step was recorded).
+
+   Known limit: values the index comparator takes for one key although they
+   differ (`1` and `1.0` under `:db.type/any` or `:schema-flexibility :read`)
+   are netted as one key; which of them history keeps is then the first one
+   written."
   [{:keys [db-before db-after] :as report}]
   (let [touched (::touched report)
         schema-entities (::schema-entities report)
@@ -1525,13 +1549,11 @@
                            :else a)))
             [db net] (reduce (fn [[db net] [^Datom k entry]]
                                (let [ident (when (:net? entry) (ident-of k))]
-                                 (if (and ident
-                                          (not (contains? written-idents ident))
-                                          (map? (get new-schema ident)))
+                                 (if (and ident (not (contains? written-idents ident)))
                                    (let [[db n] (net-key db db-before ident k entry tx)]
                                      [db (assoc net k n)])
                                    [db net])))
-                             [db-after (sorted-map-by dd/cmp-datoms-eavt-prefix)]
+                             [db-after (sorted-map-by cmp-keys)]
                              touched)]
         (cond-> (assoc report :db-after db)
           (seq net) (update :tx-data #(net-tx-data db % net)))))))

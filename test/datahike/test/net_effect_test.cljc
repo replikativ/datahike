@@ -276,3 +276,29 @@
                      [:db/add 101 :quiet 8] [:db/add 101 :quiet 7]
                      [:db/add :quiet :db/noHistory true]])]
       (is (= #{7} (set (map :v (d/datoms (:db-after r) :eavt 101 :quiet))))))))
+
+(deftest undeclared-attributes-are-netted-too
+  (let [cfg {:store {:backend :memory :id (random-uuid)}
+             :keep-history? true :schema-flexibility :read}
+        _ (d/create-database cfg)
+        conn (d/connect cfg)]
+    (d/transact conn [[:db/add 101 :free 1]])
+    (let [r (d/with @conn {:tx-data [[:db/add 101 :other 5] [:db/retract 101 :other 5]
+                                     [:db/add 101 :free 2] [:db/add 101 :free 3]]})]
+      (is (= [[:free 1 false] [:free 3 true]]
+             (map (juxt :a :v :added) (filter #(#{:free :other} (:a %)) (:tx-data r)))))
+      (is (empty? (filter #(= :other (:a %)) (di/-seq (:temporal-eavt (:db-after r)))))))
+    (d/release conn)))
+
+(deftest values-the-index-cannot-order-do-not-break-a-transaction
+  (testing "two unequal maps of equal hash never meet in an index; tracking the
+            transaction must not compare them into an exception"
+    (let [cfg {:store {:backend :memory :id (random-uuid)}
+               :keep-history? false :schema-flexibility :read}
+          _ (d/create-database cfg)
+          conn (d/connect cfg)]
+      (d/transact conn [[:db/add 101 :m {:v "Aa"}]])
+      (let [r (d/with @conn {:tx-data [[:db/retract 101 :m {:v "Aa"}] [:db/add 101 :m {:v "BB"}]
+                                       [:db/add 101 :n 1] [:db/retract 101 :n 1]]})]
+        (is (= [{:v "BB"}] (map :v (d/datoms (:db-after r) :eavt 101 :m)))))
+      (d/release conn))))
