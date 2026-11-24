@@ -28,7 +28,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
   a transaction containing a write dated to another transaction
   (`[:db/add e a v tx]`), attributes covered by a valid-time secondary
   index, and attributes whose schema the same transaction changes. Pairs
-  already in a database stay as they are. (0.8.1944, [#TODO])
+  already in a database stay as they are. (0.8.1944, [#1185])
 
 - **`:db.fn/call-with-tempids`** *(Experimental)* — a local transaction
   function that also receives the tempids allocated so far in the
@@ -1232,6 +1232,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1181]: https://github.com/replikativ/datahike/pull/1181
 [#1183]: https://github.com/replikativ/datahike/pull/1183
 [#1180]: https://github.com/replikativ/datahike/pull/1180
+[#1185]: https://github.com/replikativ/datahike/pull/1185
 [#1107]: https://github.com/replikativ/datahike/issues/1107
 [#938]: https://github.com/replikativ/datahike/issues/938
 [#1156]: https://github.com/replikativ/datahike/pull/1156
