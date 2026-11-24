@@ -6,6 +6,24 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **`:db.fn/call-with-tempids`** *(Experimental)* — a local transaction
+  function that also receives the tempids allocated so far in the
+  transaction: `[:db.fn/call-with-tempids f arg ...]` calls
+  `(f tx-db tempids arg ...)` and applies the transaction data it returns.
+  The map holds only the bindings made by operations before it, and the
+  function can run more than once when a tempid is resolved by upsert, so
+  it has to read the map on each call. Like `:db.fn/call` it takes a
+  function value and therefore runs only where the transaction is
+  executed. (0.8.1943, [#1180])
+
+- **Overwriting a `false` value lost its retraction in history.** For a
+  cardinality-one attribute, replacing `false` with another value wrote
+  the new assertion to the temporal indexes but not the retraction of
+  `false`, because the old value was tested for truthiness. History then
+  showed `false` as asserted and never retracted, and a history query for
+  retractions missed it. Current-state queries and `as-of` were not
+  affected. (0.8.1943, [#1180])
+
 - **A pattern whose entity or value is bound kept rows that an inclusive predicate should have removed.**
   With the query planner on (the default, JVM), `[?e :score ?s] [(<= ?s 10)]`
   with `?e` bound to a few entities — through `:in`, or by an earlier clause —
@@ -1189,6 +1207,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1182]: https://github.com/replikativ/datahike/pull/1182
 [#1181]: https://github.com/replikativ/datahike/pull/1181
 [#1183]: https://github.com/replikativ/datahike/pull/1183
+[#1180]: https://github.com/replikativ/datahike/pull/1180
 [#1107]: https://github.com/replikativ/datahike/issues/1107
 [#938]: https://github.com/replikativ/datahike/issues/938
 [#1156]: https://github.com/replikativ/datahike/pull/1156
