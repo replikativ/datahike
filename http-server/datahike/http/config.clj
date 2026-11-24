@@ -278,9 +278,58 @@
 
 (defn usage [summary]
   (str "Usage: java -jar datahike-http-server.jar [options] [config.edn]\n"
-       "       java -jar datahike-http-server.jar mirror [--check] mirror.edn\n\n"
+       "       java -jar datahike-http-server.jar mirror [--check] mirror.edn\n"
+       "       java -jar datahike-http-server.jar mirror [--check] --name NAME --config server.edn\n\n"
        "Configuration precedence: command line > DATAHIKE_* environment > EDN file.\n\n"
        summary))
+
+(def ^:private mirror-options
+  [[nil "--name NAME" "Name in :pg-mirrors"]
+   ["-f" "--config FILE" "Server configuration file"]
+   [nil "--check" "Check the publication and exit"]])
+
+(defn- invalid-mirror! [message]
+  (throw (ex-info message {:type :datahike.http/invalid-mirror-config})))
+
+(defn- configured-mirrors [config]
+  (let [mirrors (get config :pg-mirrors {})]
+    (when-not (map? mirrors)
+      (invalid-mirror! ":pg-mirrors must be a map"))
+    (doseq [[name {:keys [source-url-file store-path publication server server-config-file] :as mirror}] mirrors]
+      (when-not (and (string? name) (not (str/blank? name)) (not (str/includes? name ":"))
+                     (map? mirror)
+                     (every? #(and (string? %) (not (str/blank? %))) [source-url-file store-path publication])
+                     (or (nil? server-config-file)
+                         (and (string? server-config-file) (not (str/blank? server-config-file))))
+                     (map? server) (int? (:port server)) (<= 1 (:port server) 65535)
+                     (not-any? #(contains? server %) [:users :tls :authenticator :ssl-context])
+                     (not (contains? mirror :source-url)))
+        (invalid-mirror! "Each mirror needs a name, publication, store path, source URL file and SQL port. Keep credentials in files.")))
+    mirrors))
+
+(defn resolve-mirror-config
+  "Resolve one named mirror for a separate worker. Read only that worker's secrets."
+  [args]
+  (let [{:keys [options arguments errors]} (parse-opts args mirror-options)
+        {:keys [name config check]} options]
+    (when-not (and name config (empty? errors) (empty? arguments))
+      (invalid-mirror! "Usage: mirror [--check] --name NAME --config server.edn"))
+    (let [{:keys [source-url-file server-config-file server] :as mirror}
+          (get (configured-mirrors (file-config config)) name)]
+      (when-not mirror
+        (invalid-mirror! "The named mirror does not exist in :pg-mirrors"))
+      (let [source-url (try
+                         (str/trim (slurp (io/file source-url-file)))
+                         (catch Exception _
+                           (invalid-mirror! "Could not read the mirror publisher URL file")))
+            credentials (select-keys (file-config server-config-file) [:users :tls])]
+        (when-not (str/starts-with? source-url "jdbc:postgresql://")
+          (invalid-mirror! "The mirror publisher URL file must contain a PostgreSQL JDBC URL"))
+        {:check? (boolean check)
+         :mirror (-> mirror
+                     (dissoc :source-url-file :server-config-file)
+                     (assoc :source-url source-url
+                            :server (merge {:default name} server credentials)))}))))
 
 (defn resolve-config
   "Parse `args` and resolve a server action. The two-argument form accepts an
@@ -310,8 +359,10 @@
 
        :else
        (let [path   (or (:config options) positional-file)
+             file (file-config path)
+             _ (configured-mirrors file)
              layers (map normalize-nrepl-shorthands
-                         [(file-config path) (env-config env) (cli-config options)])
+                         [(dissoc file :pg-mirrors) (env-config env) (cli-config options)])
              config (-> (reduce merge-layers {} layers)
                         normalize-system-db-path
                         assert-safe-nrepl!)]

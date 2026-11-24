@@ -8,7 +8,8 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 - **PostgreSQL mirror mode** *(Experimental)*. Run the standalone server JAR
   with `mirror mirror.edn` to follow a PostgreSQL 18 publication and serve a
-  read-only replica with Datahike history. See the
+  read-only replica with Datahike history. A separate worker can also select
+  a named mirror from `:pg-mirrors` in the shared server configuration. See the
   [mirror mode guide](doc/http-routes.md#follow-a-postgresql-18-primary-beta).
 
 - **A transaction records its net effect — behaviour change.** Operations in

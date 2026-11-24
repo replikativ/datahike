@@ -8,6 +8,27 @@
     (.deleteOnExit)
     (spit contents)))
 
+(deftest named-mirrors-resolve-only-the-selected-worker
+  (let [publisher-url "jdbc:postgresql://publisher/postgres?user=follower"
+        url-file (.getPath (temp-file (str publisher-url "\n")))
+        listener-file (.getPath (temp-file (pr-str {:users {"reader" "test-password"}})))
+        mirror {:publication "analytics" :store-path "/var/lib/datahike/mirror"
+                :source-url-file url-file :server-config-file listener-file
+                :schema-refresh? true :server {:port 15432}}
+        file (.getPath (temp-file (pr-str {:pg-mirrors {"production" mirror
+                                                        "other" (assoc mirror :source-url-file "/unmounted")}})))
+        opts ["--name" "production" "--config" file]]
+    (is (= {:check? true
+            :mirror {:publication "analytics" :store-path "/var/lib/datahike/mirror"
+                     :source-url publisher-url :schema-refresh? true
+                     :server {:port 15432 :default "production" :users {"reader" "test-password"}}}}
+           (config/resolve-mirror-config (conj opts "--check"))))
+    (is (not (contains? (:config (config/resolve-config ["--config" file] {})) :pg-mirrors)))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"named mirror does not exist"
+                          (config/resolve-mirror-config ["--name" "missing" "--config" file])))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Could not read the mirror publisher"
+                          (config/resolve-mirror-config ["--name" "other" "--config" file])))))
+
 (deftest environment-names-are-mechanical
   (is (= "DATAHIKE_PORT" (config/env-name :port)))
   (is (= "DATAHIKE_DEV_MODE" (config/env-name :dev-mode)))
