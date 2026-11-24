@@ -277,7 +277,8 @@
                :host host})))))
 
 (defn usage [summary]
-  (str "Usage: java -jar datahike-http-server.jar [options] [config.edn]\n\n"
+  (str "Usage: java -jar datahike-http-server.jar [options] [config.edn]\n"
+       "       java -jar datahike-http-server.jar mirror [--check] mirror.edn\n\n"
        "Configuration precedence: command line > DATAHIKE_* environment > EDN file.\n\n"
        summary))
 

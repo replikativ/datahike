@@ -6,6 +6,11 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **PostgreSQL mirror mode** *(Experimental)*. Run the standalone server JAR
+  with `mirror mirror.edn` to follow a PostgreSQL 18 publication and serve a
+  read-only replica with Datahike history. See the
+  [mirror mode guide](doc/http-routes.md#follow-a-postgresql-18-primary-beta).
+
 - **A transaction records its net effect — behaviour change.** Operations in
   one transaction still run in order, and each sees the result of the one
   before. What the transaction leaves behind is now the difference between

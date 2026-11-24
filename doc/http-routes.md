@@ -570,6 +570,38 @@ mid-step. In practice a query that scans and joins is stopped promptly; the
 deadline is a bound on how long a request occupies a thread, not a hard
 real-time guarantee.
 
+### Follow a PostgreSQL 18 primary (beta)
+
+The standalone server JAR can run a read-only logical replica of a PostgreSQL
+publication. Run `mirror` as its own process, with a dedicated file store and
+SQL port. The mirror mode owns that store and serves it over PostgreSQL wire
+protocol. The HTTP server's `:pg-listener` serves the native Datahike catalog.
+
+```clojure
+{:publication "analytics"
+ :store-path "/var/lib/datahike/mirrors/analytics"
+ :server {:host "127.0.0.1" :port 15432 :default "analytics"}}
+```
+
+Supply the publisher's JDBC URL in `PG_MIRROR_SOURCE_URL`. Check the
+publication first, then start the follower:
+
+```bash
+java -jar datahike-http-server.jar mirror --check mirror.edn
+java -jar datahike-http-server.jar mirror mirror.edn
+psql -h 127.0.0.1 -p 15432 -U datahike -d analytics
+```
+
+The SQL port opens after snapshot and catch-up. After a publisher connection
+failure, an open listener serves the last durable state while the worker
+reconnects. Restart using the same store path and its adjacent
+`.mirror-lock` file to resume from the recorded slot and WAL checkpoint.
+The mirror publishes progress and errors on standard output. A missing,
+invalidated, or advanced slot pauses apply by default. To choose how to
+recover from slot loss or to follow a promoted standby, use the publisher
+setup and recovery procedures in the
+[pg-datahike logical replication guide](https://github.com/replikativ/pg-datahike/blob/main/doc/postgres-mirroring.md).
+
 ### Operator landing page
 
 Open the server root (or `/admin`) for a read-only overview of readiness, build
