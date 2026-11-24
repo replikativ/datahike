@@ -602,62 +602,62 @@
    caller has already looked it up (see `transact-report`)."
   ([db datom tx-meta] (with-datom db datom tx-meta ::not-looked-up))
   ([db ^Datom datom tx-meta removing-known]
-  (validate-datom db datom)
-  (let [{a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
-        indexing? (dbu/indexing? db a-ident)
-        schema? (or (ds/schema-attr? a-ident) (ds/entity-spec-attr? a-ident)
-                    (ds/secondary-index-attr? a-ident))
-        keep-history? (and (dbi/-keep-history? db) (not (dbu/no-history? db a-ident)))
-        op-count (:op-count db)
-        has-secondary? (seq (get-in db [:rschema :db.secondary/index a-ident]))
-        secondary-only? (dbu/secondary-only? db a-ident)
+   (validate-datom db datom)
+   (let [{a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
+         indexing? (dbu/indexing? db a-ident)
+         schema? (or (ds/schema-attr? a-ident) (ds/entity-spec-attr? a-ident)
+                     (ds/secondary-index-attr? a-ident))
+         keep-history? (and (dbi/-keep-history? db) (not (dbu/no-history? db a-ident)))
+         op-count (:op-count db)
+         has-secondary? (seq (get-in db [:rschema :db.secondary/index a-ident]))
+         secondary-only? (dbu/secondary-only? db a-ident)
         ;; primary indexes hold the content hash for :db.secondary/only attrs;
         ;; the full value goes only to the secondary index (`datom` below).
-        prim ^Datom (project-primary secondary-only? datom)]
-    (when (and secondary-only? (datom-added datom) (not has-secondary?))
-      (log/raise "Attribute " a-ident " is :db.secondary/only but no secondary index covers it — its value would be lost"
-                 {:error :transact/secondary-only-uncovered :attribute a-ident :datom datom}))
-    (when (and secondary-only? (datom-added datom) has-secondary?)
-      (let [sec-idx-idents (get-in db [:rschema :db.secondary/index a-ident])]
-        (assert-secondary-only-transactional! db a-ident datom sec-idx-idents)
-        (assert-secondary-only-storable! db a-ident datom sec-idx-idents)))
-    (if (datom-added datom)
-      (cond-> db
-        true (tracking/changed a-ident schema?)
-        true (update-in [:eavt] #(di/-insert % prim :eavt op-count))
-        (effects/enabled? db) (effects/emit a-ident :current :insert prim nil)
-        true (update-in [:aevt] #(di/-insert % prim :aevt op-count))
-        indexing? (update-in [:avet] #(di/-insert % prim :avet op-count))
-        has-secondary? (update-secondary-indices a-ident datom true tx-meta)
-        true (advance-max-eid (.-e datom))
-        true (update :hash + (hash prim))
-        schema? (-> (update-schema datom)
-                    update-rschema)
-        true (update :op-count inc))
+         prim ^Datom (project-primary secondary-only? datom)]
+     (when (and secondary-only? (datom-added datom) (not has-secondary?))
+       (log/raise "Attribute " a-ident " is :db.secondary/only but no secondary index covers it — its value would be lost"
+                  {:error :transact/secondary-only-uncovered :attribute a-ident :datom datom}))
+     (when (and secondary-only? (datom-added datom) has-secondary?)
+       (let [sec-idx-idents (get-in db [:rschema :db.secondary/index a-ident])]
+         (assert-secondary-only-transactional! db a-ident datom sec-idx-idents)
+         (assert-secondary-only-storable! db a-ident datom sec-idx-idents)))
+     (if (datom-added datom)
+       (cond-> db
+         true (tracking/changed a-ident schema?)
+         true (update-in [:eavt] #(di/-insert % prim :eavt op-count))
+         (effects/enabled? db) (effects/emit a-ident :current :insert prim nil)
+         true (update-in [:aevt] #(di/-insert % prim :aevt op-count))
+         indexing? (update-in [:avet] #(di/-insert % prim :avet op-count))
+         has-secondary? (update-secondary-indices a-ident datom true tx-meta)
+         true (advance-max-eid (.-e datom))
+         true (update :hash + (hash prim))
+         schema? (-> (update-schema datom)
+                     update-rschema)
+         true (update :op-count inc))
 
-      (if-some [removing ^Datom (if (= ::not-looked-up removing-known)
-                                  (first (dbi/search db [(.-e prim) (.-a prim) (.-v prim)]))
-                                  removing-known)]
-        (cond-> db
-          true (tracking/changed a-ident schema?)
-          true (update-in [:eavt] #(di/-remove % removing :eavt op-count))
-          (effects/enabled? db) (effects/emit a-ident :current :remove removing nil)
-          true (update-in [:aevt] #(di/-remove % removing :aevt op-count))
-          indexing? (update-in [:avet] #(di/-remove % removing :avet op-count))
-          has-secondary? (update-secondary-indices a-ident datom false tx-meta)
-          true (update :hash - (hash removing))
-          schema? (-> (remove-schema datom) update-rschema)
-          keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % removing :eavt op-count))
-          keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % prim :eavt (inc op-count)))
-          (and keep-history? (effects/enabled? db)) (effects/emit a-ident :temporal :temporal-insert removing nil)
-          (and keep-history? (effects/enabled? db)) (effects/emit a-ident :temporal :temporal-insert prim nil)
-          keep-history? (update-in [:temporal-aevt] #(di/-temporal-insert % removing :aevt op-count))
-          keep-history? (update-in [:temporal-aevt] #(di/-temporal-insert % prim :aevt (inc op-count)))
-          keep-history? (update :hash + (hash prim))
-          (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-insert % removing :avet op-count))
-          (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-insert % prim :avet (inc op-count)))
-          true (update :op-count + (if (or keep-history? indexing?) 2 1)))
-        db)))))
+       (if-some [removing ^Datom (if (= ::not-looked-up removing-known)
+                                   (first (dbi/search db [(.-e prim) (.-a prim) (.-v prim)]))
+                                   removing-known)]
+         (cond-> db
+           true (tracking/changed a-ident schema?)
+           true (update-in [:eavt] #(di/-remove % removing :eavt op-count))
+           (effects/enabled? db) (effects/emit a-ident :current :remove removing nil)
+           true (update-in [:aevt] #(di/-remove % removing :aevt op-count))
+           indexing? (update-in [:avet] #(di/-remove % removing :avet op-count))
+           has-secondary? (update-secondary-indices a-ident datom false tx-meta)
+           true (update :hash - (hash removing))
+           schema? (-> (remove-schema datom) update-rschema)
+           keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % removing :eavt op-count))
+           keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % prim :eavt (inc op-count)))
+           (and keep-history? (effects/enabled? db)) (effects/emit a-ident :temporal :temporal-insert removing nil)
+           (and keep-history? (effects/enabled? db)) (effects/emit a-ident :temporal :temporal-insert prim nil)
+           keep-history? (update-in [:temporal-aevt] #(di/-temporal-insert % removing :aevt op-count))
+           keep-history? (update-in [:temporal-aevt] #(di/-temporal-insert % prim :aevt (inc op-count)))
+           keep-history? (update :hash + (hash prim))
+           (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-insert % removing :avet op-count))
+           (and keep-history? indexing?) (update-in [:temporal-avet] #(di/-temporal-insert % prim :avet (inc op-count)))
+           true (update :op-count + (if (or keep-history? indexing?) 2 1)))
+         db)))))
 
 (defn- with-temporal-datom [db ^Datom datom]
   (let [{a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
@@ -900,9 +900,10 @@
 (defn- foreign-tx
   "Mark the transaction as carrying a write dated to another transaction than
    its own. Such input replays recorded data, and is stored as given: see
-   `net-transaction`."
-  [report tx]
-  (if (and (some? tx) (not= tx (current-tx report)))
+   `net-transaction`. Called where a write happens, so an operation that
+   changes nothing does not count."
+  [report ^Datom datom]
+  (if (not= (datom-tx datom) (current-tx report))
     (assoc report ::foreign-tx true)
     report))
 
@@ -967,15 +968,26 @@
          ;; A retraction is looked up here, once: it is reported and tracked
          ;; only when it removes something.
          removing (when (and (not as-given?) (not upsert?) (not added?))
-                    (first (dbi/search db [(.-e datom) (.-a datom) (.-v datom)])))]
+                    (first (di/-slice (:eavt db)
+                                      (dd/datom (.-e datom) (.-a datom) (.-v datom) tx0)
+                                      (dd/datom (.-e datom) (.-a datom) (.-v datom) txmax)
+                                      :eavt)))]
      (if (and (not as-given?) (not upsert?) (not added?) (nil? removing))
        ;; Retracts a fact the database does not hold: nothing changes, and
        ;; nothing is reported.
        report
        (let [a-ident (when-not as-given?
                        (:ident (dbu/attr-info db (.-a datom) :error-on-missing)))
-             track?  (and (not as-given?) (not (vt-mode-attr? db a-ident)))
-             hist?   (when track? (history-kept? db a-ident))
+             hist?*  (when-not as-given? (history-kept? db a-ident))
+             hist?   hist?*
+             track?  (and (not as-given?)
+                          (not= :db/txInstant a-ident)
+                          (not (vt-mode-attr? db a-ident)))
+             ;; an unequal value whose hash equals the one it supersedes: the
+             ;; upsert takes it for a restatement and drops the old term
+             collision? (and track? upsert? (some? old) hist?*
+                             (not (zero? (dd/compare-value (.-v ^Datom old) (.-v datom))))
+                             (= (hash old) (hash datom)))
              ^Datom old (if (and upsert? (= ::not-looked-up old))
                           (current-datom-for-ea db (.-e datom) (.-a datom))
                           (when upsert? old))
@@ -995,17 +1007,21 @@
                        ;; a cardinality-one assertion over another value removes it
                        (and track? upsert? (some? old)
                             (not (zero? (dd/compare-value (.-v old) (.-v prim)))))
-                       (track-removal old (if (or (not hist?)
-                                                  (= :db/txInstant a-ident)
-                                                  (= (hash old) (hash prim)))
-                                            (- (hash old))
-                                            0))
+                       (track-removal old (if hist? 0 (- (hash old))))
 
                        (and track? added?)
                        (track-assertion prim))
-             report' (-> report'
-                         (update-in [:db-after] write)
-                         (update-in [:tx-data] conj datom))]
+             report' (cond-> report'
+                       (not as-given?) (foreign-tx datom)
+                       ;; a write to an attribute's own entity: its keys are
+                       ;; left as written (see `net-transaction`)
+                       (and (not as-given?)
+                            (or (ds/schema-attr? a-ident)
+                                (ds/secondary-index-attr? a-ident)))
+                       (update ::schema-entities (fnil conj #{}) (.-e datom))
+                       true (update-in [:db-after] write)
+                       collision? (update-in [:db-after :hash] + (hash old))
+                       true (update-in [:tx-data] conj datom))]
          ;; ONE resolving lookup, not a resolving predicate plus a raw lookup.
          ;; `tuple-source?` resolved `a` ref→ident and answered yes; the `get` that
          ;; followed did not, so under `:attribute-refs?` (where `a` is a numeric
@@ -1255,7 +1271,6 @@
   (let [a (dbu/normalize-and-validate-attr a ent db-after)
         _ (validate-val v ent db-after)
         attribute-refs? (:attribute-refs? (dbi/-config db-after))
-        report (foreign-tx report tx)
         tx (or tx (current-tx report))
         db db-after
         e (dbu/entid-strict db e)
@@ -1344,28 +1359,47 @@
   ([report ^Datom d] (transact-retract-datom report d false))
   ([report ^Datom d keep-tx-id]
    (let [txid (or (and keep-tx-id (datom-tx d)) (current-tx report))]
-     (transact-report (foreign-tx report txid) (datom (.-e d) (.-a d) (.-v d) txid false)))))
+     (transact-report report (datom (.-e d) (.-a d) (.-v d) txid false)))))
 
 (defn- transact-purge-datom
-  "A purged value leaves nothing behind, so it also leaves the transaction's
-   bookkeeping: it is no longer netted, and what the transaction reported for
-   it so far is dropped from `:tx-data` (see `net-transaction`)."
+  "A purged value leaves nothing behind. For the bookkeeping that is a new
+   baseline: from here on the transaction is netted against an absent value
+   without history, whatever it did to the value before."
   [report ^Datom d]
-  (-> report
-      (update-in [:db-after] with-temporal-datom d)
-      (cond-> (::touched report) (update ::touched dissoc d))
-      (update ::purged (fnil assoc (sorted-map-by dd/cmp-datoms-eavt-prefix))
-              d (count (:tx-data report)))))
+  (let [touched (or (::touched report) (sorted-map-by dd/cmp-datoms-eavt-prefix))
+        entry (get touched d)
+        e (.-e d) a (.-a d) v (.-v d)
+        current (first (di/-slice (:eavt (:db-after report))
+                                  (dd/datom e a v tx0) (dd/datom e a v txmax) :eavt))]
+    (-> report
+        (update-in [:db-after] with-temporal-datom d)
+        (assoc ::touched
+               (assoc touched d
+                      {:before nil
+                       ;; `with-temporal-datom` drops the term of a current datom
+                       :hd (- (:hd entry 0) (if current (hash current) 0))
+                       :net? true
+                       :purged? true
+                       ;; what the database held before the transaction, for
+                       ;; the report
+                       :held? (if (contains? entry :held?)
+                                (:held? entry)
+                                (some? (first (di/-slice (:eavt (:db-before report))
+                                                         (dd/datom e a v tx0)
+                                                         (dd/datom e a v txmax)
+                                                         :eavt))))})))))
 
 (defn- temporal-entry
   "The entry the history index holds for exactly this `[e a v tx added]`, or nil."
   [db ^Datom d added?]
-  (some (fn [^Datom x] (when (= (boolean added?) (boolean (datom-added x))) x))
-        (di/-slice (:temporal-eavt db) d d :eavt)))
+  (let [probe (dd/datom (.-e d) (.-a d) (.-v d) (datom-tx d) (boolean added?))]
+    (some (fn [^Datom x] (when (zero? (dd/cmp-temporal-datoms-eavt-quick probe x)) x))
+          (di/-slice (:temporal-eavt db) d d :eavt))))
 
 (defn- set-temporal-entry
-  "Make the three history indexes hold `d` or not."
-  [db a-ident ^Datom d want? indexing?]
+  "Make the three history indexes hold `d` or not. An entry the database held
+   before the transaction is never removed."
+  [db db-before a-ident ^Datom d want? indexing?]
   (let [present (temporal-entry db d (datom-added d))
         op-count (:op-count db)]
     (cond
@@ -1377,7 +1411,7 @@
         indexing? (update :temporal-avet #(di/-temporal-insert % d :avet op-count))
         true (update :op-count inc))
 
-      (and (not want?) present)
+      (and (not want?) present (nil? (temporal-entry db-before d (datom-added d))))
       (cond-> db
         true (update :temporal-eavt #(di/-remove % present :eavt op-count))
         (effects/enabled? db) (effects/emit a-ident :temporal :remove present nil)
@@ -1389,11 +1423,10 @@
 
 (defn- net-key
   "Bring what the transaction left for one re-written key `k` to its net effect.
-   Returns `[db net-datom]`, the second being what `:tx-data` reports for the
-   key: an assertion, a retraction, or nil when the key ends as it began."
-  [db db-before ^Datom k {:keys [^Datom before hd]} tx]
-  (let [{a-ident :ident} (dbu/attr-info db (.-a k) :error-on-missing)
-        e (.-e k) a (.-a k) v (.-v k)
+   Returns `[db net]`, the second being what `:tx-data` reports for the key:
+   `:asserted`, `:retracted`, or nil when the key ends as it began."
+  [db db-before a-ident ^Datom k {:keys [^Datom before hd purged? held?]} tx]
+  (let [e (.-e k) a (.-a k) v (.-v k)
         ^Datom after (first (di/-slice (:eavt db) (dd/datom e a v tx0) (dd/datom e a v txmax) :eavt))
         indexing? (dbu/indexing? db a-ident)
         multi? (dbu/multival? db a-ident)
@@ -1402,66 +1435,68 @@
         created? (and (nil? before) (some? after))
         removed? (and (some? before) (nil? after))
         kept? (and (some? before) (some? after))
-        ;; a value that is current again keeps the transaction it came from
+        ;; a value that is current again keeps the transaction it came from.
+        ;; Two op-counts: the hitchhiker tree orders buffered operations by
+        ;; them, and the removal has to run first.
         db (if (and kept? (not= (datom-tx before) (datom-tx after)))
-             (let [op-count (:op-count db)]
+             (let [oc (:op-count db) oc' (inc oc)]
                (cond-> db
-                 true (update :eavt #(-> % (di/-remove after :eavt op-count) (di/-insert before :eavt op-count)))
+                 true (update :eavt #(-> % (di/-remove after :eavt oc) (di/-insert before :eavt oc')))
                  (effects/enabled? db) (effects/emit a-ident :current :remove after nil)
                  (effects/enabled? db) (effects/emit a-ident :current :insert before nil)
-                 true (update :aevt #(-> % (di/-remove after :aevt op-count) (di/-insert before :aevt op-count)))
-                 indexing? (update :avet #(-> % (di/-remove after :avet op-count) (di/-insert before :avet op-count)))
-                 true (update :op-count inc)))
+                 true (update :aevt #(-> % (di/-remove after :aevt oc) (di/-insert before :aevt oc')))
+                 indexing? (update :avet #(-> % (di/-remove after :avet oc) (di/-insert before :avet oc')))
+                 true (update :op-count + 2)))
              db)
         db (if hist?
              (cond-> db
-               true (set-temporal-entry a-ident (dd/datom e a v tx true)
-                                        (and created? (not multi?) (not= :db/txInstant a-ident))
+               true (set-temporal-entry db-before a-ident (dd/datom e a v tx true)
+                                        (and created? (not multi?))
                                         indexing?)
-               true (set-temporal-entry a-ident (dd/datom e a v tx false) removed? indexing?)
-               ;; the assertion a retraction closes: a cardinality-many value
-               ;; reaches the history indexes only when it is retracted
-               (and multi? removed?)
-               (set-temporal-entry a-ident before true indexing?)
-               (and multi? kept? (nil? (temporal-entry db-before before true)))
-               (set-temporal-entry a-ident before false indexing?))
+               true (set-temporal-entry db-before a-ident (dd/datom e a v tx false)
+                                        removed? indexing?)
+               ;; the assertion a retraction closes
+               removed? (set-temporal-entry db-before a-ident before true indexing?)
+               ;; a retraction the transaction took back wrote that assertion
+               ;; too; `set-temporal-entry` keeps it if it was there before
+               kept? (set-temporal-entry db-before a-ident before false indexing?))
              db)
-        net-hash (cond created? h
+        net-hash (cond purged? (- (if after (hash after) 0) (if held? h 0))
+                       created? (hash after)
                        removed? (if hist? 0 (- h))
                        :else 0)]
     [(update db :hash + (- net-hash hd))
-     (cond created? (dd/datom e a v tx true)
-           removed? (dd/datom e a v tx false)
+     (cond (and purged? after) :asserted
+           purged? (when held? :retracted)
+           created? :asserted
+           removed? :retracted
            :else nil)]))
 
 (defn- net-tx-data
-  "`:tx-data` with every re-written key reduced to its net entry, at the place
-   of its first one, and without what was reported for a key before it was
-   purged."
-  [db tx-data net purged]
-  (let [seen (volatile! (sorted-set-by dd/cmp-datoms-eavt-prefix))
+  "`:tx-data` with every netted key reduced to its net entry — its last
+   assertion or its first retraction — at the place of its first entry."
+  [db tx-data net]
+  (let [cmp dd/cmp-datoms-eavt-prefix
         key-of (fn [^Datom d]
                  (if (datom-added d)
                    (project-primary (dbu/secondary-only? db (:ident (dbu/attr-info db (.-a d)))) d)
-                   d))]
+                   d))
+        keyed (mapv (fn [d] [(key-of d) d]) tx-data)
+        ;; the entry reported for a key, when it has one
+        chosen (reduce (fn [m [k ^Datom d]]
+                         (case (get net k ::none)
+                           :asserted (if (datom-added d) (assoc m k d) m)
+                           :retracted (if (or (datom-added d) (contains? m k)) m (assoc m k d))
+                           m))
+                       (sorted-map-by cmp) keyed)
+        seen (volatile! (sorted-set-by cmp))]
     (into []
-          (comp
-           (map-indexed vector)
-           (keep (fn [[i ^Datom d]]
-                   (let [k (key-of d)
-                         purged-at (get purged k)]
-                     (cond
-                       (and purged-at (< i purged-at)) nil
-
-                       (contains? net k)
-                       (when-not (contains? @seen k)
-                         (vswap! seen conj k)
-                         (when-let [^Datom n (get net k)]
-                           ;; an assertion is reported with its full value
-                           (if (datom-added n) (if (datom-added d) d n) n)))
-
-                       :else d)))))
-          tx-data)))
+          (keep (fn [[k d]]
+                  (cond
+                    (not (contains? net k)) d
+                    (contains? @seen k) nil
+                    :else (do (vswap! seen conj k) (get chosen k)))))
+          keyed)))
 
 (defn- net-transaction
   "A transaction records its NET effect.
@@ -1475,32 +1510,40 @@
    difference between the database before and after: one entry in the history
    indexes and in `:tx-data`, or none.
 
-   Left as written: the import path (`::as-given`), and a transaction holding a
-   write dated to another transaction — both replay recorded data — and
-   attributes whose schema entry this transaction changed."
+   Left as written: the import path (`::as-given`) and a transaction holding a
+   write dated to another transaction — both replay recorded data — and the
+   keys of an attribute whose own entity this transaction wrote to (a schema
+   change, even one it took back, decides how each step was recorded)."
   [{:keys [db-before db-after] :as report}]
   (let [touched (::touched report)
-        purged (::purged report)
-        report (dissoc report ::touched ::purged ::foreign-tx)]
-    (if (and (empty? touched) (empty? purged))
+        schema-entities (::schema-entities report)
+        report (dissoc report ::touched ::schema-entities ::foreign-tx)]
+    (if (empty? touched)
       report
       (let [tx (current-tx report)
             old-schema (dbi/-schema db-before)
             new-schema (dbi/-schema db-after)
-            schema-changed? (fn [^Datom k]
-                              (and (not (identical? old-schema new-schema))
-                                   (let [ident (:ident (dbu/attr-info db-after (.-a k)))]
-                                     (not= (get old-schema ident) (get new-schema ident)))))
+            written-idents (into #{} (mapcat (fn [e] [(get old-schema e) (get new-schema e)]))
+                                 schema-entities)
+            attr-refs? (:attribute-refs? (dbi/-config db-after))
+            ident-of (fn [^Datom k]
+                       (let [a (.-a k)]
+                         (cond
+                           (and attr-refs? (contains? schema-entities a)) nil
+                           attr-refs? (get (:ref-ident-map db-after) a)
+                           :else a)))
             [db net] (reduce (fn [[db net] [^Datom k entry]]
-                               (if (and (:net? entry) (not (schema-changed? k)))
-                                 (let [[db n] (net-key db db-before k entry tx)]
-                                   [db (assoc net k n)])
-                                 [db net]))
+                               (let [ident (when (:net? entry) (ident-of k))]
+                                 (if (and ident
+                                          (not (contains? written-idents ident))
+                                          (map? (get new-schema ident)))
+                                   (let [[db n] (net-key db db-before ident k entry tx)]
+                                     [db (assoc net k n)])
+                                   [db net])))
                              [db-after (sorted-map-by dd/cmp-datoms-eavt-prefix)]
                              touched)]
         (cond-> (assoc report :db-after db)
-          (or (seq net) (seq purged))
-          (update :tx-data #(net-tx-data db % net purged)))))))
+          (seq net) (update :tx-data #(net-tx-data db % net)))))))
 
 (defn- retract-components [db datoms]
   (into #{} (comp
@@ -2334,9 +2377,10 @@
             {:keys [tempids db-after]} report
             db db-after]
         (cond
-          (and (empty? es) (or (::touched report) (::purged report) (::foreign-tx report)))
+          (and (empty? es) (or (::touched report) (::schema-entities report)
+                               (::foreign-tx report)))
           (recur (if (::foreign-tx report)
-                   (dissoc report ::touched ::purged ::foreign-tx)
+                   (dissoc report ::touched ::schema-entities ::foreign-tx)
                    (net-transaction report))
                  es)
 

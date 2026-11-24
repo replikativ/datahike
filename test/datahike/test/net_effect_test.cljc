@@ -27,6 +27,8 @@
     :db/index true}
    {:db/ident :quiet :db/valueType :db.type/long :db/cardinality :db.cardinality/one
     :db/noHistory true}
+   {:db/ident :s :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+   {:db/ident :flag :db/valueType :db.type/boolean :db/cardinality :db.cardinality/many}
    {:db/ident :blob :db/valueType :db.type/bytes :db/cardinality :db.cardinality/many}
    {:db/ident :u :db/valueType :db.type/long :db/cardinality :db.cardinality/one
     :db/unique :db.unique/identity}
@@ -36,7 +38,7 @@
    {:db/ident :a+b :db/valueType :db.type/tuple :db/tupleAttrs [:a :b]
     :db/cardinality :db.cardinality/one}])
 
-(def ^:private user-attrs #{:one :many :idx :tags :quiet :blob :u :self :a :b :a+b})
+(def ^:private user-attrs #{:one :many :idx :tags :quiet :blob :u :self :a :b :a+b :s :flag})
 
 (defn- bytes-of [& xs] #?(:clj (byte-array xs) :cljs (js/Uint8Array. (clj->js xs))))
 
@@ -55,7 +57,8 @@
                       [:db/add 101 :tags 1] [:db/add 101 :quiet 7] [:db/add 102 :one 30]
                       [:db/add 101 :blob (bytes-of 1 2 3)] [:db/add 101 :u 1]
                       [:db/add 101 :self 101] [:db/add 102 :self 101]
-                      {:db/id 102 :a 1 :b 2}])
+                      {:db/id 102 :a 1 :b 2}
+                      [:db/add 101 :s "Aa"] [:db/add 101 :flag false]])
     ;; an earlier overwrite and an earlier retraction, so history is not empty
     (d/transact conn [[:db/add 102 :one 31] [:db/add 102 :many :old]])
     (d/transact conn [[:db/add 102 :one 30] [:db/retract 102 :many :old]])
@@ -136,6 +139,12 @@
    "tuple built from nothing"                   [{:db/id 101 :a 3 :b 4}]
    "retractEntity with a reference to itself"   [[:db/retractEntity 101]]
    "a tempid resolved late, by upsert"          [[:db/add "t" :one 5] [:db/add "t" :one 6] [:db/add "t" :u 1]]
+   ;; "Aa" and "BB" have the same hash
+   "card-one over a value of equal hash"        [[:db/add 101 :s "BB"] [:db/add 101 :s "C"]]
+   "card-one to a value of equal hash"          [[:db/add 101 :s "BB"]]
+   "false retract, add"                         [[:db/retract 101 :flag false] [:db/add 101 :flag false]]
+   "false add, retract next to true"            [[:db/add 102 :flag true] [:db/add 102 :flag false] [:db/retract 102 :flag false]]
+   "true add, retract next to false"            [[:db/add 101 :flag true] [:db/retract 101 :flag true]]
    "untouched keys alongside a cancelled one"   [[:db/add 102 :many :a] [:db/add 101 :many :n] [:db/retract 101 :many :n] [:db/add 102 :one 33]]})
 
 (deftest a-transaction-records-its-net-effect
@@ -237,12 +246,39 @@
         (is (empty? (filter #(= :n (:v %)) (:tx-data r))))
         (is (empty? (about (:db-after r) :n)))
         (is (empty? (d/datoms (:db-after r) :eavt 101 :many :n)))))
-    (testing "retracted, then purged"
+    (testing "retracted, then purged: the value was held and is gone, which is
+              reported once"
       (let [r (run db [[:db/retract 101 :many :x] [:db/purge 101 :many :x]])]
-        (is (empty? (filter #(= :x (:v %)) (:tx-data r))))
+        (is (= [false] (map :added (filter #(= :x (:v %)) (:tx-data r)))))
         (is (empty? (about (:db-after r) :x)))))
+    (testing "purged, asserted, retracted"
+      (let [r (run db [[:db/purge 101 :many :x] [:db/add 101 :many :x] [:db/retract 101 :many :x]])]
+        (is (= [false] (map :added (filter #(= :x (:v %)) (:tx-data r)))))
+        (is (empty? (about (:db-after r) :x)))
+        (is (empty? (d/datoms (:db-after r) :eavt 101 :many :x)))))
+    (testing "asserted, retracted, purged: as if it never happened"
+      (let [r (run db [[:db/add 101 :many :n] [:db/retract 101 :many :n] [:db/purge 101 :many :n]])]
+        (is (empty? (filter #(= :n (:v %)) (:tx-data r))))
+        (is (empty? (about (:db-after r) :n)))
+        (is (= (:hash (:db-after (run db []))) (:hash (:db-after r))))))
     (testing "purged, then asserted again"
       (let [r (run db [[:db/purge 101 :many :x] [:db/add 101 :many :x]])]
         (is (= [true] (map :added (filter #(= :x (:v %)) (:tx-data r)))))
         (is (empty? (about (:db-after r) :x)))
         (is (seq (d/datoms (:db-after r) :eavt 101 :many :x)))))))
+
+(deftest a-foreign-dated-operation-that-changes-nothing-does-not-count
+  (let [db (base-db true)
+        earlier (dec (:max-tx db))
+        r (run db [[:db/add 101 :many :x earlier]
+                   [:db/add 101 :many :n] [:db/retract 101 :many :n]])]
+    (is (empty? (filter #(= :n (:v %)) (:tx-data r))))))
+
+(deftest a-schema-change-taken-back-leaves-the-attribute-as-written
+  (testing "the steps were recorded under a schema the end of the transaction no
+            longer shows, so the attribute's keys are not netted"
+    (let [db (base-db true)
+          r (run db [[:db/add :quiet :db/noHistory false]
+                     [:db/add 101 :quiet 8] [:db/add 101 :quiet 7]
+                     [:db/add :quiet :db/noHistory true]])]
+      (is (= #{7} (set (map :v (d/datoms (:db-after r) :eavt 101 :quiet))))))))
