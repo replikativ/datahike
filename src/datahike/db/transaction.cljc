@@ -941,6 +941,8 @@
    transaction (nil when the transaction created it), the sum of its `:hash`
    contributions so far, and whether it has been written more than once. Only
    removed keys are entered, so a transaction that only asserts tracks nothing.
+   `::rewritten` is set once any key has been written twice; without it the
+   transaction has nothing to net.
 
    A removal of a datom that carries this transaction's id and is not in
    `db-before` is the second write to a key this transaction asserted."
@@ -948,16 +950,18 @@
   (let [touched (or (::touched report) (sorted-map-by cmp-keys))
         entry (get touched k)
         db-before (:db-before report)]
-    (assoc report ::touched
-           (assoc touched k
-                  (cond
-                    entry (-> entry (update :hd + hash-delta) (assoc :net? true))
+    (cond
+      entry
+      (assoc report ::rewritten true
+             ::touched (assoc touched k (-> entry (update :hd + hash-delta) (assoc :net? true))))
 
-                    (and (= (datom-tx k) (current-tx report))
-                         (nil? (current-datom db-before (.-e k) (.-a k) (.-v k))))
-                    {:before nil :hd (+ (hash k) hash-delta) :net? true}
+      (and (= (datom-tx k) (current-tx report))
+           (nil? (current-datom db-before (.-e k) (.-a k) (.-v k))))
+      (assoc report ::rewritten true
+             ::touched (assoc touched k {:before nil :hd (+ (hash k) hash-delta) :net? true}))
 
-                    :else {:before k :hd hash-delta :net? false})))))
+      :else
+      (assoc report ::touched (assoc touched k {:before k :hd hash-delta :net? false})))))
 
 (defn- track-assertion
   "Note that this transaction asserted `k`. Only a key it removed before is of
@@ -965,8 +969,8 @@
   [report ^Datom k]
   (if-let [touched (::touched report)]
     (if-let [entry (get touched k)]
-      (assoc report ::touched
-             (assoc touched k (-> entry (update :hd + (hash k)) (assoc :net? true))))
+      (assoc report ::rewritten true
+             ::touched (assoc touched k (-> entry (update :hd + (hash k)) (assoc :net? true))))
       report)
     report))
 
@@ -992,25 +996,35 @@
        report
        (let [a-ident (when-not as-given?
                        (:ident (dbu/attr-info db (.-a datom) :error-on-missing)))
-             hist?*  (when-not as-given? (history-kept? db a-ident))
-             hist?   hist?*
-             track?  (and (not as-given?)
-                          (not (::as-written report))
-                          (not= :db/txInstant a-ident)
-                          (not (vt-mode-attr? db a-ident)))
              ^Datom old (if (and upsert? (= ::not-looked-up old))
                           (current-datom-for-ea db (.-e datom) (.-a datom))
                           (when upsert? old))
              ^Datom prim (if (and (not as-given?) added?)
                            (project-primary (dbu/secondary-only? db a-ident) datom)
                            datom)
+             ;; a cardinality-one assertion over another value removes it
+             supersedes? (and (not as-given?) upsert? (some? old)
+                              (not= :db/txInstant a-ident)
+                              (not (zero? (dd/compare-value (.-v old) (.-v prim)))))
+             ;; Tracking is for keys written twice, and the first write that
+             ;; counts is a removal: an assertion in a transaction that has
+             ;; removed nothing has nothing to look up. The checks that read
+             ;; the schema come last, so a plain insert pays for none of them.
+             track?  (and (not as-given?)
+                          (not (::as-written report))
+                          (or (not added?) supersedes? (some? (::touched report)))
+                          (not= :db/txInstant a-ident)
+                          (not (vt-mode-attr? db a-ident)))
+             hist?   (and (or track? supersedes?) (history-kept? db a-ident))
              ;; an unequal value whose stored form hashes like the one it
              ;; supersedes: the upsert takes it for a restatement and drops
              ;; the old term
-             collision? (and (not as-given?) upsert? (some? old) hist?
-                             (not= :db/txInstant a-ident)
-                             (not (zero? (dd/compare-value (.-v old) (.-v prim))))
-                             (= (hash old) (hash prim)))
+             collision? (and supersedes? hist? (= (hash old) (hash prim)))
+             ;; attributes that describe the schema or a secondary index all
+             ;; live in a `db` namespace; asking the spec is for those only
+             db-attr? (and (not as-given?) (keyword? a-ident)
+                           (when-let [n (namespace a-ident)]
+                             (str/starts-with? n "db")))
              write   (fn [db]
                        (cond
                          upsert?  (with-datom-upsert db datom old tx-meta)
@@ -1023,9 +1037,7 @@
                        ;; term goes, and with history the retraction's own comes
                        (track-removal removing (- (if hist? (hash datom) 0) (hash removing)))
 
-                       ;; a cardinality-one assertion over another value removes it
-                       (and track? upsert? (some? old)
-                            (not (zero? (dd/compare-value (.-v old) (.-v prim)))))
+                       (and track? supersedes?)
                        (track-removal old (if hist? 0 (- (hash old))))
 
                        (and track? added?)
@@ -1034,12 +1046,12 @@
                        (not as-given?) (foreign-tx datom)
                        ;; a write to an attribute's own entity: its keys are
                        ;; left as written (see `net-transaction`)
-                       (and (not as-given?) (ds/schema-attr? a-ident))
+                       (and db-attr? (ds/schema-attr? a-ident))
                        (update ::schema-entities (fnil conj #{}) (.-e datom))
                        ;; a rename, or a change to a secondary index, reaches
                        ;; attributes other than the entity written to: the
                        ;; whole transaction is left as written
-                       (and (not as-given?)
+                       (and db-attr?
                             (or (= :db/ident a-ident) (ds/secondary-index-attr? a-ident)))
                        (assoc ::as-written true)
                        true (update-in [:db-after] write)
@@ -1533,7 +1545,7 @@
   [{:keys [db-before db-after] :as report}]
   (let [touched (::touched report)
         schema-entities (::schema-entities report)
-        report (dissoc report ::touched ::schema-entities ::as-written)]
+        report (dissoc report ::touched ::schema-entities ::as-written ::rewritten)]
     (if (empty? touched)
       report
       (let [tx (current-tx report)
@@ -2403,8 +2415,10 @@
         (cond
           (and (empty? es) (or (::touched report) (::schema-entities report)
                                (::as-written report)))
-          (recur (if (::as-written report)
-                   (dissoc report ::touched ::schema-entities ::as-written)
+          ;; `::rewritten`: some key was written more than once. Without it
+          ;; there is nothing to net, whatever was tracked.
+          (recur (if (or (::as-written report) (not (::rewritten report)))
+                   (dissoc report ::touched ::schema-entities ::as-written ::rewritten)
                    (net-transaction report))
                  es)
 
