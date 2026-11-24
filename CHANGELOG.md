@@ -6,6 +6,30 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **A transaction records its net effect — behaviour change.** Operations in
+  one transaction still run in order, and each sees the result of the one
+  before. What the transaction leaves behind is now the difference between
+  the database before and after it: at most one entry per `[e a v]` in
+  history and in `:tx-data`. Before, every step was recorded, so a value
+  asserted and retracted in one transaction — or a cardinality-one attribute
+  set twice — left the same value both asserted and retracted under one
+  transaction id, and history could not say which came last. `as-of` at such
+  a transaction could answer with a value missing, and a history export
+  could not be restored faithfully. What changes for callers:
+  - `:tx-data` in a transaction report is the net change. Intermediate
+    values (the `25` in `24 → 25 → 21`) are in neither `:tx-data` nor
+    history, and a transaction whose operations cancel out reports nothing
+    for them.
+  - A value retracted and asserted again in one transaction keeps the
+    transaction that first asserted it.
+  - Retracting a fact the database does not hold is no longer reported.
+
+  Not netted, and stored as before: imports (`import-db`, `load-entities`),
+  a transaction containing a write dated to another transaction
+  (`[:db/add e a v tx]`), attributes covered by a valid-time secondary
+  index, and attributes whose schema the same transaction changes. Pairs
+  already in a database stay as they are. (0.8.1944, [#TODO])
+
 - **`:db.fn/call-with-tempids`** *(Experimental)* — a local transaction
   function that also receives the tempids allocated so far in the
   transaction: `[:db.fn/call-with-tempids f arg ...]` calls
