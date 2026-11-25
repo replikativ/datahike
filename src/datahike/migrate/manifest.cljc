@@ -444,8 +444,9 @@
         out))))
 
 (defn net-same-tx-pairs
-  "`datoms` — a history in `:eavt` order — with every value that one transaction
-   both asserted and retracted reduced to what that transaction did to it.
+  "A transducer over a history in `:eavt` order: every value that one
+   transaction both asserted and retracted is reduced to what that transaction
+   did to it.
 
    A database written before transactions recorded their net effect can hold
    `[e a v t true]` and `[e a v t false]` side by side, and a history is a set:
@@ -460,49 +461,54 @@
    Only a pair followed directly by another pair is a guess, taken as having
    left the value as it found it.
 
-   Records of one `[e a v]` are adjacent in `:eavt`, and `=` on datoms compares
-   exactly `[e a v]`, so `partition-by identity` groups them without building a
-   key per datom. A run without a pair passes through untouched."
-  [db datoms]
-  (mapcat (fn [run]
-            (if (and (next run)
-                     (some (fn [[x y]] (and (== (d/datom-tx x) (d/datom-tx y))
-                                            (not= (d/datom-added x) (d/datom-added y))))
-                           (partition 2 1 run)))
-              (net-run db run)
-              run))
-          (partition-by identity datoms)))
-
-(defn- same-tx-pair?
-  "Does this `:eavt` history hold any value asserted and retracted under one
-   transaction id? One reduce comparing neighbours, cheapest test first."
-  [datoms]
-  (let [prev (volatile! nil)]
-    (boolean
-     (reduce (fn [_ dm]
-               (let [p @prev]
-                 (vreset! prev dm)
-                 (when (and p
-                            (== (d/datom-tx p) (d/datom-tx dm))
-                            (not= (d/datom-added p) (d/datom-added dm))
-                            (= p dm))
-                   (reduced true))))
-             nil datoms))))
+   ONE pass, holding the records of one `[e a v]` at a time: they are adjacent
+   in `:eavt`, and `=` on datoms compares exactly `[e a v]`. A value without a
+   pair is passed on as it came, so a history without any costs one comparison
+   per datom, and one with a few pays for those few."
+  [db]
+  (fn [rf]
+    (let [run   #?(:clj (java.util.ArrayList.) :cljs (array))
+          pair? (volatile! false)
+          size  (fn [] #?(:clj (.size ^java.util.ArrayList run) :cljs (alength run)))
+          at    (fn [i] #?(:clj (.get ^java.util.ArrayList run (int i)) :cljs (aget run i)))
+          flush (fn [acc]
+                  (let [n (size)
+                        records (if @pair? (net-run db (mapv at (range n))) nil)
+                        acc (if records
+                              (reduce (fn [acc dm] (let [r (rf acc dm)] (if (reduced? r) (reduced r) r)))
+                                      acc records)
+                              (loop [i 0, acc acc]
+                                (if (and (< i n) (not (reduced? acc)))
+                                  (recur (inc i) (rf acc (at i)))
+                                  acc)))]
+                    #?(:clj (.clear ^java.util.ArrayList run) :cljs (set! (.-length run) 0))
+                    (vreset! pair? false)
+                    acc))]
+      (fn
+        ([] (rf))
+        ([acc] (rf (unreduced (flush acc))))
+        ([acc dm]
+         (let [n (size)]
+           (if (zero? n)
+             (do #?(:clj (.add ^java.util.ArrayList run dm) :cljs (.push run dm)) acc)
+             (let [p (at (dec n))]
+               (if (= p dm)
+                 (do (when (and (== (d/datom-tx p) (d/datom-tx dm))
+                                (not= (d/datom-added p) (d/datom-added dm)))
+                       (vreset! pair? true))
+                     #?(:clj (.add ^java.util.ArrayList run dm) :cljs (.push run dm))
+                     acc)
+                 (let [acc (flush acc)]
+                   #?(:clj (.add ^java.util.ArrayList run dm) :cljs (.push run dm))
+                   acc))))))))))
 
 (defn export-datoms
   "The datoms an export of `db` reads, in `:eavt` order: the history with
    same-transaction pairs netted when `history?`, the current datoms otherwise.
-
-   Grouping every value's records costs as much again as reading them, and
-   nearly every database has no pair, so the history is scanned once for one
-   first. Without a pair the index seq is handed on as it is. The seq is made
-   anew for each pass and never bound, so the scan does not hold it."
+   Lazy, and read from the index once."
   [db history?]
   (if history?
-    (let [src (api/history db)]
-      (if (same-tx-pair? (api/datoms src :eavt))
-        (net-same-tx-pairs db (api/datoms src :eavt))
-        (api/datoms src :eavt)))
+    (sequence (net-same-tx-pairs db) (api/datoms (api/history db) :eavt))
     (api/datoms db :eavt)))
 
 (defn export-records
