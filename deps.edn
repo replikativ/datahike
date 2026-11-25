@@ -210,7 +210,7 @@
                                org.replikativ/konserve-azure-blob
                                {:mvn/version "0.1.5"}
                                org.postgresql/postgresql     {:mvn/version "42.7.13"}
-                               org.replikativ/pg-datahike    {:mvn/version "0.1.426"
+                               org.replikativ/pg-datahike    {:mvn/version "0.1.427"
                                                               :exclusions [org.replikativ/datahike]}}}
 
            ;; Datomic Pro peer API, for `datahike.migrate.datomic` and its
@@ -295,7 +295,7 @@
                                       org.postgresql/postgresql
                                       {:mvn/version "42.7.13"}
                                       org.replikativ/pg-datahike
-                                      {:mvn/version "0.1.426"
+                                      {:mvn/version "0.1.427"
                                        :exclusions [org.replikativ/datahike]}}
                          :main-opts ["-m" "datahike.http.main"]}
 

@@ -630,6 +630,14 @@ java -jar datahike-http-server.jar mirror --check --name analytics --config serv
 java -jar datahike-http-server.jar mirror --name analytics --config server.edn
 ```
 
+With pg-datahike 0.1.427, add `:max-in-flight-commits 8` to a named mirror
+entry to try experimental queued replay for ordinary row changes. The
+default is one. An exclusive writer can make several source commits durable
+in one storage write while preserving a separate history point for each.
+Give the worker exclusive access to its store. See the
+[queued replay guide](https://github.com/replikativ/pg-datahike/blob/v0.1.427/doc/postgres-mirroring.md#group-commit-for-ordinary-row-changes)
+for limits and serial replay boundaries.
+
 With Docker Compose, use the same server image for each service. Mount
 `server.edn` read-only, give each worker a different named volume at
 `/var/lib/datahike`, and mount its source and listener secrets only into its
