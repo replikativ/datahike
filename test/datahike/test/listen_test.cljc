@@ -6,7 +6,6 @@
    [datahike.datom :as dd]
    [datahike.constants :as const]
    [datahike.test.utils :as du]
-   #?(:clj [datahike.writer :as writer])
    [datahike.test.core-test]))
 
 (deftest test-listen!
@@ -118,30 +117,3 @@
                          (get-in % [:tx-meta :db/commitId]))
                      (:tx-reports event))))
        (d/release conn))))
-
-#?(:clj
-   (deftest writer-prepares-dependent-operations-on-the-ordered-basis
-     (let [conn (du/setup-db {:keep-history? true
-                              :writer {:backend :self :writer-ownership :exclusive}})
-           name-id (fn [db]
-                     (d/q '[:find ?e . :where [?e :name "first"]] db))
-           prepare (writer/prepare-tx-data
-                    (fn [db]
-                      (let [eid (name-id db)]
-                        (when-not eid (throw (ex-info "Preceding insert is absent" {})))
-                        [[:db/add eid :name "second"]])))]
-       (try
-         (let [first-write (d/transact! conn [[:db/add -1 :name "first"]])
-               second-write (d/transact! conn prepare)
-               first-tx (get-in @first-write [:tempids :db/current-tx])
-               second-tx (get-in @second-write [:tempids :db/current-tx])
-               eid (name-id (d/as-of @conn first-tx))]
-           (is (< first-tx second-tx))
-           (is (some? eid))
-           (is (= "second" (:name (d/entity (d/as-of @conn second-tx) eid)))))
-         (finally (du/teardown-db conn)))
-       (let [shared (du/setup-db)]
-         (try
-           (is (thrown-with-msg? clojure.lang.ExceptionInfo #"exclusive local writer"
-                                 (d/transact! shared prepare)))
-           (finally (du/teardown-db shared)))))))

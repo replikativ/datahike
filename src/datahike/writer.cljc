@@ -1354,7 +1354,16 @@
 
 (defn ^:no-doc prepare-tx-data
   "Build a transact! request whose operations are resolved on the exclusive
-   local writer's immutable basis. The function must be free of side effects."
+   local writer's immutable basis. The function must be free of side effects.
+
+   `prepare` is called with the database the writer is about to update, before
+   the transaction opens, and returns ordinary transaction data.
+
+   A transaction function (`:db.fn/call`) is not a substitute when `prepare`
+   needs to run speculative transactions: it receives the database from inside
+   the open transaction, whose indexes are transient, and `with` / `db-with`
+   on that database throw \"Expected persistent set\". Here the database is
+   immutable, so `prepare` may stage on it with `with` as often as it needs."
   [prepare]
   {:tx-data [] ::prepare-tx-data prepare})
 
