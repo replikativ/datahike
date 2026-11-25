@@ -6,6 +6,11 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Writer-basis transaction preparation** *(Experimental, internal)*. An
+  exclusive local writer can prepare transaction operations from the immutable
+  database it is about to update. This supports dependent transactions queued
+  by the PostgreSQL mirror.
+
 - **An exclusive writer gives every queued transaction its own transaction id** — with `:writer-ownership :exclusive`, a transaction that was applied while the one before it was still being committed reused that transaction's id: the writer took the transaction counter from the published connection, which only moves when a commit lands. Twenty `transact!` calls submitted without waiting came back with as few as one distinct id, so their datoms shared a transaction and `as-of`, `since` and history could not tell the versions apart. The writer now keeps its own counter and adopts the connection's only when that is higher, which is what the legacy CBOR import relies on. The default `:shared` ownership was not affected. (0.8.1946, [#1189])
 - **`transact!` calls from one caller reach the local writer in call order** — each call used to hand its transaction to the writer from a separate go block, so consecutive calls could be applied in another order than they were made. A local writer now receives the transaction before `transact!` returns its promise; a caller can submit a transaction that depends on an earlier one without waiting for it. Durability and listener delivery are asynchronous as before, and a remote writer gives no such ordering. (0.8.1946, [#1189])
 
