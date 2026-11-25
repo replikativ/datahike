@@ -98,6 +98,7 @@ cat >"$scratch/server.edn" <<'EDN'
                :source-url-file "/run/secrets/analytics.url"
                :server-config-file "/run/secrets/listener.edn"
                :slot-prefix "pgdh_analytics" :schema-refresh? true
+               :max-in-flight-commits 8
                :server {:host "0.0.0.0" :port 15432}}
   "metrics" {:publication "metrics" :store-path "/var/lib/datahike/mirror"
              :source-url-file "/run/secrets/metrics.url"
@@ -147,6 +148,8 @@ docker exec "$native" test ! -e /run/secrets/analytics.url
 slot=$(source_sql -c "SELECT slot_name FROM pg_replication_slots WHERE slot_name LIKE 'pgdh_analytics_%'")
 test -n "$slot"
 echo 'Two mirrors and a writable local database are live with isolated mounts'
+source_sql -c "UPDATE source.accounts SET note = 'following' WHERE id = 1"
+await mirror_result analytics "$analytics_port" 'SELECT note FROM source.accounts' following
 
 docker stop "$publisher" >/dev/null
 await mirror_result analytics "$analytics_port" 'SELECT count(*) FROM source.accounts' 1
