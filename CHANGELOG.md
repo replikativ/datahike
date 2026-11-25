@@ -30,6 +30,8 @@ When something is added, it's typically marked *Experimental*. When the API cont
     transaction that first asserted it.
   - Retracting a fact the database does not hold is no longer reported.
 
+- **A history export writes the net effect of every transaction** — a database written before [#1185] can hold one `[e a v]` both asserted and retracted under one transaction id, and the history does not say which came last. An import read every such pair as "ended present": a cardinality-one attribute set twice in one transaction came back with the passing value as a second current value (or as the only one), and the import still reported `:verified? true`. `export-db` with `:history? true` now resolves each pair from the source database, by what the value's next record needed or, when nothing follows, whether the database currently holds the value, and writes one assertion, one retraction or nothing. The imported database then has the history a net-effect transactor would have written, so `as-of` and `since` are right on it too. A pair followed directly by another pair is taken to have left the value unchanged. Dumps written by earlier versions still carry the pairs and import as before: export again from the source database with this version. (0.8.1945, [#1188])
+
   Not netted, and stored as before: imports (`import-db`, `load-entities`),
   a transaction containing a write dated to another transaction
   (`[:db/add e a v tx]`), a purge, an attribute rename or a change to a
@@ -1240,6 +1242,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1183]: https://github.com/replikativ/datahike/pull/1183
 [#1180]: https://github.com/replikativ/datahike/pull/1180
 [#1185]: https://github.com/replikativ/datahike/pull/1185
+[#1188]: https://github.com/replikativ/datahike/pull/1188
 [#1107]: https://github.com/replikativ/datahike/issues/1107
 [#938]: https://github.com/replikativ/datahike/issues/938
 [#1156]: https://github.com/replikativ/datahike/pull/1156
