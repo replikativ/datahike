@@ -6,6 +6,13 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Ordered local async transaction submission.** Consecutive `transact!` calls
+  from one caller enter the local writer queue in call order. Callers can submit
+  dependent transactions before awaiting their durable results.
+- **Distinct transaction IDs for exclusive writer batches.** Queued
+  transactions retain the writer's advancing counter while the published
+  head waits for storage. Historical snapshots keep each transaction boundary.
+
 - **PostgreSQL mirror mode** *(Experimental)*. Run the standalone server JAR
   with `mirror mirror.edn` to follow a PostgreSQL 18 publication and serve a
   read-only replica with Datahike history. A separate worker can also select
