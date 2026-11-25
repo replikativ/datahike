@@ -475,15 +475,16 @@
                                                      (throw e)))
                                            ::reload-failed)))
                               reload-failed? (= ::reload-failed old)
-                              ;; TODO remove this after import is ported to writer API
-                              ;; Skipped when shared: `old` was just read
-                              ;; from the head, so its :max-tx is authoritative,
-                              ;; while the connection's may lag another process.
-                              old (if (and (not shared?)
-                                           (not= (:max-tx old)
-                                                 (:max-tx @(:wrapped-atom connection))))
-                                    (assoc old :max-tx (:max-tx @(:wrapped-atom connection)))
-                                    old)
+                              ;; Legacy CBOR import can raise the connection's
+                              ;; transaction counter outside the writer. Only
+                              ;; adopt an increase: the durable connection can
+                              ;; lag this exclusive writer's queued snapshots.
+                              old (if shared?
+                                    old
+                                    (let [published-tx (:max-tx @(:wrapped-atom connection))]
+                                      (if (and published-tx (> published-tx (:max-tx old)))
+                                        (assoc old :max-tx published-tx)
+                                        old)))
                               ;; The head cid `old` was applied to. Handed to the
                               ;; commit loop so commit! records the right parent
                               ;; without reading the head a SECOND time.
@@ -1356,11 +1357,13 @@
   (let [p (throwable-promise)
         db @(:wrapped-atom connection)
         writer (:writer db)
-        local-writer? (= :self (get-in db [:config :writer :backend] :self))]
+        local-writer? (= :self (get-in db [:config :writer :backend] :self))
+        invocation {:op 'transact! :args [arg-map]}
+        ;; The local queue is FIFO. Enqueue before returning so sequential
+        ;; callers can submit dependent transactions without awaiting them.
+        submitted (when (instance? LocalWriter writer) (dispatch! writer invocation))]
     (go
-      (let [tx-report (<! (dispatch! writer
-                                     {:op 'transact!
-                                      :args [arg-map]}))]
+      (let [tx-report (<! (or submitted (dispatch! writer invocation)))]
         (when (map? tx-report) ;; not error
           #?(:clj
              (doseq [idx-ident (detect-new-building-indices tx-report)]
