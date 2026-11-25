@@ -1352,12 +1352,36 @@
                 ident))
             after))))
 
+(defn ^:no-doc prepare-tx-data
+  "Build a transact! request whose operations are resolved on the exclusive
+   local writer's immutable basis. The function must be free of side effects.
+
+   `prepare` is called with the database the writer is about to update, before
+   the transaction opens, and returns ordinary transaction data.
+
+   A transaction function (`:db.fn/call`) is not a substitute when `prepare`
+   needs to run speculative transactions: it receives the database from inside
+   the open transaction, whose indexes are transient, and `with` / `db-with`
+   on that database throw \"Expected persistent set\". Here the database is
+   immutable, so `prepare` may stage on it with `with` as often as it needs."
+  [prepare]
+  {:tx-data [] ::prepare-tx-data prepare})
+
 (defn transact!
   [connection arg-map]
   (let [p (throwable-promise)
         db @(:wrapped-atom connection)
         writer (:writer db)
         local-writer? (= :self (get-in db [:config :writer :backend] :self))
+        _ (when (contains? arg-map ::prepare-tx-data)
+            (when-not (= [] (:tx-data arg-map))
+              (throw (ex-info "Prepared transaction data requires an empty :tx-data"
+                              {:type :transact/invalid-preparation})))
+            (when-not (and (fn? (::prepare-tx-data arg-map))
+                           (instance? LocalWriter writer)
+                           (= :exclusive (:writer-ownership writer)))
+              (throw (ex-info "Preparing transaction data requires a function and an exclusive local writer"
+                              {:type :transact/invalid-preparation}))))
         invocation {:op 'transact! :args [arg-map]}
         ;; The local queue is FIFO. Enqueue before returning so sequential
         ;; callers can submit dependent transactions without awaiting them.

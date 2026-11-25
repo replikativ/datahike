@@ -2056,13 +2056,16 @@
            :idx-idents (set new-building)
            :writer writer-config})))))
 
-(defn transact! [old {:keys [tx-data tx-meta tx-options]}]
-  (log/debug :datahike/transact {:tx-count (count tx-data)})
-  (log/trace :datahike/transact-detail {:tx-data tx-data :tx-meta tx-meta})
-  (let [tx-report (binding [sec/*durable-secondary-write-context* :commit]
-                    (core/with old tx-data tx-meta tx-options))]
-    #?(:clj (validate-secondary-backfill-writer! old tx-report))
-    (complete-db-update old tx-report)))
+(defn transact! [old {:keys [tx-data tx-meta tx-options] :as args}]
+  (let [tx-data (if-let [prepare (:datahike.writer/prepare-tx-data args)]
+                  (prepare old)
+                  tx-data)]
+    (log/debug :datahike/transact {:tx-count (count tx-data)})
+    (log/trace :datahike/transact-detail {:tx-data tx-data :tx-meta tx-meta})
+    (let [tx-report (binding [sec/*durable-secondary-write-context* :commit]
+                      (core/with old tx-data tx-meta tx-options))]
+      #?(:clj (validate-secondary-backfill-writer! old tx-report))
+      (complete-db-update old tx-report))))
 
 #?(:clj
    (defn ^:no-doc begin-avet-build!
