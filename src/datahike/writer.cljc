@@ -306,8 +306,24 @@
         ;; processing loop
         (go-try S
          ;; delay processing until the writer we are part of in connection is set
-                (while (not (:writer @(:wrapped-atom connection)))
+                ;; ...or until the connection is released without ever having
+                ;; shown it to us: a connect that lost the publication race
+                ;; discards its connection at once, and this loop would poll a
+                ;; :released atom forever.
+                (while (let [db @(:wrapped-atom connection)]
+                         (and (not= :released db) (not (:writer db))))
                   (<! (timeout 10)))
+                ;; Released before we started: there is no database to apply
+                ;; anything to. Close the queue ourselves rather than rely on
+                ;; the releaser having got that far, and answer whatever was
+                ;; already queued, so the loop below ends on its first take
+                ;; instead of applying an operation to :released.
+                (when (= :released @(:wrapped-atom connection))
+                  (close! transaction-queue)
+                  #?(:clj (fail-queued-invocations!
+                           transaction-queue
+                           (ex-info "Writer is shut down (its connection was released before it started); release and reconnect."
+                                    {:type :writer-shut-down}))))
                 ;; needs-reload? — has our previous batch committed, so the head
                 ;;   must be re-read before applying anything else? INVARIANT:
                 ;;   needs-reload? is true exactly when pending is 0, so a failed
@@ -459,15 +475,16 @@
                                                      (throw e)))
                                            ::reload-failed)))
                               reload-failed? (= ::reload-failed old)
-                              ;; TODO remove this after import is ported to writer API
-                              ;; Skipped when shared: `old` was just read
-                              ;; from the head, so its :max-tx is authoritative,
-                              ;; while the connection's may lag another process.
-                              old (if (and (not shared?)
-                                           (not= (:max-tx old)
-                                                 (:max-tx @(:wrapped-atom connection))))
-                                    (assoc old :max-tx (:max-tx @(:wrapped-atom connection)))
-                                    old)
+                              ;; Legacy CBOR import can raise the connection's
+                              ;; transaction counter outside the writer. Only
+                              ;; adopt an increase: the durable connection can
+                              ;; lag this exclusive writer's queued snapshots.
+                              old (if shared?
+                                    old
+                                    (let [published-tx (:max-tx @(:wrapped-atom connection))]
+                                      (if (and published-tx (> published-tx (:max-tx old)))
+                                        (assoc old :max-tx published-tx)
+                                        old)))
                               ;; The head cid `old` was applied to. Handed to the
                               ;; commit loop so commit! records the right parent
                               ;; without reading the head a SECOND time.
@@ -1019,7 +1036,9 @@
                            ;; bulk import: indexes built outside, substituted here.
                            ;; NOT wrapped — its :tx-data is empty by construction,
                            ;; so a tx-pred has nothing to judge (see w/publish-built-db!)
-                           'publish-built-db! w/publish-built-db!})
+                           'publish-built-db! w/publish-built-db!
+                           ;; NOT wrapped either: no datoms (see w/recount-indices!)
+                           'recount-indices! w/recount-indices!})
 
 (defmulti create-writer
   "Create the writer described by the connection's `:writer` config.
@@ -1333,16 +1352,42 @@
                 ident))
             after))))
 
+(defn ^:no-doc prepare-tx-data
+  "Build a transact! request whose operations are resolved on the exclusive
+   local writer's immutable basis. The function must be free of side effects.
+
+   `prepare` is called with the database the writer is about to update, before
+   the transaction opens, and returns ordinary transaction data.
+
+   A transaction function (`:db.fn/call`) is not a substitute when `prepare`
+   needs to run speculative transactions: it receives the database from inside
+   the open transaction, whose indexes are transient, and `with` / `db-with`
+   on that database throw \"Expected persistent set\". Here the database is
+   immutable, so `prepare` may stage on it with `with` as often as it needs."
+  [prepare]
+  {:tx-data [] ::prepare-tx-data prepare})
+
 (defn transact!
   [connection arg-map]
   (let [p (throwable-promise)
         db @(:wrapped-atom connection)
         writer (:writer db)
-        local-writer? (= :self (get-in db [:config :writer :backend] :self))]
+        local-writer? (= :self (get-in db [:config :writer :backend] :self))
+        _ (when (contains? arg-map ::prepare-tx-data)
+            (when-not (= [] (:tx-data arg-map))
+              (throw (ex-info "Prepared transaction data requires an empty :tx-data"
+                              {:type :transact/invalid-preparation})))
+            (when-not (and (fn? (::prepare-tx-data arg-map))
+                           (instance? LocalWriter writer)
+                           (= :exclusive (:writer-ownership writer)))
+              (throw (ex-info "Preparing transaction data requires a function and an exclusive local writer"
+                              {:type :transact/invalid-preparation}))))
+        invocation {:op 'transact! :args [arg-map]}
+        ;; The local queue is FIFO. Enqueue before returning so sequential
+        ;; callers can submit dependent transactions without awaiting them.
+        submitted (when (instance? LocalWriter writer) (dispatch! writer invocation))]
     (go
-      (let [tx-report (<! (dispatch! writer
-                                     {:op 'transact!
-                                      :args [arg-map]}))]
+      (let [tx-report (<! (or submitted (dispatch! writer invocation)))]
         (when (map? tx-report) ;; not error
           #?(:clj
              (doseq [idx-ident (detect-new-building-indices tx-report)]
@@ -1462,6 +1507,18 @@
         writer (:writer @(:wrapped-atom connection))]
     (go
       (let [tx-report (<! (dispatch! writer {:op 'publish-built-db! :args [fields]}))]
+        (#?(:clj deliver :cljs put!) p tx-report)))
+    p))
+
+(defn recount-indices!
+  "Rewrite every uncounted index branch with its count through the writer; see
+   `datahike.index.recount/recount!`. The promise resolves once the commit is
+   published."
+  [connection]
+  (let [p (throwable-promise)
+        writer (:writer @(:wrapped-atom connection))]
+    (go
+      (let [tx-report (<! (dispatch! writer {:op 'recount-indices! :args []}))]
         (#?(:clj deliver :cljs put!) p tx-report)))
     p))
 

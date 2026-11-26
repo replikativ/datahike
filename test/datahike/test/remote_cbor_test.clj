@@ -113,6 +113,52 @@
       (is (= d (boring/decode (enc d reg) (rcbor/decode-opts reg)))))))
 
 ;; ---------------------------------------------------------------------------
+;; Seqs (boring >= 0.1.31)
+;; ---------------------------------------------------------------------------
+
+(defn- call-forms
+  "Every list inside a query form, in walk order."
+  [form]
+  (filter list? (tree-seq coll? seq form)))
+
+(deftest a-query-keeps-its-call-forms-as-seqs
+  (testing "A query's calls go out as the tag-27 `clojure/seq` marker and
+            arrive as seqs. Before boring 0.1.31 a list was a plain array, so
+            the server read `(count ?a)` as `[count ?a]`: equal under `=`, but
+            not `seq?`, so the query it parsed was not the one that was sent."
+    (let [query '[:find ?n (count ?a) (pull ?e [:name])
+                  :where [?e :name ?n] [?e :age ?a]
+                  [(str ?n "!") ?s] [(> ?a 1)]]
+          bs (boring/encode query (rcbor/encode-opts (rcbor/client-registry)))
+          decoded (boring/decode bs (rcbor/decode-opts (rcbor/server-registry)))]
+      (is (str/includes? (String. bs "ISO-8859-1") "clojure/seq"))
+      (is (= query decoded))
+      (is (= 4 (count (call-forms query))) "the probe sees every call")
+      (is (= (map vec (call-forms query))
+             (map vec (filter seq? (tree-seq coll? seq decoded))))
+          "each call arrives as a seq, in place")
+      (is (every? vector? (drop 5 decoded))
+          "the clauses themselves stay vectors"))))
+
+(deftest a-seq-result-arrives-as-an-equal-seq
+  (testing "A lazy seq the server returns (d/datoms, seek-datoms) reaches the
+            client as a seq of the same datoms, as it does over transit."
+    (let [datoms (map #(dd/datom % :name (str "n" %) 536870913 true) (range 1 4))
+          bs (boring/encode datoms (rcbor/encode-opts (rcbor/server-registry)))
+          decoded (boring/decode bs (rcbor/decode-opts (rcbor/client-registry)))]
+      (is (seq? decoded))
+      (is (= datoms decoded))
+      (is (= ["n1" "n2" "n3"] (mapv :v decoded)))
+      (is (= () (boring/decode (boring/encode () (rcbor/encode-opts (rcbor/server-registry)))
+                               (rcbor/decode-opts (rcbor/client-registry))))
+          "the empty seq stays a seq rather than becoming nil")))
+  (testing "A vector result is untouched: no marker, still a vector"
+    (let [v [1 2 3]
+          bs (boring/encode v (rcbor/encode-opts (rcbor/server-registry)))]
+      (is (not (str/includes? (String. bs "ISO-8859-1") "clojure/seq")))
+      (is (vector? (boring/decode bs (rcbor/decode-opts (rcbor/client-registry))))))))
+
+;; ---------------------------------------------------------------------------
 ;; Size
 ;; ---------------------------------------------------------------------------
 

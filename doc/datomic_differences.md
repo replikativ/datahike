@@ -101,6 +101,13 @@ values are different records though.
 
 [![cljdoc](https://badgen.net/badge/cljdoc/datahike/blue)](https://cljdoc.org/d/org.replikativ/datahike)
 
+A local transaction function can access allocated tempids with
+`[:db.fn/call-with-tempids f arg ...]`. Datahike calls
+`(f tx-db tempids arg ...)` and applies the returned transaction data.
+The immutable `tempids` map holds the bindings available when the
+function runs. Read it again on each invocation because a retry can
+assign different entity IDs.
+
 ## with
 
 Applies transactions to an immutable database value and returns a new database
