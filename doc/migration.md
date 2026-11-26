@@ -763,9 +763,10 @@ is split across many chunks and the alignment guarantee cannot hold.
 
 Moving between Datahike and PostgreSQL goes through
 [pg-datahike](https://github.com/replikativ/pg-datahike), which speaks the
-PostgreSQL wire protocol from inside a Datahike process. It is not built on the
-record seam above — the exchange happens at the **SQL** level, via `pg_dump`, in
-both directions:
+PostgreSQL wire protocol from inside a Datahike process. For an ongoing
+read-only copy of a PostgreSQL 18 publication, run
+[Datahike Server in mirror mode](./http-routes.md#follow-a-postgresql-18-primary-beta).
+For a one-time SQL transfer, use `pg_dump`:
 
 - **PostgreSQL → Datahike.** `pg_dump` output replays straight in through `psql`
   or any PG client, including `COPY … FROM stdin` in text and CSV form. Its
