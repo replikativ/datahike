@@ -54,7 +54,7 @@
         ;; `blob->branch` (persistent-sorted-set#27) — the deserialization path,
         ;; so the reflective lookup was paid per node on every cache miss. These
         ;; were the last two reflection warnings left in datahike's native build.
-        org.replikativ/persistent-sorted-set        {:mvn/version "0.5.145"}
+        org.replikativ/persistent-sorted-set        {:mvn/version "0.5.149"}
         ;; MAIN deps, not a test alias. `datahike.cbor` is src/, so boring is a
         ;; real runtime dependency: the dump codec and the kabel wire format
         ;; both go through it. It used to be declared only under :test, which
@@ -72,7 +72,12 @@
         ;; output was never affected — it writes tag 0 — so no round trip could
         ;; show it; `migrate-legacy-golden-test` reads bytes from the real old
         ;; writer, which is what caught it. replikativ/boring#18.
-        org.replikativ/boring                       {:mvn/version "0.1.28"}
+        ;; 0.1.31 writes a seq as the tag-27 marker `clojure/seq` under the
+        ;; default and `:archival` profiles. A reader older than 0.1.31 does not
+        ;; know that name: the remote CBOR codec refuses it (`:on-unknown-record
+        ;; :error`), kabel and dump imports decode it SILENTLY as a tagged
+        ;; literal. Both ends of a CBOR wire must be on 0.1.31+.
+        org.replikativ/boring                      {:mvn/version "0.1.31"}
         ;; partial-cps moved to org.replikativ (namespaces unchanged:
         ;; is.simm.partial-cps.*).
         org.replikativ/partial-cps                  {:mvn/version "0.1.68"}
@@ -82,7 +87,7 @@
         junit/junit                                 {:mvn/version "4.13.2"}
         medley/medley                               {:mvn/version "1.4.0"}
         metosin/spec-tools                          {:mvn/version "0.10.8"}
-        metosin/malli                               {:mvn/version "0.20.1"}
+        metosin/malli                               {:mvn/version "0.20.3"}
         org.babashka/http-client                    {:mvn/version "0.4.24"}
         metosin/jsonista                            {:mvn/version "1.0.0"}
         com.github.pkpkpk/cljs-cache                {:mvn/version "1.0.21"}
@@ -173,7 +178,7 @@
                                ch.qos.logback/logback-classic {:mvn/version "1.5.32"}
 
                                ;; secondary index integrations (for testing)
-                               org.replikativ/proximum       {:mvn/version "0.1.38"
+                               org.replikativ/proximum       {:mvn/version "0.1.46"
                                                               :exclusions [org.slf4j/slf4j-simple]}
                                org.replikativ/scriptum       {:mvn/version "0.1.32"}
                                org.replikativ/stratum        {:mvn/version "0.3.84"}
@@ -201,11 +206,11 @@
                                 :exclusions [com.amazonaws/aws-xray-recorder-sdk-aws-sdk-v2]}
                                org.replikativ/konserve-redis {:mvn/version "0.1.29"}
                                org.replikativ/konserve-gcs
-                               {:mvn/version "0.1.19"}
+                               {:mvn/version "0.1.20"}
                                org.replikativ/konserve-azure-blob
                                {:mvn/version "0.1.5"}
                                org.postgresql/postgresql     {:mvn/version "42.7.13"}
-                               org.replikativ/pg-datahike    {:mvn/version "0.1.252"
+                               org.replikativ/pg-datahike    {:mvn/version "0.1.428"
                                                               :exclusions [org.replikativ/datahike]}}}
 
            ;; Datomic Pro peer API, for `datahike.migrate.datomic` and its
@@ -284,13 +289,13 @@
                                       org.replikativ/konserve-redis
                                       {:mvn/version "0.1.29"}
                                       org.replikativ/konserve-gcs
-                                      {:mvn/version "0.1.19"}
+                                      {:mvn/version "0.1.20"}
                                       org.replikativ/konserve-azure-blob
                                       {:mvn/version "0.1.5"}
                                       org.postgresql/postgresql
                                       {:mvn/version "42.7.13"}
                                       org.replikativ/pg-datahike
-                                      {:mvn/version "0.1.252"
+                                      {:mvn/version "0.1.428"
                                        :exclusions [org.replikativ/datahike]}}
                          :main-opts ["-m" "datahike.http.main"]}
 

@@ -10,6 +10,7 @@
    [datahike.http.kabel :as kabel-server]
    [datahike.http.nrepl :as server-nrepl]
    [datahike.metrics :as metrics]
+   [datahike.writer]
    [datahike.http.permissions :as permissions]
    [datahike.http.pg :as pg]
    [datahike.http.routes :as routes]
@@ -27,6 +28,7 @@
    [replikativ.metrics.konserve :as metrics-konserve]
    [replikativ.metrics.prometheus :as prometheus]
    [replikativ.logging :as log]
+   [clojure.core.async.impl.protocols :as async-protocols]
    [ring.adapter.jetty :refer [run-jetty]])
   (:import
    [org.eclipse.jetty.util.thread QueuedThreadPool]))
@@ -59,7 +61,16 @@
           db    @(get conn :wrapped-atom)
           store (:store db)]
       (k/get store readiness-probe-key nil {:sync? true})
-      true)
+      ;; A fatal commit error closes a local writer for good: the store still
+      ;; answers reads, but every transaction fails. closed? does not consume
+      ;; a queued invocation. Remote and custom writers are not checked here.
+      (if (and (instance? datahike.writer.LocalWriter (:writer db))
+               (async-protocols/closed? (:transaction-queue (:writer db))))
+        (do (log/warn :datahike/readiness-probe-writer-down
+                      {:database (some-> store-id str)
+                       :error-type :writer-shut-down})
+            false)
+        true))
     (catch Throwable e
       (log/warn :datahike/readiness-probe-failed
                 {:database (some-> store-id str)

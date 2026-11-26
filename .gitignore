@@ -68,7 +68,6 @@ resources/DATAHIKE_GIT_SHA
 java/src-generated/
 libdatahike/src/datahike/impl/LibDatahike.java
 pydatahike/src/datahike/generated.py
-.clj-kondo/datahike/
 
 # clj-kondo: ignore external library imports (keep config.edn and babashka)
 .clj-kondo/*

@@ -130,16 +130,17 @@
           (is (= #{[(* 2 i)]} (d/q q db i))))
         (is (= #{} (d/q q db 100000)))))))
 
-(deftest flag-off-is-stock
-  (testing "with the flag off (default), scalar rels disqualify the direct
-            path exactly as before — behavior and results are stock"
+(deftest value-free-is-the-default
+  (testing "a scalar :in stays a binding and is executed prepared, without any flag"
     (let [db (test-db)
           q '{:find [?e] :in [$ ?id] :where [[?e :t/id ?id]]}]
-      (is (false? execute/*prepared-execution*))
-      (binding [dq/*fold-scalar-ins* false
-                dq/*query-result-cache?* false]
+      (is (false? dq/*fold-scalar-ins*))
+      (is (true? execute/*prepared-execution*))
+      (binding [dq/*query-result-cache?* false]
         (is (= (binding [dq/*disable-planner* true] (d/q q db 3))
-               (d/q q db 3)))))))
+               (d/q q db 3)
+               (binding [dq/*fold-scalar-ins* true execute/*prepared-execution* false]
+                 (d/q q db 3))))))))
 
 (deftest prepared-honors-cancellation
   (testing "a pre-set :cancel raises :datahike/canceled on the prepared
