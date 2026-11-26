@@ -14,7 +14,11 @@ When something is added, it's typically marked *Experimental*. When the API cont
   read-only replica with Datahike history. A separate worker can also select
   a named mirror from `:pg-mirrors` in the shared server configuration.
   The bundled pg-datahike 0.1.427 adds opt-in queued replay for ordinary
-  row changes through `:max-in-flight-commits`. See the
+  row changes through `:max-in-flight-commits`. With pg-datahike 0.1.428 a
+  mirrored transaction is recorded at its PostgreSQL commit time, so
+  `SET datahike.as_of` selects by the publisher's clock; the initial snapshot
+  is committed in batches and no longer limited to 128 MiB; and a slow
+  initial catch-up reconnects where it used to pause for good. See the
   [mirror mode guide](doc/http-routes.md#follow-a-postgresql-18-primary-beta).
 
 - **A transaction records its net effect — behaviour change.** Operations in
