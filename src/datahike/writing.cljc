@@ -12,6 +12,7 @@
             [datahike.db.utils :as dbu]
             [datahike.db.interface :as dbi]
             [datahike.index :as di]
+            [datahike.index.interface :as dii]
             [datahike.index.persistent-set :as dip]
             [datahike.index.audit :as audit]
             [datahike.index.secondary :as sec]
@@ -2055,13 +2056,16 @@
            :idx-idents (set new-building)
            :writer writer-config})))))
 
-(defn transact! [old {:keys [tx-data tx-meta tx-options]}]
-  (log/debug :datahike/transact {:tx-count (count tx-data)})
-  (log/trace :datahike/transact-detail {:tx-data tx-data :tx-meta tx-meta})
-  (let [tx-report (binding [sec/*durable-secondary-write-context* :commit]
-                    (core/with old tx-data tx-meta tx-options))]
-    #?(:clj (validate-secondary-backfill-writer! old tx-report))
-    (complete-db-update old tx-report)))
+(defn transact! [old {:keys [tx-data tx-meta tx-options] :as args}]
+  (let [tx-data (if-let [prepare (:datahike.writer/prepare-tx-data args)]
+                  (prepare old)
+                  tx-data)]
+    (log/debug :datahike/transact {:tx-count (count tx-data)})
+    (log/trace :datahike/transact-detail {:tx-data tx-data :tx-meta tx-meta})
+    (let [tx-report (binding [sec/*durable-secondary-write-context* :commit]
+                      (core/with old tx-data tx-meta tx-options))]
+      #?(:clj (validate-secondary-backfill-writer! old tx-report))
+      (complete-db-update old tx-report))))
 
 #?(:clj
    (defn ^:no-doc begin-avet-build!
@@ -2227,6 +2231,91 @@
               :migration migration}))]
      (complete-db-update old report))))
 
+(def ^:private index-keys
+  [:eavt :aevt :avet :temporal-eavt :temporal-aevt :temporal-avet])
+
+#?(:clj
+   (defn- counts-complete-meta
+     "`meta` for a persistent-set database whose every index branch is stored with
+      its count: the mark, and `:persistent.set/version` raised to this runtime's so
+      that `connector/version-check` refuses the database to a runtime with an older
+      persistent-sorted-set -- one whose writes would store branches without counts
+      under the mark."
+     [meta]
+     (cond-> (assoc meta :datahike/index-counts dii/counts-complete)
+       (neg? (compare (str (:persistent.set/version meta)) (str dt/persistent-set-version)))
+       (assoc :persistent.set/version dt/persistent-set-version))))
+
+(defn ^:no-doc recount-indices!
+  "Writer operation: store every branch of every index of `old` with its element
+   count, mark the database `dii/counts-complete`, and commit. The front door is
+   `datahike.index.recount/recount!`.
+
+   Runs on the writer so that the database it recounts is the one it commits.
+
+   The commit carries NO transaction, like `publish-built-db!`: the database is the
+   same one, datom for datom, with the uncounted branches (and the path above each)
+   made dirty so that they are written with their counts. No tx entity, no :max-tx
+   step, nothing for a transaction predicate or a listener to see.
+
+   It raises `:persistent.set/version` in the database's meta to this runtime's.
+   `connector/version-check` then refuses the database to a runtime with an older
+   persistent-sorted-set -- one whose writes would store branches without counts
+   under the mark.
+
+   On a :crypto-hash? store a node's address is the hash of its content, and the
+   count is not part of that content: a rewritten branch has the address it had,
+   and its blob is overwritten in place with the same content plus the count. The
+   hints taken back below matter doubly there -- the freed addresses are the
+   very ones just rewritten. A replica that already holds a blob keeps its copy,
+   which is correct and merely uncounted."
+  [old]
+  #?(:cljs
+     (throw (ex-info "Index counts can only be rewritten from the JVM."
+                     {:type :recount/unsupported-platform}))
+     :clj
+     (let [index (get-in old [:config :index])]
+       (when-not (= :datahike.index/persistent-set index)
+         (throw (ex-info "Only persistent-set indices keep counts; there is nothing to recount."
+                         {:type :recount/unsupported-index :index index})))
+       ;; The writer treats any operation it does not know as one a running AVET
+       ;; build cannot survive, and fails the build.
+       (when (:avet-build old)
+         (throw (ex-info "Index counts cannot be rewritten while an AVET build is running; wait for it to finish."
+                         {:type :recount/avet-build-active})))
+       (let [storage (get-in old [:store :storage])
+             freed-set (:freed-set storage)
+             freed-before (if freed-set @freed-set #{})
+             unhint! (fn []
+                       (when freed-set
+                         (let [mine (reduce disj @freed-set freed-before)]
+                           (when (seq mine)
+                             (swap! freed-set #(reduce disj % mine))
+                             (swap! (:freed-addresses storage) #(filterv (fn [[a _]] (not (contains? mine a))) %))
+                             (when-let [stacks (:freed-stacks storage)]
+                               (swap! stacks #(reduce dissoc % mine)))))))
+             counted (try
+                       (reduce (fn [db k]
+                                 (if-let [ix (get db k)]
+                                   (assoc db k (dii/recount index ix))
+                                   db))
+                               old index-keys)
+                       (finally (unhint!)))]
+         ;; Rewriting reports each replaced node as freed. Take those hints back.
+         ;; If this commit loses a head race, the winning head still names the
+         ;; nodes, and online GC -- on this connection or a background collector on
+         ;; this storage -- would recycle addresses that are live. A rejected
+         ;; transaction has that exposure; a maintenance step need not. The
+         ;; replaced nodes are left to offline GC (`d/gc-storage`), which decides by
+         ;; reachability.
+         (complete-db-update
+          old
+          {:db-before old
+           :db-after  (update counted :meta counts-complete-meta)
+           :tx-data   []
+           :tempids   {}
+           :tx-meta   {:db/txInstant (dt/get-date)}})))))
+
 (defn publish-built-db!
   "Replace `old`'s indexes and derived fields wholesale with ones built OUTSIDE
    the writer, and hand the result to the ordinary commit path.
@@ -2259,7 +2348,11 @@
   (complete-db-update
    old
    {:db-before old
-    :db-after  (tracking/forget (merge old fields))
+    ;; Every index is replaced by one built whole, so every branch has its count
+    ;; whatever the (empty) target looked like before.
+    :db-after  (cond-> (tracking/forget (merge old fields))
+                 #?(:clj (= :datahike.index/persistent-set (get-in old [:config :index])) :cljs false)
+                 (update :meta #?(:clj counts-complete-meta :cljs identity)))
     :tx-data   []
     :tempids   {}
     :tx-meta   {:db/txInstant (dt/get-date)}}))

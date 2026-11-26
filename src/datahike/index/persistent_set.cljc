@@ -225,7 +225,7 @@
 (defn temporal-upsert [pset ^Datom datom index-type {old-val :v}]
   (let [{:keys [e a v tx added]} datom]
     (if added
-      (if old-val
+      (if (some? old-val)
         (if (= v old-val)
           pset
           (-> pset
@@ -234,23 +234,68 @@
               (psset/conj datom
                           (index-type->cmp-quick index-type false))))
         (psset/conj pset datom (index-type->cmp-quick index-type false)))
-      (if old-val
+      (if (some? old-val)
         (psset/conj pset
                     (dd/datom e a old-val tx false)
                     (index-type->cmp-quick index-type false))
         pset))))
+
+(declare durable-store)
+
+(defn- stored-child-addresses
+  "The child addresses a STORED node names: its durable anchors. Never its
+   resident children, which under :diff-buf-size are the writer's newer
+   in-memory versions (#1112). Throws on anything that is not a settled node."
+  [node address]
+  (cond
+    (instance? Branch node)
+    (let [children #?(:clj (vec (.addresses ^Branch node)) :cljs (vec (.-addresses ^Branch node)))]
+      (when-not (and (seq children) (every? some? children))
+        (throw (ex-info "Stored branch names an unsettled child; refusing to mark."
+                        {:type :datahike/gc-invalid-node-edges :address address})))
+      {:level #?(:clj (.level ^Branch node) :cljs (.-level ^Branch node)) :children children})
+    (instance? Leaf node) {:level 0 :children []}
+    :else (throw (ex-info "Node not found in storage; refusing to mark."
+                          {:type :node-not-found :address address}))))
+
+(defn- durable-walk
+  "Mark by reading each branch from the konserve store, bypassing the
+   connection's node cache, and following the addresses it was stored with.
+   A cold read of the root projects buffered slots from exactly these anchors,
+   so this is the set a cold read needs. Leaves are named, not read."
+  [store root-address inline-root]
+  (loop [pending [[root-address inline-root]] acc (transient #{})]
+    (if-let [[address node] (peek pending)]
+      (let [pending (pop pending)]
+        (if (contains? acc address)
+          (recur pending acc)
+          (let [node (if (fn? node)
+                       ;; The root: stored under its address, or fused inline
+                       ;; into the commit record (then only the seeded copy has it).
+                       (or (k/get store address nil {:sync? true}) (node))
+                       (k/get store address nil {:sync? true}))
+                {:keys [level children]} (stored-child-addresses node address)
+                acc (conj! acc address)]
+            (if (= 1 level)
+              (recur pending (reduce conj! acc children))
+              (recur (into pending (map #(vector % nil)) children) acc)))))
+      (persistent! acc))))
 
 (defn mark [pset]
   ;; The flushed root address is `_address` on the JVM PersistentSortedSet but
   ;; `address` on the cljs BTSet (see -merkle-root below) — reading the bare
   ;; JVM field on cljs always saw nil and wrongly threw here, so GC never ran
   ;; on ClojureScript.
-  (when-not #?(:clj (.-_address ^PersistentSortedSet pset) :cljs (.-address pset))
-    (throw (ex-info "Index needs to be properly flushed before marking."
-                    {:type :flush-before-marking})))
-  (let [addresses (atom #{})]
-    (psset/walk-addresses pset (fn [address] (swap! addresses conj address)))
-    @addresses))
+  (let [address #?(:clj (.-_address ^PersistentSortedSet pset) :cljs (.-address pset))
+        storage #?(:clj (.-_storage ^PersistentSortedSet pset) :cljs (.-storage pset))]
+    (when-not address
+      (throw (ex-info "Index needs to be properly flushed before marking."
+                      {:type :flush-before-marking})))
+    (if-let [store (durable-store storage)]
+      (durable-walk store address #?(:clj #(.root ^PersistentSortedSet pset) :cljs #(.-root pset)))
+      (let [addresses (atom #{})]
+        (psset/walk-addresses pset (fn [address] (swap! addresses conj address)))
+        @addresses))))
 
 (extend-type #?(:clj PersistentSortedSet :cljs BTSet)
   IIndex
@@ -655,6 +700,11 @@
     (when (contains? @freed-set address)
       "Address has been marked as freed")))
 
+(defn- durable-store
+  "The konserve store a CachedStorage persists to, nil for any other IStorage."
+  [storage]
+  (when (instance? CachedStorage storage) (:store storage)))
+
 (def init-stats {:writes   0
                  :reads    0
                  :accessed 0})
@@ -828,6 +878,26 @@
         (reset! storage-cell storage)
         (assoc store :storage storage :datahike/store-id store-id
                :datahike/branching-factor bf :datahike/diff-buf-size dbs)))))
+
+(defmethod di/root-count-known? :datahike.index/persistent-set [_index-name pset]
+  #?(:clj  (if (instance? PersistentSortedSet pset)
+             (>= (.-_count ^PersistentSortedSet pset) 0)
+             true)
+     :cljs (if (instance? BTSet pset)
+             (let [c (.-cnt pset)] (and (some? c) (>= c 0)))
+             true)))
+
+#?(:clj
+   (defmethod di/count-census :datahike.index/persistent-set [_index-name pset]
+     (when (instance? PersistentSortedSet pset)
+       (psset/count-census pset))))
+
+#?(:clj
+   (defmethod di/recount :datahike.index/persistent-set [_index-name pset]
+     (if (instance? PersistentSortedSet pset)
+       ;; `recount` keeps the set's meta (:index-type) and storage.
+       (psset/recount pset)
+       pset)))
 
 (defmethod di/with-storage :datahike.index/persistent-set [_index-name pset storage]
   ;; A PSS root carries its IStorage in the `_storage` field — connection-

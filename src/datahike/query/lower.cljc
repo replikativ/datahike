@@ -1406,11 +1406,18 @@
             (let [group-vars (mapv #(or (:output-vars %) (:vars %)) all-groups)]
               (reduce
                (fn [{:keys [all-groups other-ops]} pred]
-                 (let [pred-free (into #{} (filter analyze/free-var?) (:args pred))
-                       matching  (keep-indexed
-                                  (fn [i gvars]
-                                    (when (clojure.set/subset? pred-free gvars) i))
-                                  group-vars)]
+                 (let [;; A scalar :in var is a per-call constant, not a column:
+                       ;; `[(>= ?payload ?floor)]` belongs to ?payload's group as
+                       ;; `[(>= ?payload 250)]` does. Its value is filled in per
+                       ;; call by the prepared rebinding (bind-plan-consts).
+                       pred-free (into #{} (comp (filter analyze/free-var?)
+                                                 (remove *scalar-input-vars*))
+                                       (:args pred))
+                       matching  (when (seq pred-free)
+                                   (keep-indexed
+                                    (fn [i gvars]
+                                      (when (clojure.set/subset? pred-free gvars) i))
+                                    group-vars))]
                    (if (and (= 1 (count matching))
                             (plan/post-op-direct-eligible? pred))
                      ;; Attach to the single matching group

@@ -410,6 +410,107 @@
 
                 :else (refuse-unresolvable! attr eid stored-hash idx :not-addressable)))))))))
 
+;; ---------------------------------------------------------------------------
+;; same-transaction pairs
+
+(defn- net-run
+  "One `[e a v]`'s history records, in transaction order, with every
+   same-transaction pair replaced by its net effect. See `net-same-tx-pairs`."
+  [db run]
+  (let [events (partition-by d/datom-tx run)
+        pair?  (fn [event] (and (some d/datom-added event) (some (complement d/datom-added) event)))
+        ^datahike.datom.Datom k (first run)]
+    (loop [events events, present? false, out []]
+      (if-let [event (first events)]
+        (if (pair? event)
+          (let [nxt   (second events)
+                after (cond
+                        ;; nothing later: the current index holds the answer
+                        (nil? nxt) (boolean
+                                    (some (fn [^datahike.datom.Datom c]
+                                            (zero? (d/compare-value (.-v k) (.-v c))))
+                                          (dbi/search db [(.-e k) (.-a k) (.-v k)])))
+                        ;; another pair: nothing settles it, taken as unchanged
+                        (pair? nxt) present?
+                        ;; a lone retraction needs the value there, a lone
+                        ;; assertion needs it gone
+                        :else (not (d/datom-added (first nxt))))]
+            (recur (rest events) after
+                   (cond
+                     (and after (not present?)) (conj out (first (filter d/datom-added event)))
+                     (and present? (not after)) (conj out (first (remove d/datom-added event)))
+                     :else out)))
+          (recur (rest events) (boolean (d/datom-added (last event))) (into out event)))
+        out))))
+
+(defn net-same-tx-pairs
+  "A transducer over a history in `:eavt` order: every value that one
+   transaction both asserted and retracted is reduced to what that transaction
+   did to it.
+
+   A database written before transactions recorded their net effect can hold
+   `[e a v t true]` and `[e a v t false]` side by side, and a history is a set:
+   it does not say which came last. An import cannot know either, and read every
+   such pair as \"ended present\" — wrong for a cardinality-one attribute set
+   twice in one transaction, whose passing value came back as a second current
+   value. The exporter can know, because it holds the database: what the value's
+   NEXT record needed (a lone retraction needs it present, a lone assertion
+   absent), or, when nothing follows, whether the current index holds it. So
+   the dump is written without pairs: one assertion, one retraction, or nothing.
+
+   Only a pair followed directly by another pair is a guess, taken as having
+   left the value as it found it.
+
+   ONE pass, holding the records of one `[e a v]` at a time: they are adjacent
+   in `:eavt`, and `=` on datoms compares exactly `[e a v]`. A value without a
+   pair is passed on as it came, so a history without any costs one comparison
+   per datom, and one with a few pays for those few."
+  [db]
+  (fn [rf]
+    (let [run   #?(:clj (java.util.ArrayList.) :cljs (array))
+          pair? (volatile! false)
+          size  (fn [] #?(:clj (.size ^java.util.ArrayList run) :cljs (alength run)))
+          at    (fn [i] #?(:clj (.get ^java.util.ArrayList run (int i)) :cljs (aget run i)))
+          flush (fn [acc]
+                  (let [n (size)
+                        records (if @pair? (net-run db (mapv at (range n))) nil)
+                        acc (if records
+                              (reduce (fn [acc dm] (let [r (rf acc dm)] (if (reduced? r) (reduced r) r)))
+                                      acc records)
+                              (loop [i 0, acc acc]
+                                (if (and (< i n) (not (reduced? acc)))
+                                  (recur (inc i) (rf acc (at i)))
+                                  acc)))]
+                    #?(:clj (.clear ^java.util.ArrayList run) :cljs (set! (.-length run) 0))
+                    (vreset! pair? false)
+                    acc))]
+      (fn
+        ([] (rf))
+        ([acc] (rf (unreduced (flush acc))))
+        ([acc dm]
+         (let [n (size)]
+           (if (zero? n)
+             (do #?(:clj (.add ^java.util.ArrayList run dm) :cljs (.push run dm)) acc)
+             (let [p (at (dec n))]
+               (if (= p dm)
+                 (do (when (and (== (d/datom-tx p) (d/datom-tx dm))
+                                (not= (d/datom-added p) (d/datom-added dm)))
+                       (vreset! pair? true))
+                     #?(:clj (.add ^java.util.ArrayList run dm) :cljs (.push run dm))
+                     acc)
+                 (let [acc (flush acc)]
+                   #?(:clj (.add ^java.util.ArrayList run dm) :cljs (.push run dm))
+                   acc))))))))))
+
+(defn export-datoms
+  "The datoms an export of `db` reads, in `:eavt` order: the history with
+   same-transaction pairs netted when `history?`, the current datoms otherwise.
+   Lazy, and read from the index once."
+  [db history?]
+  (if history?
+    (sequence (net-same-tx-pairs db) (api/datoms (api/history db) :eavt))
+    (api/datoms db :eavt)))
+
 (defn export-records
   "Lazy seq of encoded record vectors for `db` (UNSORTED — the external merge sort
    in `export-db` imposes the `(t, txInstant-first, e, a, op)` order). Emits only
@@ -418,12 +519,11 @@
    translated (#508/#531) rather than re-inserted — and is a no-op for plain dbs,
    whose bootstrap never appears in :eavt."
   [db {:keys [history?]}]
-  (let [src      (if history? (api/history db) db)
-        sys-ents (if (attribute-refs? db) (dbi/-system-entities db) #{})
+  (let [sys-ents (if (attribute-refs? db) (dbi/-system-entities db) #{})
         sidents  (system-idents db)
         sec-read (secondary-only-reader db)
         renamed  (not-empty (set (keys (ident-timeline db))))]
-    (->> (api/datoms src :eavt)
+    (->> (export-datoms db history?)
          (filter (fn [dm] (> (d/datom-tx dm) c/tx0)))
          (map (fn [dm] (datom->record db sys-ents sidents sec-read renamed dm))))))
 
@@ -441,8 +541,7 @@
    re-assert of the same [e a] in one tx), which the sorting exporter orders
    explicitly; if a history has those, use the default (sorted) export."
   [db {:keys [history?]}]
-  (let [src      (if history? (api/history db) db)
-        sys-ents (if (attribute-refs? db) (dbi/-system-entities db) #{})
+  (let [sys-ents (if (attribute-refs? db) (dbi/-system-entities db) #{})
         sidents  (system-idents db)
         user?    (fn [dm] (> (d/datom-tx dm) c/tx0))
         schema-or-meta? (fn [dm]
@@ -450,10 +549,11 @@
                             (or (ds/schema-attr? a) (ds/meta-attr? a))))
         sec-read (secondary-only-reader db)
         renamed  (not-empty (set (keys (ident-timeline db))))
-        make     (fn [dm] (datom->record db sys-ents sidents sec-read renamed dm))]
+        make     (fn [dm] (datom->record db sys-ents sidents sec-read renamed dm))
+        datoms   (fn [] (export-datoms db history?))]
     (concat
-     (->> (api/datoms src :eavt) (filter user?) (filter schema-or-meta?) (map make))
-     (->> (api/datoms src :eavt) (filter user?) (remove schema-or-meta?) (map make)))))
+     (->> (datoms) (filter user?) (filter schema-or-meta?) (map make))
+     (->> (datoms) (filter user?) (remove schema-or-meta?) (map make)))))
 
 (defn ident-schema
   "The user schema as an ident->attr-map, keyed by keyword ident only (drops the

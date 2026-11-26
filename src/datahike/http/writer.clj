@@ -63,7 +63,7 @@
                                    "create-database-writer"
                                    writer
                                    (vec (concat [(-> config
-                                                     (assoc :remote-peer (dissoc writer :token))
+                                                     (assoc :remote-peer (dissoc writer :token :headers-fn))
                                                      (dissoc :writer))]
                                                 (rest args))))
                      (dissoc :remote-peer))
@@ -81,7 +81,7 @@
                                      "delete-database-writer"
                                      writer
                                      (vec (concat [(-> config
-                                                       (assoc :remote-peer (dissoc writer :token))
+                                                       (assoc :remote-peer (dissoc writer :token :headers-fn))
                                                        (dissoc :writer))]
                                                   (rest args))))
                        (dissoc :remote-peer))

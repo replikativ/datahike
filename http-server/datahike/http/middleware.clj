@@ -77,7 +77,11 @@
             body           (:body response)
             should-encode? (and encoder
                                 (not (instance? java.io.ByteArrayInputStream body))
+                                ;; A String is a ring streamable body too, but it is a
+                                ;; scalar result (`:find ?x .`) here, not encoded bytes.
+                                ;; Other streamables are already a response body.
                                 (not (and (some? body)
+                                          (not (string? body))
                                           (satisfies? protocols/StreamableResponseBody body)))
                                 ;; Without a request content type only a scalar is
                                 ;; encoded here; a collection stays for muuntaja,
