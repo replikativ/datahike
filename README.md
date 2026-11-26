@@ -250,6 +250,10 @@ It also round-trips with real PostgreSQL via `pg_dump` in both directions, which
 is the practical route on and off Postgres — see
 [Migration](./doc/migration.md#postgresql).
 
+The standalone server JAR can also follow a PostgreSQL 18 publication over
+native logical replication and serve it as a read-only database with history.
+See [mirror mode](./doc/http-routes.md#follow-a-postgresql-18-primary-beta).
+
 **Beta**, and not a full PostgreSQL dialect; see its README for the
 compatibility matrix and the workloads it has been tested against. Feedback on
 what breaks is what moves it forward.

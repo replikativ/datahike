@@ -119,7 +119,7 @@
         ;; merge-est / total-entities, which assumes merge-est is the full
         ;; attribute count, not a bound-aware filtered count).
         base-est (or (estimate/estimate-pattern db pattern-info schema-info)
-                     (di/-count (:eavt db)))
+                     (di/estimated-count (:index (dbi/-config db)) (:eavt db)))
         ;; Build a partial scan-op for sampling context
         scan-ctx {:clause (:clause pattern-info) :index index}
         est (if (seq effective-preds)
@@ -334,7 +334,7 @@
     (let [{:keys [classified db bound-var-cards]} source
           si (analyze/pattern-schema-info db classified)
           base (or (estimate/estimate-pattern db classified si)
-                   (di/-count (:eavt db)))
+                   (di/estimated-count (:index (dbi/-config db)) (:eavt db)))
           ;; BOUND-AWARE when the caller knows what is bound entering this
           ;; clause. A scan cannot OUTPUT more rows than it matches, so
           ;; advertising the unconstrained attribute extent over-states every
@@ -696,7 +696,7 @@
                                       (= index :aevt)
                                       (and (= index :avet)
                                            (let [sv (get clause 2)]
-                                             (and (some? sv) (not (analyze/free-var? sv)))))))
+                                             (and (some? sv) (not (symbol? sv)))))))
                         :cljs false)
         ;; The DRIVING scan must be card-one for the sorted merge: it advances
         ;; per entity, so a card-many driver ([?e :tag ?t] promoted to driver
@@ -993,9 +993,22 @@
         ;; together, since each _ is an independent anonymous variable.
         ;; Ground constants (numbers, keywords, strings) CAN share a group.
         blank-counter (atom 0)
+        var-attr-groups (volatile! #{})
         groups (group-by (fn [op]
                            (let [e-var (first (:clause op))]
                              (cond
+                               ;; A merge seeks by attribute, so a pattern with
+                               ;; a VARIABLE attribute can only drive the scan.
+                               ;; The second such pattern on an entity gets a
+                               ;; group of its own (see logical/entity-group-key).
+                               (let [a (second (:clause op))]
+                                 (and (symbol? a)
+                                      (let [k [e-var (:source op)]
+                                            taken? (contains? @var-attr-groups k)]
+                                        (vswap! var-attr-groups conj k)
+                                        taken?)))
+                               [(symbol (str "_anon_" (swap! blank-counter inc))) (:source op)]
+
                                (analyze/free-var? e-var)
                                [e-var (:source op)]
                                ;; Blank _ symbol — each gets unique group
@@ -1022,6 +1035,8 @@
                       ;; can't share the same EAVT index.
                       (nil? (:source (first sub-ops)))
                       (nil? (:source not-op))
+                      ;; an anti-merge seeks by attribute: it needs a ground one
+                      (can-be-merge? (first sub-ops))
                       (let [e-var (first (:clause (first sub-ops)))]
                         (and (analyze/free-var? e-var)
                              (contains? groups [e-var nil]))))
@@ -1712,6 +1727,21 @@
   [op]
   (op-produced-vars op))
 
+(defn- force-candidate
+  "The op to emit when none is runnable, from `[op cost]` pairs.
+
+   Cheapest first, as before, but among ops that are equally unrunnable a
+   RECURSIVE RULE goes first: its required vars are an ordering hint only
+   (see `op-required-vars`), so it is correct as a pure producer, while any
+   other op emitted with its inputs unbound raises at execute time. Without
+   the preference the choice fell to the iteration order of a hash set, so
+   `(reach ?e ?f) [(identity ?e) ?f]` with nothing bound answered in one run
+   and raised \"Cannot resolve any more clauses\" in another."
+  [scored]
+  (first (sort-by (fn [[op cost]]
+                    [cost (if (= :recursive-rule (:op op)) 0 1)])
+                  scored)))
+
 (defn order-plan-ops
   "Order plan operations using DP for entity-group ordering and greedy
    interleaving for dependency-constrained ops (predicates, functions, etc.).
@@ -1777,7 +1807,9 @@
            ordered
            (let [scored (map (fn [op] [op (op-cost op bound-vars var-cards)]) remaining)
                  executable (filter #(< (second %) max-cost) scored)
-                 best (first (sort-by second (if (seq executable) executable scored)))
+                 best (if (seq executable)
+                        (first (sort-by second executable))
+                        (force-candidate scored))
                  [chosen-op chosen-cost] best]
              ;; Emitting an op whose required vars aren't bound: for a top-level
              ;; plan this means the query is unresolvable and execution will
@@ -1850,7 +1882,7 @@
                    ;; No more groups, remaining ops still unready — force the
                    ;; cheapest so we make progress (preserves prior behaviour).
                    :force     (let [scored (map (fn [op] [op (op-cost op bound-vars var-cards)]) remaining)
-                                    [chosen-op chosen-cost] (first (sort-by second scored))]
+                                    [chosen-op chosen-cost] (force-candidate scored)]
                                 ;; Same unbound-required-vars situation as the
                                 ;; no-groups greedy fallback above — debug here,
                                 ;; authoritative raise at execute time.
