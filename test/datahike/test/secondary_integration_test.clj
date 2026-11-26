@@ -1136,6 +1136,233 @@
             (d/release conn))
           (finally (d/delete-database cfg)))))))
 
+;; #1144: the executor hands an external engine an empty EntityBitSet when
+;; the clauses before it bind no entity. Its seq view is nil, which Proximum's
+;; filtered search rejects, so knn threw instead of returning no rows.
+
+(defn- proximum-knn-db
+  "Memory db with a :proximum index over :doc/emb; `docs` are [name vector]."
+  [docs]
+  (let [cfg {:store {:backend :memory :id (random-uuid)} :schema-flexibility :write}]
+    (d/create-database cfg)
+    (let [conn (d/connect cfg)]
+      (d/transact conn [{:db/ident :doc/name :db/valueType :db.type/string
+                         :db/cardinality :db.cardinality/one}
+                        {:db/ident :doc/emb :db/valueType :db.type/float-array
+                         :db/cardinality :db.cardinality/one}])
+      (d/transact conn [{:db/ident :idx/emb :db.secondary/type :proximum
+                         :db.secondary/attrs [:doc/emb]
+                         :db.secondary/config {:dim 4 :distance :cosine
+                                               :store-config {:backend :memory
+                                                              :id (random-uuid)}}}])
+      (Thread/sleep 800)
+      (when (seq docs)
+        (d/transact conn (mapv (fn [[n v]] {:doc/name n :doc/emb (float-array v)}) docs))
+        (Thread/sleep 500))
+      {:cfg cfg :conn conn})))
+
+(deftest proximum-knn-empty-entity-filter
+  (when-not proximum-available?
+    (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
+  (when proximum-available?
+    (binding [q/*disable-planner* false]
+      (let [qvec (float-array [1.0 0.0 0.0 0.0])
+            filter-q '[:find ?e :in $ ?q
+                       :where [?e :doc/name "zzz"]
+                       [(datahike.index.secondary.proximum/knn :idx/emb ?q 3) [?e ...]]]
+            retrieval-q '[:find ?e ?d :in $ ?q
+                          :where [?e :doc/name "zzz"]
+                          [(datahike.index.secondary.proximum/knn :idx/emb ?q 3) [[?e ?d]]]]
+            bare-q '[:find ?e ?d :in $ ?q
+                     :where [(datahike.index.secondary.proximum/knn :idx/emb ?q 3) [[?e ?d]]]]]
+        (testing "a pattern that matches no entity before knn"
+          (let [{:keys [cfg conn]} (proximum-knn-db [["east" [1.0 0.0 0.0 0.0]]
+                                                     ["east2" [0.9 0.1 0.0 0.0]]
+                                                     ["north" [0.0 1.0 0.0 0.0]]])]
+            (try
+              (is (= #{} (d/q filter-q @conn qvec)) "[?e ...]")
+              (is (= #{} (d/q retrieval-q @conn qvec)) "[[?e ?d]]")
+              (is (= 3 (count (d/q bare-q @conn qvec)))
+                  "an unfiltered knn still finds the documents")
+              (is (= #{["north"]}
+                     (d/q '[:find ?n :in $ ?q
+                            :where [?e :doc/name "north"]
+                            [(datahike.index.secondary.proximum/knn :idx/emb ?q 3) [?e ...]]
+                            [?e :doc/name ?n]]
+                          @conn qvec))
+                  "a non-empty filter admits only its entities")
+              (finally (d/release conn) (d/delete-database cfg)))))
+        (testing "a database with no entities"
+          (let [{:keys [cfg conn]} (proximum-knn-db [])]
+            (try
+              (is (= #{} (d/q filter-q @conn qvec)) "[?e ...]")
+              (is (= #{} (d/q retrieval-q @conn qvec)) "[[?e ?d]]")
+              (is (= #{} (d/q bare-q @conn qvec)) "no filter")
+              (finally (d/release conn) (d/delete-database cfg)))))))))
+
+(deftest proximum-index-empty-entity-filter
+  (when-not proximum-available?
+    (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
+  (when proximum-available?
+    (let [qspec {:vector (float-array [1.0 0.0 0.0 0.0]) :k 3}
+          empty-bs (es/entity-bitset)
+          only-2 (es/entity-bitset-from-longs [2])
+          idx (sec/create-index :proximum
+                                {:attrs #{:person/embedding}
+                                 :dim 4 :distance :cosine
+                                 :store-config {:backend :memory :id (random-uuid)}}
+                                nil)
+          tidx (sec/-as-transient idx)
+          _ (doseq [[e v] [[1 [1.0 0.0 0.0 0.0]] [2 [0.0 1.0 0.0 0.0]]]]
+              (sec/-transact! tidx {:datom (datahike.datom/datom e :person/embedding
+                                                                 (float-array v))
+                                    :added? true}))]
+      (testing "the filter view handed to Proximum is never nil"
+        (is (some? (es/entity-bitset-iterable empty-bs)))
+        (is (= [] (vec (es/entity-bitset-iterable empty-bs))))
+        (let [view (es/entity-bitset-iterable only-2)]
+          (is (= [2] (vec view)))
+          (is (= [2] (vec view)) "a second pass sees the same ids")))
+      (testing "transient index"
+        (is (zero? (es/entity-bitset-cardinality (sec/-search tidx qspec empty-bs))))
+        (is (= [] (sec/-slice-ordered tidx qspec empty-bs nil :asc nil)))
+        (is (= [2] (vec (es/entity-bitset-seq (sec/-search tidx qspec only-2))))))
+      (let [pidx (sec/-persistent! tidx)]
+        (testing "persistent index"
+          (is (zero? (es/entity-bitset-cardinality (sec/-search pidx qspec empty-bs))))
+          (is (= [] (sec/-slice-ordered pidx qspec empty-bs nil :asc nil)))
+          (is (= 2 (count (sec/-slice-ordered pidx qspec nil nil :asc nil)))
+              "the index holds both vectors")
+          (is (= [2] (vec (es/entity-bitset-seq (sec/-search pidx qspec only-2)))))
+          (is (= [2] (mapv :entity-id (sec/-slice-ordered pidx qspec only-2 nil :asc nil)))
+              "the nearest vector, entity 1, is filtered out"))
+        (testing "candidate scan answers an exhausted empty page"
+          (let [page (sec/-candidate-page pidx {:vector (:vector qspec)
+                                                :candidate-limit 3}
+                                          empty-bs {:limit 2})]
+            (is (= 1 (count (sec/validate-candidate-scan [page]))))
+            (is (= [] (:candidates page)))
+            (is (true? (:exhausted? page)))
+            (is (nil? (:continuation page)))))
+        (testing "candidate scan applies a non-empty filter"
+          (let [page (sec/-candidate-page pidx {:vector (:vector qspec)
+                                                :candidate-limit 3}
+                                          only-2 {:limit 2})]
+            (is (= [2] (mapv :entity-id (:candidates page)))
+                "the nearest vector, entity 1, is filtered out")))))))
+
+;; Proximum's search-filtered sized the bitset it builds from external ids by
+;; the LIVE vector count. Internal ids are never reused, so after deletes a
+;; survivor's internal id can lie past that size, and the bitset dropped it:
+;; with 100 vectors and the 60 oldest deleted, a filter of the newest three
+;; matched nothing. Fixed in proximum 0.1.39 (replikativ/proximum#22).
+
+(defn- spread-vector
+  "A distinct 4-d vector per index, so no two documents tie."
+  [i]
+  (let [a (/ (double i) 10.0)]
+    [(Math/cos a) (Math/sin a) (/ (double i) 100.0) 1.0]))
+
+(deftest proximum-filtered-knn-after-retractions
+  (when-not proximum-available?
+    (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
+  (when proximum-available?
+    (binding [q/*disable-planner* false]
+      (let [{:keys [cfg conn]} (proximum-knn-db
+                                (mapv (fn [i] [(format "d%02d" i) (spread-vector i)])
+                                      (range 100)))]
+        (try
+          (let [eid-of (into {} (d/q '[:find ?n ?e :where [?e :doc/name ?n]] @conn))
+                name-of (fn [i] (format "d%02d" i))]
+            (is (= 100 (count eid-of)))
+            ;; Retract the 60 oldest documents -- the lowest entity ids, and
+            ;; with them the lowest Proximum internal ids.
+            (d/transact conn (mapv (fn [i] [:db/retractEntity (eid-of (name-of i))])
+                                   (range 60)))
+            (Thread/sleep 500)
+            (let [qvec (float-array (spread-vector 0))
+                  ;; The filter arrives as an input relation on ?e. A pattern
+                  ;; such as [?e :doc/name ?allowed] with ?allowed bound from
+                  ;; :in is estimated as a whole-attribute scan, so the planner
+                  ;; would run knn FIRST, unfiltered, and the bug would never
+                  ;; be reached.
+                  knn-q '[:find ?n :in $ ?q [?e ...]
+                          :where [(datahike.index.secondary.proximum/knn :idx/emb ?q 3) [?e ...]]
+                          [?e :doc/name ?n]]
+                  dist-q '[:find ?n ?d :in $ ?q [?e ...]
+                           :where [(datahike.index.secondary.proximum/knn :idx/emb ?q 3) [[?e ?d]]]
+                           [?e :doc/name ?n]]
+                  bare-q '[:find ?n :in $ ?q
+                           :where [(datahike.index.secondary.proximum/knn :idx/emb ?q 100) [?e ...]]
+                           [?e :doc/name ?n]]
+                  eids (fn [names] (mapv eid-of names))
+                  names (fn [rel] (set (map first rel)))
+                  newest #{"d97" "d98" "d99"}]
+              (is (= (set (map name-of (range 60 100))) (names (d/q bare-q @conn qvec)))
+                  "the index holds exactly the 40 survivors")
+              (is (empty? (filter newest
+                                  (names (d/q '[:find ?n :in $ ?q
+                                                :where [(datahike.index.secondary.proximum/knn :idx/emb ?q 3) [?e ...]]
+                                                [?e :doc/name ?n]]
+                                              @conn qvec))))
+                  "control: the newest three are not the unfiltered nearest three")
+              (testing "a filter of three survivors (exact strategy)"
+                ;; 3 allowed with k = 3: 3^2 <= 3 * 40, so exact scan.
+                (is (= newest (names (d/q knn-q @conn qvec (eids newest)))))
+                (is (= newest (names (d/q dist-q @conn qvec (eids newest))))
+                    "[[?e ?d]]"))
+              (testing "a pattern restricting to one survivor before knn"
+                (is (= #{["d99"]}
+                       (d/q '[:find ?n :in $ ?q
+                              :where [?e :doc/name "d99"]
+                              [(datahike.index.secondary.proximum/knn :idx/emb ?q 3) [?e ...]]
+                              [?e :doc/name ?n]]
+                            @conn qvec))))
+              (testing "a filter of twenty survivors (HNSW traversal)"
+                ;; 20 allowed with k = 3 is past the exact break-even
+                ;; (20^2 > 3 * 40), so this goes through filtered HNSW search.
+                (let [allowed (set (map name-of (range 80 100)))
+                      found (names (d/q knn-q @conn qvec (eids allowed)))]
+                  (is (= 3 (count found)))
+                  (is (every? allowed found))))
+              (testing "a retracted entity stays out"
+                (is (= #{} (d/q knn-q @conn qvec (eids ["d00" "d10"])))))))
+          (finally (d/release conn) (d/delete-database cfg)))))))
+
+(deftest proximum-index-filter-after-deletes
+  (when-not proximum-available?
+    (is (not proximum-available?) "SKIP: proximum requires Java 22+"))
+  (when proximum-available?
+    (let [idx (sec/create-index :proximum
+                                {:attrs #{:person/embedding}
+                                 :dim 4 :distance :cosine
+                                 :store-config {:backend :memory :id (random-uuid)}}
+                                nil)
+          tidx (sec/-as-transient idx)
+          vec-of (fn [e] (float-array (spread-vector e)))
+          _ (doseq [e (range 1 101)]
+              (sec/-transact! tidx {:datom (datahike.datom/datom e :person/embedding (vec-of e))
+                                    :added? true}))
+          _ (doseq [e (range 1 61)]
+              (sec/-transact! tidx {:datom (datahike.datom/datom e :person/embedding (vec-of e))
+                                    :added? false}))
+          pidx (sec/-persistent! tidx)
+          newest (es/entity-bitset-from-longs [98 99 100])
+          entity-ids (fn [strategy]
+                       (set (map :entity-id
+                                 (sec/-slice-ordered pidx {:vector (vec-of 1) :k 3
+                                                           :filter-strategy strategy}
+                                                     newest nil :asc nil))))]
+      (is (= 40 (count (sec/-slice-ordered pidx {:vector (vec-of 1) :k 100} nil nil :asc nil)))
+          "60 of 100 vectors deleted")
+      (doseq [strategy [:exact :hnsw]]
+        (testing (str "filter-strategy " strategy)
+          (is (= #{98 99 100} (entity-ids strategy)))
+          (is (= #{98 99 100}
+                 (set (es/entity-bitset-seq
+                       (sec/-search pidx {:vector (vec-of 1) :k 3 :filter-strategy strategy}
+                                    newest))))))))))
+
 ;; ---------------------------------------------------------------------------
 ;; Stratum Entity-Filter Aggregate Tests
 
