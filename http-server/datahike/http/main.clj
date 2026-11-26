@@ -2,7 +2,8 @@
   "Lightweight entry point for the standalone server artifact. Configuration
   and logging are resolved before database backends or the HTTP adapter load."
   (:gen-class)
-  (:require [datahike.http.config :as config]
+  (:require [clojure.string :as str]
+            [datahike.http.config :as config]
             [datahike.http.logging :as logging]
             [datahike.tools :as tools]
             [replikativ.logging :as log]))
@@ -13,15 +14,24 @@
   (require 'datahike.http.server)
   ((requiring-resolve 'datahike.http.server/start-main!) server-config))
 
+(defn- mirror! [args]
+  (if (some #(or (= % "--name") (str/starts-with? % "--name=")) args)
+    (let [{:keys [check? mirror]} (config/resolve-mirror-config args)
+          code ((requiring-resolve 'datahike.pg.mirror/run-cli!) mirror check?)]
+      (when-not (zero? code) (System/exit code)))
+    (apply (requiring-resolve 'datahike.pg.mirror/-main) args)))
+
 (defn -main [& args]
   (try
-    (let [{:keys [action message config]} (config/resolve-config args)]
-      (case action
-        :help (println message)
-        :version (println "Datahike HTTP Server" tools/datahike-version)
-        :run (do
-               (logging/configure! config)
-               (start! (config/assert-safe-bind! config)))))
+    (if (= "mirror" (first args))
+      (mirror! (rest args))
+      (let [{:keys [action message config]} (config/resolve-config args)]
+        (case action
+          :help (println message)
+          :version (println "Datahike HTTP Server" tools/datahike-version)
+          :run (do
+                 (logging/configure! config)
+                 (start! (config/assert-safe-bind! config))))))
     (catch Exception e
       (log/error :datahike/http-server-start-failed
                  (ex-message e)

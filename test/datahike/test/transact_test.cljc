@@ -190,6 +190,46 @@
     (is (= (d/db-with db [[:db.fn/retractAttribute 1 :aka]])
            (d/db-with db [[:db/retract 1 :aka]])))))
 
+(deftest test-retract-resolved-tempids
+  (let [db (db/empty-db {:person/friend {:db/valueType :db.type/ref}})]
+    (doseq [tempid [-1 "person"]
+            op [:db/retractEntity :db.fn/retractEntity]]
+      (let [result (d/db-with db [{:db/id tempid :person/name "Temporary"}
+                                  {:db/id "other" :person/name "Other" :person/friend tempid}
+                                  [op tempid]])]
+        (is (= #{["Other"]} (d/q '[:find ?name :where [_ :person/name ?name]] result)))
+        (is (empty? (d/datoms result :aevt :person/friend)))))
+    (let [result (d/db-with db [[:db.fn/call (fn [_] [{:db/id "person" :person/name "Temporary"
+                                                       :person/friend "other"}
+                                                      {:db/id "other" :person/name "Other"}])]
+                                [:db/retract "person" :person/friend "other"]
+                                [:db.fn/retractAttribute "person" :person/name]])]
+      (is (= #{["Other"]} (d/q '[:find ?name :where [_ :person/name ?name]] result)))
+      (is (empty? (d/datoms result :aevt :person/friend))))
+    (is (thrown-with-msg? Throwable #"Cannot retract an unresolved tempid"
+                          (d/db-with db [[:db/retractEntity "missing"]
+                                         {:db/id "missing" :person/name "Later"}])))))
+
+(deftest test-call-with-allocated-tempids
+  (let [db (db/empty-db {:person/friend {:db/valueType :db.type/ref}})
+        tx [{:db/id "target" :person/name "Target"}
+            [:db.fn/call-with-tempids
+             (fn [tx-db tempids name]
+               (let [target (get tempids "target")]
+                 (is (nil? (get tempids "source")))
+                 (is (= ["Target"] (mapv :v (d/datoms tx-db :eavt target :person/name))))
+                 [{:db/id "source" :person/name name :person/friend target}]))
+             "Source"]]
+        base-with-row (d/db-with db [{:person/name "Unrelated"}])]
+    (doseq [base [db base-with-row]]
+      (let [result (d/db-with base tx)]
+        (is (= #{["Source" "Target"]}
+               (d/q '[:find ?source-name ?target-name
+                      :where [?source :person/name ?source-name]
+                      [?source :person/friend ?target]
+                      [?target :person/name ?target-name]]
+                    result)))))))
+
 (deftest test-retract-fns-not-found
   (let [db  (-> (db/empty-db {:name {:db/unique :db.unique/identity}})
                 (d/db-with  [[:db/add 1 :name "Ivan"]]))

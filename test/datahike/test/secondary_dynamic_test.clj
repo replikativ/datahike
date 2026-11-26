@@ -734,9 +734,8 @@
         ;; and run build + install to transition to :ready.
         (let [conn2 (d/connect cfg)]
           (try
-            (Thread/sleep 1000)
             (is (= :ready
-                   (get-in (d/db conn2) [:schema :idx/recorder-recover :db.secondary/status]))
+                   (await-status conn2 :idx/recorder-recover :ready))
                 "Recovery should transition index from :building to :ready")
             (finally
               (d/release conn2))))

@@ -288,7 +288,13 @@ compared element-wise; a mismatched pair falls back to a stable class ordering."
 (defn value-key
   "Key for a container that uses Clojure equality (map, set, transient)."
   [x]
-  (if (value-array? x) (wrap-comparable x) x))
+  (cond
+    (value-array? x) (wrap-comparable x)
+    ;; A tuple value is a vector, and a vector holding an array compares its
+    ;; elements with `=`, i.e. the array by identity: `[bytes "v3"]` bound from
+    ;; :in never joined the equal tuple read from the index.
+    (and (vector? x) (some value-array? x)) (mapv value-key x)
+    :else x))
 
 (defn native-key
   "Key for a java.util or JS container, which compares by identity unless the
@@ -299,12 +305,14 @@ compared element-wise; a mismatched pair falls back to a stable class ordering."
    `(binding [*print-length* 1] …)` every array printed the same prefix and
    unequal values collided in a join. A key may not depend on print settings."
   [x]
-  (if (value-array? x)
-    #?(:clj (wrap-comparable x)
-       :cljs (let [w (wrap-comparable x)]
-               (apply str (name (:kind w)) "|"
-                      (interpose "," (map str (:vals w))))))
-    x))
+  (if #?(:clj (and (vector? x) (some value-array? x)) :cljs false)
+    (mapv native-key x)
+    (if (value-array? x)
+      #?(:clj (wrap-comparable x)
+         :cljs (let [w (wrap-comparable x)]
+                 (apply str (name (:kind w)) "|"
+                        (interpose "," (map str (:vals w))))))
+      x)))
 
 (defn- same-array-kind?
   "Are `a` and `b` the same primitive-array kind?"
