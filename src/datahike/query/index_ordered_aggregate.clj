@@ -122,8 +122,10 @@
       1000))
 
 (defn- supported-pattern? [op]
-  (let [[e a v tx] (:clause op)]
+  (let [[e a v tx added] (:clause op)]
     (and (nil? (:source op))
+         ;; the fold reads e, a and v only
+         (nil? added)
          (symbol? e) (analyze/free-var? e)
          (or (keyword? a) (integer? a))
          (symbol? v) (analyze/free-var? v)
