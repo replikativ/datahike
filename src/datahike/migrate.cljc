@@ -1226,8 +1226,9 @@
    `history?` the full temporal set is enumerated, matching a :history? true dump."
   ([db] (user-datom-count db false))
   ([db history?]
-   (let [src (if history? (api/history db) db)]
-     (count (filter #(> (d/datom-tx %) c/tx0) (api/datoms src :eavt))))))
+   ;; netted like the export itself: a same-transaction pair the dump does
+   ;; not carry is not a record it lost
+   (count (filter #(> (d/datom-tx %) c/tx0) (mman/export-datoms db history?)))))
 
 (defn- with-source-count
   "Add an INDEPENDENT witness of how much the source held.
@@ -3871,12 +3872,12 @@
                                             v)]
                                     (fp-step fp [e a v op] ref?)))
                                 (fp-init)))
-             src     (if hist? (api/history db) db)
              live-fp (fp-final (reduce (fn [fp dm]
                                          (if (> (d/datom-tx dm) c/tx0)
                                            (fp-step fp [(nth dm 0) (a-ident db (nth dm 1)) (nth dm 2) (nth dm 4)] ref?)
                                            fp))
-                                       (fp-init) (api/datoms src :eavt)))
+                                       (fp-init)
+                                       (mman/export-datoms db hist?)))
              t2-ok  (and (= (:digest dump-fp) (:digest live-fp))
                          (= (:ref-counts dump-fp) (:ref-counts live-fp))
                          (= (:out-degree dump-fp) (:out-degree live-fp)))

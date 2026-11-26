@@ -12,6 +12,7 @@
    [datahike.db.utils :as dbu]
    [datahike.dependency-tracking :as tracking]
    [datahike.index :as di]
+   [datahike.index.interface :as dii]
    [datahike.index.secondary :as sec]
    [datahike.schema :as ds]
    [datahike.store :as store]
@@ -22,7 +23,7 @@
   #?(:cljs (:require-macros [datahike.db :refer [defrecord-updatable]]
                             [datahike.datom :refer [combine-cmp datom]]
                             [datahike.tools :refer [meta-data]]))
-  #?(:clj (:import [clojure.lang AMapEntry ITransientCollection IEditableCollection IPersistentCollection Seqable
+  #?(:clj (:import [clojure.lang AMapEntry IPersistentCollection Seqable
                     IHashEq Associative IKeywordLookup ILookup]
                    [datahike.datom Datom]
                    [java.io Writer]
@@ -254,25 +255,38 @@
               (contains? filtered-tx-ids
                          (datom-tx d))))))
 
-(defn post-process-datoms [datoms db context]
-  (let [xform (dbi/context-xform context)
-        time-pred (dbi/context-time-pred context)]
-    (cond
+(defn post-process-datoms
+  "`added`, when given, keeps the datoms of an ASSEMBLED view (as-of, since)
+   whose flag equals it. It runs after assembly and before the context's own
+   transform, which may turn datoms into rows of the caller's choosing."
+  ([datoms db context] (post-process-datoms datoms db context nil))
+  ([datoms db context added]
+   (let [xform (dbi/context-xform context)
+         xform (if (some? added)
+                 (dbi/nil-comp (filter (fn [d] (= (boolean added) (boolean (datom-added d))))) xform)
+                 xform)
+         time-pred (dbi/context-time-pred context)]
+     (cond
 
-      time-pred
-      (let [time-xform (temporal-datom-filter datoms time-pred db)]
-        (if (dbi/context-historical? context)
-          (into [] (dbi/nil-comp time-xform xform) datoms)
-          (->> datoms
-               (transduce time-xform
-                          (group-by-step (fn [^Datom datom]
-                                           [(.-e datom) (.-a datom)])))
-               (into [] (dbi/nil-comp (assemble-datoms-xform db) xform)))))
+       time-pred
+       (let [time-xform (temporal-datom-filter datoms time-pred db)]
+         (if (dbi/context-historical? context)
+           (into [] (dbi/nil-comp time-xform xform) datoms)
+           (->> datoms
+                (transduce time-xform
+                           (group-by-step (fn [^Datom datom]
+                                            [(.-e datom) (.-a datom)])))
+                (into [] (dbi/nil-comp (assemble-datoms-xform db) xform)))))
 
-      xform (into [] xform datoms)
+       xform (into [] xform datoms)
 
-      :else datoms)))
+       :else datoms))))
 
+;; A DB deliberately does not implement IEditableCollection. `transient` must
+;; return an ITransientAssociative, and `into`/`merge` transient any editable
+;; collection — Clojure 1.13's `merge` goes through `into1`, so
+;; `(merge db {...})` raised a ClassCastException (#1157). The transaction
+;; path calls db-transient / db-persistent! by name instead.
 (defn db-transient [db]
   (-> db
       (update :eavt di/-transient)
@@ -319,13 +333,30 @@
     true dbs/temporal-search
     false dbs/search-current-indices))
 
+(defn- added-after-assembly?
+  "An as-of or since view is ASSEMBLED from the temporal index: the datoms of
+   an entity's attribute are reduced to what the view holds. A pattern's
+   `added` slot has to be compared with that result. Filtering the raw datoms
+   first removed the retractions the assembly needs, so `[?e :a 9 _ true]`
+   answered with a value the view no longer contains."
+  [pattern context]
+  (and (boolean? (nth pattern 4 nil))
+       (some? (dbi/context-time-pred context))
+       (not (dbi/context-historical? context))))
+
 (defn contextual-search [db pattern context]
-  (-> ((contextual-search-fn context) db pattern)
-      (post-process-datoms db context)))
+  (if (added-after-assembly? pattern context)
+    (post-process-datoms ((contextual-search-fn context) db (assoc (vec pattern) 4 nil))
+                         db context (nth pattern 4))
+    (-> ((contextual-search-fn context) db pattern)
+        (post-process-datoms db context))))
 
 (defn contextual-batch-search [db pattern-mask batch-fn context]
-  (-> ((contextual-search-fn context) db pattern-mask batch-fn)
-      (post-process-datoms db context)))
+  (if (added-after-assembly? pattern-mask context)
+    (post-process-datoms ((contextual-search-fn context) db (assoc (vec pattern-mask) 4 nil) batch-fn)
+                         db context (nth pattern-mask 4))
+    (-> ((contextual-search-fn context) db pattern-mask batch-fn)
+        (post-process-datoms db context))))
 
 (defn contextual-datoms [db index-type cs context]
   (-> (case (dbi/context-temporal? context)
@@ -398,10 +429,7 @@
        IReversible (-rseq [db] (-rseq (.-eavt db)))
        ICounted (-count [db] (count (.-eavt db)))
        IEmptyableCollection (-empty [db] (empty-db (ds/get-user-schema db)))
-       IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))
-       IEditableCollection (-as-transient [db] (db-transient db))
-       ITransientCollection (-conj! [db key] (throw (ex-info "datahike.DB/conj! is not supported" {})))
-       (-persistent! [db] (db-persistent! db))]
+       IPrintWithWriter (-pr-writer [db w opts] (pr-db db w opts))]
 
       :clj
       ;; `equals` must be given explicitly, not inherited. defrecord's
@@ -419,12 +447,7 @@
        IPersistentCollection
        (count [db] (di/-count eavt))
        (equiv [db other] (equiv-db db other))
-       (empty [db] (empty-db (ds/get-user-schema db)))
-       IEditableCollection
-       (asTransient [db] (db-transient db))
-       ITransientCollection
-       (conj [db key] (throw (ex-info "datahike.DB/conj! is not supported" {})))
-       (persistent [db] (db-persistent! db))])
+       (empty [db] (empty-db (ds/get-user-schema db)))])
 
   dbi/IDB
   (-schema [db] (.-schema db))
@@ -1137,7 +1160,7 @@
         :system-entities system-entities
         :ref-ident-map ref-ident-map
         :ident-ref-map ident-ref-map
-        :meta (meta-data)
+        :meta (dii/mark-counts-complete (meta-data) index)
         :op-count (if attribute-refs? (count ref-datoms) 0)}
        (when keep-history?                                  ;; no difference for attribute references since no update possible
          {:temporal-eavt eavt
@@ -1186,7 +1209,7 @@
                       :op-count op-count
                       :hash (reduce #(+ %1 (hash %2)) 0 datoms)
                       :system-entities system-entities
-                      :meta (meta-data)
+                      :meta (dii/mark-counts-complete (meta-data) index)
                       :ref-ident-map ref-ident-map
                       :ident-ref-map ident-ref-map}
                      (when keep-history?

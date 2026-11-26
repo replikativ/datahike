@@ -169,7 +169,9 @@
                                      '[[(rule ?a ?b)
                                         [?a :follow ?b]]]))))
 
-    (is (= {:consts '{?e1 1},
+    ;; a scalar :in is a binding, not a folded constant: it shows up as a one-row
+    ;; relation the first solve step starts from, and :consts stays empty
+    (is (= {:consts {},
             :query {:find '[?e2], :in '[$ ?e1 %], :where '[(follow ?e1 ?e2)]},
             :ret #{[2] [3] [4]},
             :rules {'follow '[[(follow ?e2 ?e1) [?e2 :follow ?e1]]
@@ -177,7 +179,7 @@
             :stats [{:branches [{:branches [],
                                  :clause '(follow ?e1 ?e2),
                                  :clauses (),
-                                 :rels [],
+                                 :rels [{:bound #{'?e1}, :rows 1}],
                                  :t :measurement,
                                  :type :solve}
                                 {:branches [{:clause '[?e1 :follow ?e2],

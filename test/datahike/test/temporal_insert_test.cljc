@@ -60,9 +60,11 @@
 
 ;; ---------------------------------------------------------------------------
 
-(deftest assert-and-retract-in-one-transaction-keeps-both-entries
-  (testing "the assertion and the retraction share a tx, so they differ only in
-            `added` — exactly the pair the current comparator cannot separate"
+(deftest assert-and-retract-in-one-transaction-leaves-no-history
+  (testing "a transaction records its net effect: a value it asserts and
+            retracts was never in the database, so it leaves no history entry.
+            (Written step by step it left an assertion and a retraction under
+            one tx, a pair that does not say which came last.)"
     (with-conn
       (fn [conn e]
         (d/transact conn [[:db/add e :tag :x] [:db/retract e :tag :x]])
@@ -70,10 +72,8 @@
           (doseq [tree [:temporal-eavt :temporal-aevt]]
             (testing (name tree)
               (let [entries (temporal-entries db tree :tag :x)]
-                (is (= 2 (count entries))
-                    (str "both history entries must survive, got " (pr-str entries)))
-                (is (= #{true false} (added-flags entries))
-                    "one assertion and one retraction")))))))))
+                (is (empty? entries)
+                    (str "no history entry, got " (pr-str entries)))))))))))
 
 (deftest the-current-tree-is-unaffected
   (testing "the datom was retracted, so it must be gone from the current tree —
@@ -83,17 +83,16 @@
         (d/transact conn [[:db/add e :tag :x] [:db/retract e :tag :x]])
         (is (empty? (d/datoms @conn :eavt e :tag :x)))))))
 
-(deftest the-retraction-marker-reaches-the-history-view
-  (testing "`d/history` must show the retraction, not just the assertion. This
-            is the query-visible part of the fix, and it is what an export
-            reads — a dump taken from an affected database inherited the loss."
+(deftest the-history-view-holds-nothing-for-it
+  (testing "`d/history`, which is what an export reads, shows neither an
+            assertion nor a retraction of the value."
     (with-conn
       (fn [conn e]
         (d/transact conn [[:db/add e :tag :x] [:db/retract e :tag :x]])
         (let [entries (vec (filter #(and (= :tag (:a %)) (= :x (:v %)))
                                    (d/datoms (d/history @conn) :eavt)))]
-          (is (= #{true false} (added-flags entries))
-              (str "history must carry both, got " (pr-str entries))))))))
+          (is (empty? entries)
+              (str "history must hold nothing, got " (pr-str entries))))))))
 
 (deftest as-of-agrees-with-the-current-indices
   (testing "a fact asserted and retracted in one transaction must be absent from
@@ -119,17 +118,17 @@
 
 (deftest a-retract-entity-alongside-a-fresh-assertion
   (testing "the reachable shape: assert an attribute and retract the whole
-            entity in one transaction. The freshly asserted datom shares its tx
-            with its own retraction; an attribute asserted EARLIER does not, and
-            was never affected."
+            entity in one transaction. The freshly asserted datom never was in
+            the database and leaves nothing; an attribute asserted EARLIER is
+            retracted, and keeps its assertion and its retraction."
     (with-conn
       (fn [conn e]
         (d/transact conn [{:db/id e :tag :x} [:db/retractEntity e]])
         (let [db @conn]
-          (is (= #{true false} (added-flags (temporal-entries db :temporal-eavt :tag :x)))
-              "the same-transaction datom keeps both entries")
+          (is (empty? (temporal-entries db :temporal-eavt :tag :x))
+              "the datom asserted in the same transaction leaves no entry")
           (is (= #{true false} (added-flags (temporal-entries db :temporal-eavt :name "a")))
-              "and so does the one asserted in an earlier transaction"))))))
+              "the one asserted in an earlier transaction keeps both"))))))
 
 ;; --- controls: shapes that were already correct, and must stay correct -------
 
@@ -143,18 +142,18 @@
                (added-flags (temporal-entries @conn :temporal-eavt :tag :y))))))))
 
 (deftest retract-then-assert-in-one-transaction
-  (testing "the other order: the retraction targets a datom from an EARLIER
-            transaction, so the two entries differ in tx. Correct before and
-            after; `datahike.migrate.history` documents datahike as producing
-            both records for this shape."
+  (testing "the other order: the value was present before and is present
+            after, so the transaction changed nothing for it. No history entry,
+            and the datom keeps the transaction that asserted it."
     (with-conn
       (fn [conn e]
         (d/transact conn [[:db/add e :tag :z]])
-        (d/transact conn [[:db/retract e :tag :z] [:db/add e :tag :z]])
-        (let [db @conn]
-          (is (= #{true false} (added-flags (temporal-entries db :temporal-eavt :tag :z))))
-          (is (seq (d/datoms db :eavt e :tag :z))
-              "and the datom ends up present, since the assertion wins"))))))
+        (let [asserted (:tx (first (d/datoms @conn :eavt e :tag :z)))]
+          (d/transact conn [[:db/retract e :tag :z] [:db/add e :tag :z]])
+          (let [db @conn]
+            (is (empty? (temporal-entries db :temporal-eavt :tag :z)))
+            (is (= [asserted] (map :tx (d/datoms db :eavt e :tag :z)))
+                "the datom is present, dated to its original transaction")))))))
 
 (deftest a-card-one-overwrite-is-unaffected
   (testing "card-one goes through `-temporal-upsert`, which always used the
@@ -169,3 +168,24 @@
               "the superseded value is in history")
           (is (= #{["b"]} (d/q '[:find ?n :in $ ?e :where [?e :name ?n]] db e))
               "and the current value is the new one"))))))
+
+(deftest overwriting-false-preserves-its-history-retraction
+  (with-conn
+    (fn [conn eid]
+      (d/transact conn [{:db/ident :enabled :db/valueType :db.type/boolean
+                         :db/cardinality :db.cardinality/one}])
+      (let [add-false (d/transact conn [[:db/add eid :enabled false]])
+            add-true (d/transact conn [[:db/add eid :enabled true]])
+            restore-false (d/transact conn [[:db/add eid :enabled false]])
+            db @conn
+            t1 (:max-tx (:db-after add-false))
+            t2 (:max-tx (:db-after add-true))
+            t3 (:max-tx (:db-after restore-false))]
+        (is (= #{[false t1 true] [false t2 false] [true t2 true]
+                 [true t3 false] [false t3 true]}
+               (into #{} (map (juxt :v :tx :added))
+                     (d/datoms (d/history db) :eavt eid :enabled))))
+        (is (= [[false] [true] [false]]
+               (mapv (fn [tx]
+                       (mapv :v (d/datoms (d/as-of db tx) :eavt eid :enabled)))
+                     [t1 t2 t3])))))))
