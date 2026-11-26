@@ -106,10 +106,10 @@
       (d/release conn)))
 
   (testing "simple upsert and history"
-    (let [txs  [[:db/add 199 :name "Peter"]
-                [:db/add 199 :name "Ptr"]]
-          conn (connect)]
-      (is (d/transact conn txs))
+    (let [conn (connect)]
+      ;; two transactions: within one, only the last value would be recorded
+      (is (d/transact conn [[:db/add 199 :name "Peter"]]))
+      (is (d/transact conn [[:db/add 199 :name "Ptr"]]))
       (is (not (d/datoms @conn :eavt 199 :name "Peter"))) ;; no history
       (is (d/datoms (d/history @conn) :eavt 199 :name "Peter"))
       (d/release conn)))
@@ -171,12 +171,9 @@
                           [:db/add [:name "Bob"] :age 15]
                           [:db/add [:name "Alice"] :age 10]
                           [:db/add [:name "Alice"] :age 1]])
+        ;; the transaction's net effect: 20 and 10 only passed through
         (is (= #{[25 (+ const/tx0 1) true]
                  [25 (+ const/tx0 2) false]
-                 [20 (+ const/tx0 2) true]
-                 [20 (+ const/tx0 2) false]
-                 [10 (+ const/tx0 2) true]
-                 [10 (+ const/tx0 2) false]
                  [1 (+ const/tx0 2) true]}
                (d/q query (d/history @conn))))
         (d/release conn)))))

@@ -36,7 +36,10 @@
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.set :as set]
             [datahike.api :as d]
+            [datahike.db :as db]
+            [datahike.query :as query]
             [datahike.query.relation :as rel]
+            [datahike.query.resource :as resource]
             [datahike.test.utils :as utils]))
 
 (def ^:private schema
@@ -139,3 +142,22 @@
                them at every size, and the resulting relation was
                |relations| x |:in|^3"))
         (finally (d/release c))))))
+
+(deftest or-join-retains-one-binding-per-projected-key
+  ;; The hidden row ID distinguishes the caller's rows. The branch sees only
+  ;; the shared key, and two branches overlap on a result for that key.
+  (let [ids (range 1 33)
+        input (d/db-with (db/empty-db)
+                         (mapv (fn [id] {:db/id id :test/key (mod id 2)}) ids))
+        expected (into #{} (mapcat (fn [id]
+                                     (if (even? id) [[id :all] [id :even]] [[id :all]]))) ids)
+        q '[:find ?id ?label
+            :where [?id :test/key ?key]
+            (or-join [?key ?label]
+                     (and [(some? ?key)] [(ground :all) ?label])
+                     (and [(zero? ?key)] [(ground :all) ?label])
+                     (and [(zero? ?key)] [(ground :even) ?label]))]]
+    (doseq [legacy? [false true]]
+      (binding [query/*disable-planner* legacy?
+                resource/*max-intermediate-slots* 512]
+        (is (= expected (d/q q input)) (str "Legacy engine: " legacy?))))))

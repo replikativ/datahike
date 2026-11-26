@@ -71,6 +71,28 @@ jobs:
           paths:
             - /home/circleci/.m2
             - /home/circleci/.deps.clj
+  clj-kondo-export:
+    executor: tools/clojurecli
+    steps:
+      - attach_workspace:
+          at: /home/circleci
+      - run:
+          name: Compile the Java interfaces the API namespaces import
+          command: clojure -T:build prep-lib
+      - run:
+          name: Regenerate the clj-kondo export
+          command: bb codegen-clj-kondo
+          no_output_timeout: 5m
+      - run:
+          name: Check that the committed export is up to date
+          command: |
+            git status --porcelain resources/clj-kondo.exports
+            git diff --exit-code resources/clj-kondo.exports
+            test -z "$(git status --porcelain resources/clj-kondo.exports)"
+      - run:
+          name: Lint a consumer with the export
+          command: bb test-clj-kondo-export
+          no_output_timeout: 5m
   reflection:
     executor: tools/clojurecli
     steps:
@@ -469,6 +491,10 @@ workflows:
           context: ghcr-read-package
           requires:
             - setup
+      - clj-kondo-export:
+          context: ghcr-read-package
+          requires:
+            - setup
       - reflection:
           context: ghcr-read-package
           requires:
@@ -535,6 +561,7 @@ workflows:
               only: main
           requires:
             - format
+            - clj-kondo-export
             - persistent-set-test
             - persistent-set-test-base-engine
             - planner-regression

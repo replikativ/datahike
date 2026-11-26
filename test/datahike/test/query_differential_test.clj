@@ -551,24 +551,36 @@
    (acyclic) dataset could surface."
   (or (some-> (System/getenv "DATAHIKE_DIFF_CASE_TIMEOUT_MS") parse-long) 5000))
 
-(defn- run-engine [disable? query db args opts]
-  (let [thunk (fn []
-                (try
-                  (binding [q/*disable-planner* disable?]
-                    (let [args' (into [db] (map (fn [a] (if (= ::db2 a) @test-db2 a))) args)]
-                      (normalize
-                       (if (seq opts)
+(def ^:private input-modes
+  "How a scalar :in value reaches the planner. The answer must not depend on it.
+   :default keeps it a binding (a one-row relation, rebound per call); :fold writes it
+   into the clauses before planning, as the default did before."
+  {:default {}
+   :fold    {#'q/*fold-scalar-ins* true
+             (requiring-resolve 'datahike.query.execute/*prepared-execution*) false}})
+
+(def ^:private mode-divergences (atom []))
+
+(defn- run-engine
+  ([disable? query db args opts] (run-engine disable? query db args opts :default))
+  ([disable? query db args opts mode]
+   (let [thunk (fn []
+                 (try
+                   (with-bindings (assoc (input-modes mode) #'q/*disable-planner* disable?)
+                     (let [args' (into [db] (map (fn [a] (if (= ::db2 a) @test-db2 a))) args)]
+                       (normalize
+                        (if (seq opts)
                          ;; map form — the only way to pass :order-by
-                         (d/q (assoc opts :query query :args args'))
-                         (apply d/q query args')))))
-                  (catch Exception _ ::raised)))
-        fut (future (thunk))
-        r (deref fut case-timeout-ms ::timeout)]
-    (when (= r ::timeout)
+                          (d/q (assoc opts :query query :args args'))
+                          (apply d/q query args')))))
+                   (catch Exception _ ::raised)))
+         fut (future (thunk))
+         r (deref fut case-timeout-ms ::timeout)]
+     (when (= r ::timeout)
       ;; The thread is CPU-bound and will not observe an interrupt, but the run
       ;; must proceed; the case is already reported as a divergence.
-      (future-cancel fut))
-    r))
+       (future-cancel fut))
+     r)))
 
 (defn- wrap-db [db temporal]
   (case temporal
@@ -633,48 +645,11 @@
   ;; the size of its matcher. With `:kind :raise`, a divergence on this axis
   ;; where the planner RAISES is excused, and one where it quietly answers
   ;; differently still fails the build.
-  [{:id :fn-output-folded-in-const
-    :kind :raise
-    :why (str "a scalar :in constant is folded into a function or get-else "
-              "clause's output binding position, producing e.g. "
-              "[(upper-case \"alice\") \"alice\"], "
-              "which the binding parser rejects — so the planner raises where the "
-              "base engine answers. The folding is also how the planner ENCODES "
-              "the obligation for a get-else (it becomes v-ground, which the merge "
-              "kernels now enforce), so the fix is not simply to stop folding: the "
-              "binding position needs to carry the obligation without being parsed "
-              "as a binding. Belongs in const-folding, #932's seam. "
-              "Delete this entry then.")
-    ;; The matcher names the CLAUSE SHAPE, not just the axis, and reads it off
-    ;; the BUILT QUERY rather than the spec: `:rebind?` also drives the
-    ;; generated get-else cases, and matching the axis alone let this entry
-    ;; excuse a planner raise anywhere on it — the too-coarse mistake the note
-    ;; above describes, one level down. The spec's `:modifiers` cannot answer
-    ;; it either, because the builder DEGRADES them (a `:pred-lt` with no `?s`
-    ;; becomes `:fn-upper`), so a spec saying `[:pred-lt]` can still produce a
-    ;; function clause. Only a function-output clause writing into an
-    ;; already-bound var folds a constant into a binding position.
-    :match? (fn [_spec query]
-              (let [ins (->> query (drop-while (complement #{:in})) rest
-                             (take-while (complement keyword?)) set)]
-                (boolean
-                 ;; BOTH conditions: a clause writing into `?n`, AND `?n`
-                 ;; arriving as an :in constant — the fold has nothing to fold
-                 ;; otherwise, so without this the entry would excuse a raise
-                 ;; that has some other cause entirely. `get-else` is included
-                 ;; because the fold is into the BINDING POSITION and does not
-                 ;; care what sits in head position: measured, a get-else whose
-                 ;; output var is ALSO pattern-bound raises with the same
-                 ;; "Cannot parse binding" message. (One that is only :in-bound
-                 ;; does not — there the fold becomes v-ground, which the merge
-                 ;; kernels enforce, and both engines answer.)
-                 (and (contains? ins '?n)
-                      (some (fn [form]
-                              (and (vector? form)
-                                   (= 2 (count form))
-                                   (seq? (first form))
-                                   (= '?n (second form))))
-                            (tree-seq coll? seq query))))))}])
+  ;; EMPTY since scalar :in values stay bindings: the one class listed here,
+  ;; a constant folded into a function's output binding position, existed only
+  ;; because the value was written into the clause. See the canary below, which
+  ;; now asserts the law instead.
+  [])
 
 (def ^:private oracle-known (atom {}))
 
@@ -739,6 +714,26 @@
                       db (wrap-db (dataset-db (:dataset spec)) (:temporal spec))
                       base (run-engine true query db args opts)
                       planner (run-engine false query db args opts)
+                      ;; INPUT MODE: how a scalar :in value reaches the planner cannot
+                      ;; change an answer. Not asserted on the rebind axis, where the
+                      ;; modes differ for the catalogued reason: with the value folded
+                      ;; in, `[(f ?n) ?n]` has a CONSTANT as its binding target and
+                      ;; raises, while a value kept as a binding unifies — the law.
+                      _ (doseq [mode [:fold]
+                                ;; the opt-in fold still writes the value into a
+                                ;; function's output binding position and raises
+                                :when (not (and (= :fold mode) (:rebind? spec)))
+                                :let [r (run-engine false query db args opts mode)]]
+                          (do
+                            (when (not= r planner)
+                              (swap! mode-divergences conj {:mode mode :query query :args args}))
+                            (is (= planner r)
+                                (str "the answer depends on the scalar input mode " mode
+                                     " — " (pr-str query) " args " (pr-str args)
+                                     " opts " (pr-str opts) " temporal " (:temporal spec)
+                                     " dataset " (:dataset spec)
+                                     "\n  default: " (pr-str planner)
+                                     "\n  " mode ": " (pr-str r)))))
                       oracle (when (not= "off" oracle-mode)
                                (run-oracle query db args))
                       ;; The rebind axis violates ONE law (an output binding
