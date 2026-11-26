@@ -21,9 +21,16 @@
                                                       :raw-db raw-db}))
        :clj
        (if-let [conn (lookup-connection store-id)]
-         (let [store (:store @conn)]
-           (when-let [raw-db (k/get store commit-id nil {:sync? true})]
-             (dw/stored->db-read-only raw-db store)))
+         ;; A commit id is a content address. When it is the connection's
+         ;; head, hand back the db we already hold, as `deref-conn` does for an
+         ;; unmoved head: rebuilding it would restore every secondary index on
+         ;; each request.
+         (let [db @conn]
+           (if (= commit-id (get-in db [:meta :datahike/commit-id]))
+             db
+             (let [store (:store db)]
+               (when-let [raw-db (k/get store commit-id nil {:sync? true})]
+                 (dw/stored->db-read-only raw-db store)))))
          (log/raise (ex-info "Could not find active connection. Did you connect already?"
                              {:type :no-connection-for-db
                               :raw-db raw-db}))))

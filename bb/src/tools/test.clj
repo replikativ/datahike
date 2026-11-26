@@ -95,6 +95,22 @@
                        " :paths [\"" old-secondary-fixture "\"]}")
          "-X:test" "backward-secondary-test/write")
 
+    (println "WRITING A RELEASED STORE ACROSS RECONNECTS (index counts, #1108)")
+    (fs/copy (str secondary-fixture "/backward_counts_test.clj")
+             (str old-version-dir "/" old-secondary-fixture "/backward_counts_test.clj"))
+    (clj {:dir old-version-dir
+          :extra-env secondary-env}
+         "-Sdeps" (str "{:deps {io.replikativ/datahike {:local/root \".\"}}"
+                       " :paths [\"" old-secondary-fixture "\"]}")
+         "-X:test" "backward-counts-test/write")
+
+    (println "RECOUNTING THE RELEASED STORE WITH CURRENT CODE")
+    (clj {:dir "."
+          :extra-env secondary-env}
+         "-Sdeps" (str "{:deps {io.replikativ/datahike {:local/root \".\"}}"
+                       " :paths [\"test/datahike/backward_compatibility_test/src\"]}")
+         "-X:test" "backward-counts-test/verify-current")
+
     (println "READING TEST DATA FROM TEST-DB")
     (clj {:dir "."}
          "-Sdeps" (str "{:deps {io.replikativ/datahike {:local/root \".\"}}"

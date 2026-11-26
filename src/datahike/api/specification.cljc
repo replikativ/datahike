@@ -234,7 +234,7 @@
      :stability :stable
      :supports-remote? false
      :referentially-transparent? false
-     :doc "Same as transact, but asynchronously returns a future. Safe to call from listener callbacks and go blocks."
+     :doc "Same as transact, but asynchronously returns a future. Consecutive submissions from one caller enter a local writer queue in call order. Safe to call from listener callbacks and go blocks."
      :examples [{:desc "Async transaction"
                  :code "@(transact! conn [{:db/id -1 :name \"Alice\"}])"}]
      :impl datahike.api.impl/transact!}

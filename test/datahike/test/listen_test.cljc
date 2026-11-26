@@ -103,6 +103,8 @@
        (is (= report-groups event-groups)
            "one event describes each exact durable commit group")
        (is (= 24 (reduce + (map :tx-count @events))))
+       (is (apply < (map #(get-in % [:tempids :db/current-tx]) reports))
+           "sequential async submissions enter the local writer in order")
        (is (< (count @events) 24)
            "the fixture actually exercised writer batching")
        (doseq [event @events]

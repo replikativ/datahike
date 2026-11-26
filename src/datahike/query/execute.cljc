@@ -13,6 +13,7 @@
    [datahike.query.analyze :as analyze]
    [datahike.query.plan :as plan]
    [datahike.query.relation :as rel]
+   [datahike.query.resource :as resource]
    [datahike.query.resolve :as qr]
    #?(:clj [datahike.index.secondary :as sec])
    #?(:clj [datahike.index.entity-set :as es])
@@ -134,20 +135,34 @@
 ;; two unrelated guards in two files, and it was already incomplete — a RAW set
 ;; from `pattern-probe-set` was handed to `scan-filter`, which wraps its
 ;; argument, so the hazard ran in both directions and only one had a guard.
-(deftype ProbeSet [members seekvals])
+(deftype ProbeSet [members seekvals account])
+
+(defn- bounded-probe-capacity
+  "Clamp an advisory initial capacity to affordable logical entries.
+   This does not account for native collection load factors or allocator bytes."
+  [capacity slots-per-entry]
+  (if-some [limit resource/*max-intermediate-slots*]
+    (min capacity (quot limit slots-per-entry))
+    capacity))
 
 (defn- make-probe-set
   "A mutable probe set for hash-probe joins: content keys for membership, raw
    values for seeks."
   [capacity]
-  #?(:clj  (ProbeSet. (java.util.HashSet. (int capacity)) (java.util.ArrayList. (int capacity)))
-     :cljs (ProbeSet. (js/Set.) (array))))
+  (let [account (resource/account :probe-set)
+        capacity (bounded-probe-capacity capacity 2)]
+    #?(:clj (ProbeSet. (java.util.HashSet. (int capacity))
+                       (java.util.ArrayList. (int capacity)) account)
+       :cljs (ProbeSet. (volatile! (transient #{})) (array) account))))
 
-;; THE key rule lives in datahike.array — see `native-key` there, and its twin
-;; `value-key` for the relational engine's Clojure containers. These probe
-;; structures are `java.util.HashSet`/`HashMap` and `js/Set`/`js/Map`, which
-;; compare by identity unless the key is a primitive, so this is the native one.
-(def ^:private probe-key da/native-key)
+;; JVM containers compare scalar values with equals/hashCode; ClojureScript's
+;; local transient containers use Clojure value equality too. Native JS Map/Set
+;; would distinguish separately allocated equal keywords, symbols and vectors,
+;; so a value self-join could silently return only its diagonal. Array values
+;; still need the content wrapper appropriate to each container. Canonicalizing
+;; an array key may copy its payload; scalar payload allocation is outside this
+;; structural reference policy, which is not a general heap-size bound.
+(def ^:private probe-key #?(:clj da/native-key :cljs da/value-key))
 
 (defn- probe-set-add
   "Add `x` — its content key for membership, and the raw value for seeks.
@@ -159,22 +174,32 @@
    `probe-set-size` — which is the K in the cost threshold — equal to the
    number of seeks the decision is actually buying."
   [^ProbeSet s x]
-  (let [k (probe-key x)]
-    #?(:clj  (when (.add ^java.util.HashSet (.-members s) k)  ; true iff new
-               (.add ^java.util.ArrayList (.-seekvals s) x))
-       :cljs (let [ms (.-members s)
-                   n (.-size ms)]
-               (.add ms k)
-               (when (> (.-size ms) n) (.push (.-seekvals s) x))))))
+  (let [k (probe-key x)
+        account (.-account s)]
+    #?(:clj (let [^java.util.HashSet members (.-members s)]
+              (if account
+                (when-not (.contains members k)
+                  ;; Membership and raw seek entries are admitted together,
+                  ;; before either container mutates. Duplicates retain neither.
+                  (resource/reserve! account 2)
+                  (.add members k)
+                  (.add ^java.util.ArrayList (.-seekvals s) x))
+                (when (.add members k)
+                  (.add ^java.util.ArrayList (.-seekvals s) x))))
+       :cljs (let [members (.-members s)]
+               (when-not (contains? @members k)
+                 (resource/reserve! account 2)
+                 (vswap! members conj! k)
+                 (.push (.-seekvals s) x))))))
 
 (defn- probe-set-contains? [^ProbeSet s x]
   (let [k (probe-key x)]
     #?(:clj  (.contains ^java.util.HashSet (.-members s) k)
-       :cljs (.has (.-members s) k))))
+       :cljs (contains? @(.-members s) k))))
 
 (defn- probe-set-size [^ProbeSet s]
   #?(:clj  (.size ^java.util.HashSet (.-members s))
-     :cljs (.-size (.-members s))))
+     :cljs (count @(.-members s))))
 
 (defn- probe-set-seek-vals
   "The RAW values, for index seeks only. Call sites: the two seek paths, and
@@ -189,7 +214,11 @@
       moves backwards. Never the members: an ArrayKey is not the stored value
       and is not Comparable."
      ^objects [^ProbeSet s]
-     (let [vs (sort datom/compare-value (vec (probe-set-seek-vals s)))]
+     ;; Every copy below holds exactly N raw references: vec, sort's array and
+     ;; the returned array. Admit their known size before constructing any one.
+     (let [n (probe-set-size s)
+           _ (resource/check-size! :probe-seek-copy n)
+           vs (sort datom/compare-value (vec (probe-set-seek-vals s)))]
        (assert (not-any? da/array-key? vs)
                "a wrapped key reached an index seek")
        (object-array vs))))
@@ -197,33 +226,46 @@
 ;; Probe-map: HashMap<probe-value → ArrayList<Object[]>> for producer find-var propagation.
 ;; Each key is a probe-value (join-var), each value is a list of producer find-var tuples.
 
+(deftype ProbeMap [buckets account])
+
 (defn- make-probe-map
-  "Create a mutable map for hash-probe joins with value propagation."
+  "Own one value-propagating join index and its account across every bucket."
   [capacity]
-  #?(:clj  (java.util.HashMap. (int capacity))
-     :cljs (js/Map.)))
+  (let [account (resource/account :probe-map)
+        capacity (bounded-probe-capacity capacity 4)]
+    (ProbeMap. #?(:clj (java.util.HashMap. (int capacity))
+                  :cljs (volatile! (transient {})))
+               account)))
 
 (defn- probe-map-add
-  "Add a producer find-var tuple to the probe-map under the given probe-value.
-   Supports multiple producer tuples per probe-value (card-many joins)."
-  [m k v]
-  #?(:clj  (let [k (probe-key k)
-                 ^java.util.ArrayList existing (.get ^java.util.HashMap m k)]
-             (if existing
-               (.add existing v)
-               (.put ^java.util.HashMap m k (doto (java.util.ArrayList. 4) (.add v)))))
-     :cljs (let [k (probe-key k)
-                 existing (.get m k)]
-             (if existing
-               (.push existing v)
-               (.set m k #js [v])))))
+  "Retain a producer tuple reference. A new scalar key costs one key cell,
+   two key/bucket entries and the tuple reference (four slots); another tuple
+   in an existing bucket costs one slot. Values inside keys are not weighed."
+  [^ProbeMap m k v]
+  (let [k (probe-key k)
+        buckets (.-buckets m)
+        account (.-account m)]
+    #?(:clj (let [^java.util.HashMap buckets buckets
+                  ^java.util.ArrayList existing (.get buckets k)]
+              (when account (resource/reserve! account (if existing 1 4)))
+              (if existing
+                (.add existing v)
+                (.put buckets k (doto (java.util.ArrayList.
+                                       (int (bounded-probe-capacity 4 1)))
+                                  (.add v)))))
+       :cljs (let [existing (get @buckets k)]
+               (when account (resource/reserve! account (if existing 1 4)))
+               (if existing
+                 (.push existing v)
+                 (vswap! buckets assoc! k #js [v]))))))
 
 (defn- probe-map-get
-  "Get the list of producer find-var tuples for a probe-value, or nil."
-  [m k]
-  (let [k (probe-key k)]
-    #?(:clj  (.get ^java.util.HashMap m k)
-       :cljs (.get m k))))
+  "Return a producer bucket, keeping the index's owner representation private."
+  [^ProbeMap m k]
+  (let [k (probe-key k)
+        buckets (.-buckets m)]
+    #?(:clj (.get ^java.util.HashMap buckets k)
+       :cljs (get @buckets k))))
 
 (defn- probe-map-entry-size [entry]
   #?(:clj  (.size ^java.util.ArrayList entry)
@@ -563,6 +605,21 @@
                                       {:op op :pred pred})))))
                 strict-preds)))))
 
+(defn- build-pushdown-filter
+  "A post-filter for EVERY pushed-down predicate of a scan, inclusive ones too.
+
+   An index slice enforces `>=`, `<=` and `=` by its bounds, so a slice scan
+   post-filters only the strict predicates. A scan driven by per-key SEEKS
+   (`probe-driven-iterable`, the variable-attribute AVET seeks, the temporal
+   per-key sub-slices) never applies those bounds: it returns whatever the bound
+   entities or values lead to. Such a scan must check all of them here, or
+   `[?e :score ?s] [(<= ?s 10)]` with `?e` bound returns scores above 10."
+  [clause pushdown-preds]
+  (when (seq pushdown-preds)
+    (when-let [pushdown-var (first (keep :var pushdown-preds))]
+      (when-let [idx (get (rel/var-mapping clause (range)) pushdown-var)]
+        (build-strict-filter pushdown-preds idx)))))
+
 (defn- compute-slice-bounds
   "Compute [from-datom to-datom] for an index slice given clause, index, and pushdown."
   [clause index pushdown-bounds resolved-a resolved-e]
@@ -573,9 +630,9 @@
            (datom emax resolved-a nil txmax)]
     :avet (let [v (get clause 2)
                 from-v (or (:from-v pushdown-bounds)
-                           (when (and (some? v) (not (analyze/free-var? v))) v))
+                           (when (and (some? v) (not (symbol? v))) v))
                 to-v (or (:to-v pushdown-bounds)
-                         (when (and (some? v) (not (analyze/free-var? v))) v))]
+                         (when (and (some? v) (not (symbol? v))) v))]
             [(datom e0 resolved-a from-v tx0)
              (datom emax resolved-a to-v txmax)])))
 
@@ -658,14 +715,27 @@
                (let [ai (get (:attrs rel) a)
                      vi (get (:attrs rel) v)]
                  (when (and ai vi)
-                   (let [seen (java.util.HashSet.)
+                   (let [account (resource/account :avet-probe-pairs)
+                         seen (if account
+                                (java.util.HashSet. (int (bounded-probe-capacity 16 3)))
+                                (java.util.HashSet.))
                          aborted (reduce (fn [_ t]
                                            (let [pa (cell t ai) pv (cell t vi)]
-                                             (when (and (some? pa) (some? pv)) (.add seen [pa pv])))
+                                             (when (and (some? pa) (some? pv))
+                                               (when account (resource/check-size! :avet-probe-pair 2))
+                                               (let [pair [pa pv]]
+                                                 (if account
+                                                   (when-not (.contains seen pair)
+                                                     (resource/reserve! account 3)
+                                                     (.add seen pair))
+                                                   (.add seen pair)))))
                                            (if (>= (.size seen) scan-n) (reduced true) nil))
                                          nil (:tuples rel))]
                      (when (and (not (true? aborted)) (pos? (.size seen)))
-                       (let [ps (vec seen)]
+                       (let [_ (when account
+                                 (resource/check-size! :avet-probe-pairs-copy
+                                                       (resource/rows-slots (.size seen) 2)))
+                             ps (vec seen)]
                          (when (and (< (* (long (count ps)) (long probe-driven-threshold)) scan-n)
                                     (every? (fn [[pa _]] (dbu/indexing? db pa)) ps))
                            ps)))))))
@@ -692,8 +762,19 @@
         pushdown-bounds (when (seq pushdown-preds) (plan/pushdown-to-bounds pushdown-preds))
         [from to] (compute-slice-bounds clause index pushdown-bounds resolved-a resolved-e)
         db-index (get db index)
-        scan-n (long (or scan-n (di/-count db-index)))
-        full (fn [] (di/-slice db-index from to index))]
+        scan-n (long (or scan-n (di/estimated-count (:index (dbi/-config db)) db-index)))
+        full (fn [] (di/-slice db-index from to index))
+        ;; seeks bypass the slice bounds `from`/`to`; see `build-pushdown-filter`
+        ;; ... and what the PLANNED index would have enforced by position: a
+        ;; ground value under AVET, a ground entity under EAVT. A seek goes through
+        ;; whichever index its bound key needs, so `build-ground-filter` is asked
+        ;; for no index at all and checks both.
+        bounded (fn [datoms]
+                  (let [pf (build-pushdown-filter clause pushdown-preds)
+                        gf (build-ground-filter clause nil)]
+                    (cond->> datoms
+                      gf (filter gf)
+                      pf (filter pf))))]
     #?(:clj
        (if-let [avet-pairs (when (and (:avet db)
                                       (nil? resolved-a)
@@ -704,9 +785,10 @@
          ;; upstream (e.g. a reference-driven join whose attribute comes from the
          ;; data): AVET point-seek per (attr, value) pair instead of full-scanning
          ;; EAVT and filtering. O(pairs * log n) vs O(all datoms).
-         (mapcat (fn [[pa pv]]
-                   (di/-slice (:avet db) (datom e0 pa pv tx0) (datom emax pa pv txmax) :avet))
-                 avet-pairs)
+         (bounded
+          (mapcat (fn [[pa pv]]
+                    (di/-slice (:avet db) (datom e0 pa pv tx0) (datom emax pa pv txmax) :avet))
+                  avet-pairs))
          (if-let [probe (pattern-probe-set db clause resolved-a rels scan-n)]
            (let [k     (probe-set-size (:values probe))
                  field (int (:field probe))
@@ -721,7 +803,7 @@
                       (some? resolved-a)
                       (pss-instance? seek-index)
                       (< (* (long k) (long probe-driven-threshold)) scan-n))
-               (probe-driven-iterable seek-index resolved-a (:values probe) field)
+               (bounded (probe-driven-iterable seek-index resolved-a (:values probe) field))
                ;; `probe-set-contains?`, not a raw `.contains`: this bypassed
                ;; the key function entirely, which was correct only while arrays
                ;; were declined above. With the decline gone it would filter by
@@ -732,6 +814,18 @@
                          (full)))))
            (full)))
        :cljs (full))))
+
+(defn- scan-datom-tuple
+  "Copy one physical datom after its owning scan has admitted the six slots."
+  [^Datom d]
+  #?(:clj [(.-e d) (.-a d) (.-v d) (.-tx d) (datom/datom-added d)]
+     :cljs (let [t (make-array 5)]
+             (aset t 0 (.-e d))
+             (aset t 1 (.-a d))
+             (aset t 2 (.-v d))
+             (aset t 3 (.-tx d))
+             (aset t 4 (datom/datom-added d))
+             t)))
 
 (defn- execute-pattern-scan [db op cancel rels]
   (let [{:keys [clause index pushdown-preds]} op
@@ -744,23 +838,20 @@
                         (let [pushdown-var (first (keep :var pushdown-preds))]
                           (when pushdown-var
                             (build-strict-filter strict (get scan-var-map pushdown-var)))))
+        account (resource/account :pattern-scan-output)
         tuples (into []
                      (comp (if ground-filter (filter ground-filter) identity)
                            (if strict-filter (filter strict-filter) identity)
                            (map (fn [^Datom d]
                                   (check-cancel! cancel)
+                                  ;; Five physical datom cells plus their retained
+                                  ;; output entry, before the vector/array constructor.
+                                  (when account (resource/reserve! account 6))
                                   ;; 5th component is the datom's actual added flag, NOT a
                                   ;; hardcoded true — history/temporal scans emit retraction
                                   ;; datoms whose op-var (e.g. [?e :age ?a ?t ?op]) must bind
                                   ;; false. Mirrors the fused path's find-src-scan-added slot.
-                                  #?(:clj  [(.-e d) (.-a d) (.-v d) (.-tx d) (datom/datom-added d)]
-                                     :cljs (let [t (make-array 5)]
-                                             (aset t 0 (.-e d))
-                                             (aset t 1 (.-a d))
-                                             (aset t 2 (.-v d))
-                                             (aset t 3 (.-tx d))
-                                             (aset t 4 (datom/datom-added d))
-                                             t)))))
+                                  (scan-datom-tuple d))))
                      datoms)]
     (rel/->Relation var-map tuples)))
 
@@ -2375,6 +2466,39 @@
 ;; ---------------------------------------------------------------------------
 ;; Dispatcher — setup + dispatch to the appropriate path function.
 
+(def ^:private never-value
+  "A merge value no stored value equals."
+  #?(:clj (Object.) :cljs (js-obj)))
+
+(defn- current-db-added
+  "What a fixed `added` slot means for an entity group on a CURRENT database,
+   which holds assertions only. The temporal executors compare the slot per
+   datom; the plain merge loops do not look at it, so a merged
+   `[?e :a ?v _ false]` matched as if the slot were absent.
+
+   - `false` on a required merge: no entity can satisfy the group. The scan is
+     given `false` in its own added slot, which its ground filter compares, so
+     it yields nothing and every downstream array keeps its shape.
+   - `false` on an anti-merge: it never matches, so it excludes nothing. Its
+     value becomes one nothing equals.
+   - `true`: every datom here is an assertion; nothing to do.
+
+   Returns [scan-op merge-ops]."
+  [scan-op merge-ops]
+  (if-not (some #(false? (nth (:clause %) 4 nil)) merge-ops)
+    [scan-op merge-ops]
+    (let [retracted? #(false? (nth (:clause %) 4 nil))
+          impossible? (some #(and (retracted? %) (not (:anti? %))) merge-ops)
+          [e a v tx] (:clause scan-op)]
+      [(if impossible?
+         (assoc scan-op :clause [e a v tx false])
+         scan-op)
+       (mapv (fn [op]
+               (if (and (retracted? op) (:anti? op))
+                 (assoc op :clause (assoc (vec (:clause op)) 2 never-value))
+                 op))
+             merge-ops)])))
+
 (defn- execute-group-direct
   "Execute an entity-group (or single pattern-scan) fused, writing results
    directly into a result list. Computes shared setup, then dispatches to
@@ -2388,7 +2512,10 @@
    collect-set collect-datom-field collect-merge-idx
    max-results
    & {:keys [scan-estimate pipeline temporal cancel]}]
-  (let [{:keys [clause index pushdown-preds]} scan-op
+  (let [[scan-op merge-ops] (if temporal
+                              [scan-op merge-ops]
+                              (current-db-added scan-op merge-ops))
+        {:keys [clause index pushdown-preds]} scan-op
         [e a v tx] clause
         ;; For temporal queries, resolve against the unwrapped origin-db
         origin-db (when temporal (:origin-db temporal))
@@ -2527,7 +2654,7 @@
                                          ;; costlier than per-value seeks — so prefer probe-driven
                                          ;; whenever the probe set is smaller than the attribute, not
                                          ;; just below the seek break-even for cheap current-DB slices.
-                                         (let [est (long (or scan-estimate (di/-count db-index)))]
+                                         (let [est (long (or scan-estimate (di/estimated-count (:index (dbi/-config index-db)) db-index)))]
                                            (and (pos? est)
                                                 (if temporal
                                                   (< (long (probe-set-size probe-set)) est)
@@ -2605,6 +2732,18 @@
                   (di/-slice db-index from-datom to-datom index)))
         ;; When probe-driven, filtering is baked into the seeks — nil out probe-set
         probe-set (if use-probe-driven? nil probe-set)
+        ;; ... but the slice bounds are not: the seeks never see `from-datom` /
+        ;; `to-datom`, so the inclusive pushed-down predicates those bounds would
+        ;; have enforced are checked per datom; see `build-pushdown-filter`.
+        strict-filter (if use-probe-driven?
+                        (build-pushdown-filter clause pushdown-preds)
+                        strict-filter)
+        ;; Likewise the ground value or entity that the planned index would have
+        ;; enforced by position: the seeks go through EAVT or AVET by the probed
+        ;; field, whatever `index` is.
+        ground-filter (if use-probe-driven?
+                        (build-ground-filter clause nil)
+                        ground-filter)
         max-n (int (or max-results -1))]
 
     (if temporal
@@ -2810,6 +2949,36 @@
   [sub-plan]
   (into #{} (mapcat op-bound-vars) (:ops sub-plan)))
 
+(defn- sub-plan-runs-unseeded?
+  "Can `sub-plan` execute in its PLANNED ORDER with no outer relations?
+
+   A negation's sub-plan is planned believing the outer join vars are bound —
+   true on the Relation path, where `execute-not-join` seeds it with them — so
+   a cheap op reading one may be ordered first. The fused path runs the same
+   ops unseeded, and there that op finds its input unbound: `(not-join [?e]
+   (r ?e ?f) [(identity ?e) ?f])` raised \"Cannot resolve any more clauses\"
+   where the identity was ordered ahead of the rule call that binds `?e`.
+   Join-var COVERAGE (checked by the caller) is not enough; the ORDER has to
+   bind each input before it is read.
+
+   Readiness follows `plan/op-cost`, except for a recursive rule, whose
+   required vars are an ordering hint only — it computes its own relation and
+   is correct as a pure producer."
+  [sub-plan consts]
+  (loop [ops (seq (:ops sub-plan))
+         bound (into #{} (keys consts))]
+    (if-let [op (first ops)]
+      (let [[required policy] (plan/op-required-vars op)
+            ready? (or (= :recursive-rule (:op op))
+                       (case policy
+                         :none true
+                         :all  (every? #(contains? bound %) required)
+                         :any  (some #(contains? bound %) required)
+                         false))]
+        (when ready?
+          (recur (next ops) (into bound (plan/branch-produced-vars {:ops [op]})))))
+      true)))
+
 (defn can-direct-fuse?
   "Check if a plan can use the direct-to-HashSet execution path.
    Public: query/explain mirrors the execution dispatch with it.
@@ -2862,10 +3031,11 @@
        (every? (fn [op]
                  (or (not= :not-join (:op op))
                      (let [inner (sub-plan-bound-vars (:sub-plan op))]
-                       (every? #(or (and consts (contains? consts %))
-                                    (and (contains? group-vars %)
-                                         (contains? inner %)))
-                               (:join-vars op)))))
+                       (and (every? #(or (and consts (contains? consts %))
+                                         (and (contains? group-vars %)
+                                              (contains? inner %)))
+                                    (:join-vars op))
+                            (sub-plan-runs-unseeded? (:sub-plan op) consts)))))
                ops))
          ;; A group that is BOTH a consumer and a producer is not executable on
          ;; this path. The multi-group loop below is a two-way `cond`: a group
@@ -3008,7 +3178,13 @@
                           (if (try (apply f argv)
                                    #?(:clj (catch ClassCastException _ false))
                                    #?(:clj (catch IllegalArgumentException _ false)
-                                      :cljs (catch :default _ false)))
+                                      :cljs (catch :default e
+                                              (let [d (ex-data e)]
+                                                (if (or (resource/limit-exceeded? e)
+                                                        (:datahike/canceled d)
+                                                        (= :datahike/query-timeout (:type d)))
+                                                  (throw e)
+                                                  false)))))
                             (recur (inc pi))
                             false))))]
           (if pass?
@@ -3251,13 +3427,16 @@
     target-vars))
 
 (def ^:dynamic *prepared-execution*
-  "Master switch for the prepared-execution machinery (value-free plan
-   reuse for parameterized queries: single-tuple-rel absorption, per-call
-   plan rebinding, compiled point programs, and the point fast path inside
-   the fused executor). Default FALSE — every path behaves exactly as it
-   did before this machinery existed. Parameterized-workload servers (the
-   pgwire surrogate) bind it true together with *fold-scalar-ins* false."
-  false)
+  "The execution side of value-free scalar inputs (datahike.query/*fold-scalar-ins*
+   false): a scalar/tuple :in binding kept as a one-row relation is absorbed as a
+   per-call constant — per-call plan rebinding, compiled point programs, the point fast
+   path inside the fused executor. Default TRUE, together with value-free inputs.
+
+   The two belong together. A value-free plan executed WITHOUT this rebinding leaves a
+   pushed-down predicate holding the input's symbol where its value belongs, and
+   `[?e :age ?v] [(= ?v ?in)]` answers nothing. Bind false only alongside
+   *fold-scalar-ins* true, to compare with the folded path."
+  true)
 
 ;; ---------------------------------------------------------------------------
 ;; Prepared-plan rebinding: plans are cached value-free (scalar :in vars stay
@@ -3296,20 +3475,23 @@
       (assoc op :index :avet)
       op)))
 
-(defn- bind-pattern-op [consts op scan?]
+(defn- bind-pattern-op
+  "`patterns?` false leaves the pattern clause alone and binds only the pushdown
+   bounds — see `bind-plan-consts`."
+  [consts op scan? patterns?]
   (let [bind-pushdown
         (fn [pred]
           (cond-> (update pred :const-val #(subst-slot consts %))
             (:pred-clause pred)
             (update :pred-clause #(subst-clause consts %))))
         op (cond-> op
-             (:clause op)
+             (and patterns? (:clause op))
              (assoc :clause (subst-clause consts (:clause op)))
 
              (seq (:pushdown-preds op))
              (update :pushdown-preds
                      #(mapv bind-pushdown %)))]
-    (if scan? (upgrade-scan-index op) op)))
+    (if (and scan? patterns?) (upgrade-scan-index op) op)))
 
 (defn bind-plan-consts
   "Rebind a cached value-free plan with per-call constants: substitute `consts`
@@ -3318,60 +3500,103 @@
    Returns the rebound plan, or nil when the plan contains ops the rebinding
    cannot reach soundly (not-join sub-plans, a function whose output var is
    itself a const, a const landing in an e/tx slot as a non-number) — callers
-   fall back to the relation path."
-  [plan consts]
-  (let [sound? (volatile! true)
-        pattern-ok? (fn [clause]
+   fall back to the relation path.
+
+   `{:patterns? false}` is for a caller that KEEPS the input relations in its
+   context (the relation fallback): there the pattern clauses stay in variable
+   form and only what cannot read a relation is bound — pushdown bounds, which
+   reach an index comparator, and predicate/function arguments.
+
+   A variable in a pattern is not a loss there, it is the information the
+   executor runs on. `execute-fused-scan-rel` finds a bound value through the
+   VARIABLE in the clause (`pattern-probe-set`) and from it both seeks the index
+   and prices the pattern when it re-chooses the group's driver
+   (`parameterize-entity-group`). Substituting the value turned the pattern into
+   a literal the scorer cannot see, so it fell back to the cached plan's
+   value-free estimate — the whole attribute — and any pattern that still had a
+   variable looked cheaper. Measured on 300k entities, `:in $ ?name ?group
+   [?kind ...]`: the name scan (15 rows) was substituted, priced at 300,000 and
+   displaced by the two-kind probe (100,000 rows): 63 ms a query in prepared
+   mode against 0.2 ms with the variables kept."
+  ([plan consts] (bind-plan-consts plan consts nil))
+  ([plan consts {:keys [patterns?] :or {patterns? true}}]
+   (let [sound? (volatile! true)
+         ;; With the patterns left alone the caller's context still holds every
+         ;; input relation, so nothing here can be out of reach: an op this
+         ;; function cannot rewrite (a not-join sub-plan, a function writing
+         ;; into an input var) simply reads the relation, as it always did. The
+         ;; rebinding is then TOTAL — it must be, because the pushdown bounds it
+         ;; fills in have no other source: a plan handed back unbound keeps the
+         ;; input's SYMBOL as an index bound and answers nothing
+         ;; (`[?e :age ?v] [(< ?v ?in)] (not-join [?e] …)` returned #{}).
+         total? (not patterns?)
+         unsound! (fn [] (when-not total? (vreset! sound? false)))
+         pattern-ok? (fn [clause]
                       ;; e and tx slots must stay symbols or numbers — idents /
                       ;; lookup-refs are resolved on the relation path only.
-                      (let [e (get clause 0) tx (get clause 3)]
-                        (and (or (symbol? e) (nil? e) (number? e))
-                             (or (symbol? tx) (nil? tx) (number? tx)))))
-        bind-op
-        (fn bind-op [op]
-          (case (:op op)
-            :entity-group
-            (let [scan-op' (bind-pattern-op consts (:scan-op op) true)
-                  merge-ops' (mapv #(bind-pattern-op consts % false) (:merge-ops op))
-                  preds' (mapv #(assoc % :clause (subst-clause consts (:clause %))
-                                       :args (map (fn [a] (subst-slot consts a)) (:args %)))
-                               (:attached-preds op))
-                  pipeline (:pipeline op)
-                  steps' (when pipeline
-                           (mapv (fn [step]
-                                   (cond-> (bind-pattern-op consts step false)
-                                     (:index step)
-                                     (assoc :index (:index scan-op'))))
-                                 (:steps pipeline)))]
-              (when-not (and (pattern-ok? (:clause scan-op'))
-                             (every? #(pattern-ok? (:clause %)) merge-ops'))
-                (vreset! sound? false))
-              (cond-> (assoc op :scan-op scan-op' :merge-ops merge-ops' :attached-preds preds')
-                pipeline (assoc :pipeline (assoc pipeline :steps steps'))))
+                       (let [e (get clause 0) tx (get clause 3)]
+                         (and (or (symbol? e) (nil? e) (number? e))
+                              (or (symbol? tx) (nil? tx) (number? tx)))))
+         bind-attached
+         (fn [preds]
+           (mapv #(assoc % :clause (subst-clause consts (:clause %))
+                         :args (map (fn [a] (subst-slot consts a)) (:args %)))
+                 preds))
+         bind-op
+         (fn bind-op [op]
+           (case (:op op)
+             :entity-group
+             (let [scan-op' (bind-pattern-op consts (:scan-op op) true patterns?)
+                   merge-ops' (mapv #(bind-pattern-op consts % false patterns?) (:merge-ops op))
+                   preds' (bind-attached (:attached-preds op))
+                   pipeline (:pipeline op)
+                   steps' (when pipeline
+                            (mapv (fn [step]
+                                    (cond-> (bind-pattern-op consts step false patterns?)
+                                      (:index step)
+                                      (assoc :index (:index scan-op'))))
+                                  (:steps pipeline)))]
+               (when-not (and (pattern-ok? (:clause scan-op'))
+                              (every? #(pattern-ok? (:clause %)) merge-ops'))
+                 (unsound!))
+               (cond-> (assoc op :scan-op scan-op' :merge-ops merge-ops' :attached-preds preds')
+                 pipeline (assoc :pipeline (assoc pipeline :steps steps'))))
 
-            :pattern-scan
-            (let [op' (bind-pattern-op consts op true)]
-              (when-not (pattern-ok? (:clause op')) (vreset! sound? false))
-              op')
+             :pattern-scan
+             (let [op' (bind-pattern-op consts op true patterns?)]
+               (when-not (pattern-ok? (:clause op')) (unsound!))
+               ;; a standalone scan carries attached predicates too
+               (cond-> op'
+                 (seq (:attached-preds op))
+                 (assoc :attached-preds (bind-attached (:attached-preds op)))))
 
-            :predicate
-            (assoc op :clause (subst-clause consts (:clause op))
-                   :args (map #(subst-slot consts %) (:args op)))
+             :predicate
+             (assoc op :clause (subst-clause consts (:clause op))
+                    :args (map #(subst-slot consts %) (:args op)))
 
-            :function
-            (let [binding-vars (filter analyze/free-var? (analyze/extract-vars (:binding op)))]
-              (when (some #(contains? consts %) binding-vars)
-                (vreset! sound? false))
-              (assoc op :clause (subst-clause consts (:clause op))
-                     :args (map #(subst-slot consts %) (:args op))))
+             :function
+             (let [binding-vars (filter analyze/free-var? (analyze/extract-vars (:binding op)))]
+               (if (some #(contains? consts %) binding-vars)
+                 ;; the output unifies with an input: only the relation can do that
+                 (do (unsound!) op)
+                 (assoc op :clause (subst-clause consts (:clause op))
+                        :args (map #(subst-slot consts %) (:args op)))))
 
-            :not-join
-            (do (vreset! sound? false) op)
+             :not-join
+             (do (unsound!) op)
 
-            op))
-        ops' (mapv bind-op (:ops plan))]
-    (when @sound?
-      (assoc plan :ops ops'))))
+             ;; A recursive rule decides at EXECUTION whether it can run demand-
+             ;; driven: it needs a ground call argument to seed the magic set
+             ;; (`compute-magic-info`). An input left as a variable there made
+             ;; `(reaches ?start ?b)` compute the whole closure and filter it
+             ;; afterwards — quadratic, and out of memory on a 4000-node graph.
+             :recursive-rule
+             (assoc op :call-args (mapv #(subst-slot consts %) (:call-args op)))
+
+             op))
+         ops' (mapv bind-op (:ops plan))]
+     (when @sound?
+       (assoc plan :ops ops')))))
 
 (defn single-tuple-rel-consts
   "When every rel binds exactly one tuple (scalar/tuple :in bindings kept as
@@ -3508,15 +3733,22 @@
   (let [scan-op (entity-group-scan-op g)
         merge-ops (entity-group-merge-ops g)
         e-var (first (:clause scan-op))
+        a-slot (second (:clause scan-op))
         v-var (nth (:clause scan-op) 2 nil)]
     ;; A card-many merge can multiply one driving row; omitting the entity can
     ;; collapse different entities; omitting a card-many driver's value can
     ;; collapse that entity's several driving rows.
     (or (some #(not (get-in % [:schema-info :card-one?] true)) merge-ops)
         (not (some #{e-var} find-vars))
-        (and (not (get-in scan-op [:schema-info :card-one?] true))
-             (symbol? v-var)
-             (analyze/free-var? v-var)
+        ;; ... unless the value is a literal (one row per entity) or is
+        ;; projected. `_`, `_x` and a missing value slot collapse rows exactly
+        ;; like an unprojected ?var; testing for a ?var alone let
+        ;; `[:find ?e :where [?e :tags _]]` return an entity once per tag.
+        ;; An attribute that is not a keyword (`[?e _ _]`, `[?e]`) has no
+        ;; cardinality to rely on and yields a row per datom.
+        (and (or (not (keyword? a-slot))
+                 (not (get-in scan-op [:schema-info :card-one?] true)))
+             (not (and (some? v-var) (not (symbol? v-var))))
              (not (some #{v-var} find-vars))))))
 
 (defn- direct-group-output-unique?
@@ -3543,6 +3775,15 @@
                (direct-group-output-unique? g find-vars temporal))
       requested)))
 
+(defn- ground-value?
+  "Is the value slot of a pattern a ground value to compare with? The rule the
+   planner and the generic executor use everywhere: present and not a symbol.
+   A `?var` binds; any other symbol (`_`, `_x`) and a missing slot (`[?e :a]`)
+   match every value and bind nothing. They are NOT values - comparing stored
+   values with the symbol `_` matches nothing."
+  [x]
+  (and (some? x) (not (symbol? x))))
+
 (defn- try-point-group
   "Point-shape fast path: a single entity group whose (rebound) scan is an
    AVET ground-value seek and whose merges are all card-one same-entity EAVT
@@ -3553,7 +3794,7 @@
   [db g emit-vars consts result-list max-results cancel]
   (let [scan-op (entity-group-scan-op g)
         merge-ops (entity-group-merge-ops g)
-        [se sa sv stx] (:clause scan-op)
+        [se sa sv stx sadded] (:clause scan-op)
         avet (:avet db)
         eavt (:eavt db)
         merge-vars (into #{} (comp (map #(get (:clause %) 2))
@@ -3566,16 +3807,20 @@
                          emit-vars)
                  (keyword? sa)
                  (symbol? se) (analyze/free-var? se)
+                 ;; an entity the caller bound is a constraint, not an output:
+                 ;; this path takes the entity from every index hit
+                 (not (and consts (contains? consts se)))
                  (some? sv) (not (symbol? sv))
-                 (nil? stx)
+                 ;; no tx and no added slot: neither is checked here
+                 (nil? stx) (nil? sadded)
                  avet eavt
                  (pss-instance? avet) (pss-instance? eavt)
                  #?(:clj (not (:attribute-refs? (dbi/-config db))) :cljs true)
                  (seq emit-vars)
                  (empty? (get scan-op :pushdown-preds))
                  (every? (fn [op]
-                           (let [[me ma mv mtx] (:clause op)]
-                             (and (= me se) (keyword? ma) (nil? mtx)
+                           (let [[me ma mv mtx madded] (:clause op)]
+                             (and (= me se) (keyword? ma) (nil? mtx) (nil? madded)
                                   (not (:anti? op))
                                   (get-in op [:schema-info :card-one?] false)
                                   (empty? (get op :pushdown-preds))
@@ -3606,9 +3851,15 @@
                                   var? (and (symbol? mv) (analyze/free-var? mv))]
                               (cond
                                 ;; ground value: existence + equality check
-                                (not var?)
+                                (ground-value? mv)
                                 (when (and md (val-eq? (.-v ^Datom md) mv))
                                   (recur (inc i) binds))
+
+                                ;; no value to compare and nothing to bind
+                                ;; (`_`, or a pattern without a value slot):
+                                ;; the attribute only has to be present
+                                (not var?)
+                                (when md (recur (inc i) binds))
 
                                 ;; missing, non-optional → entity fails
                                 (and (nil? md) (not (:optional? op)))
@@ -3645,7 +3896,10 @@
   [plan db find-vars max-results consts cancel outer-ctx]
   (let [ops (:ops plan)
         temporal (temporal-info db)]
-    (when (and (not (:has-passthrough? plan))
+    ;; Fused mutable sinks are outside the internal guard. Decline through the
+    ;; normal relation fallback instead of executing an unguarded join.
+    (when (and (nil? resource/*max-intermediate-slots*)
+               (not (:has-passthrough? plan))
                ;; Fast structural pre-check from IR pipeline (when available)
                (if (contains? plan :structurally-fusable?)
                  (:structurally-fusable? plan)
@@ -4118,21 +4372,26 @@
       (let [g (first ops)
             scan-op (entity-group-scan-op g)
             merge-ops (entity-group-merge-ops g)
-            [se sa sv stx] (:clause scan-op)
+            [se sa sv stx sadded] (:clause scan-op)
             ck (set consts-keys)
             free? #(and (symbol? %) (analyze/free-var? %))
             sv-src (cond
                      (free? sv) (when (contains? ck sv) [:const sv])
-                     (some? sv) [:lit sv]
+                     (ground-value? sv) [:lit sv]
                      :else nil)]
-        (when (and (keyword? sa) (free? se) (nil? stx) sv-src
+        (when (and (keyword? sa) (free? se) (nil? stx) (nil? sadded) sv-src
+                   ;; An entity the caller bound is a constraint. The program
+                   ;; takes the entity from every index hit and never compared
+                   ;; it: `:in $ ?e ?i  [?e :i ?i] [?e :s ?v]` answered with
+                   ;; whichever entities had that ?i.
+                   (not (contains? ck se))
                    (:indexed? (:schema-info scan-op))
                    (empty? (get scan-op :pushdown-preds)))
           (let [merges
                 (reduce
                  (fn [acc op]
-                   (let [[me ma mv mtx] (:clause op)
-                         spec (when (and (= me se) (keyword? ma) (nil? mtx)
+                   (let [[me ma mv mtx madded] (:clause op)
+                         spec (when (and (= me se) (keyword? ma) (nil? mtx) (nil? madded)
                                          (not (:anti? op))
                                          (get-in op [:schema-info :card-one?] false)
                                          (empty? (get op :pushdown-preds)))
@@ -4144,7 +4403,11 @@
                                   (and (free? mv) (contains? ck mv))
                                   {:attr ma :mode :cval :var mv}
                                   (free? mv) {:attr ma :mode :bind :var mv}
-                                  (some? mv) {:attr ma :mode :lit :val mv}
+                                  (ground-value? mv) {:attr ma :mode :lit :val mv}
+                                  ;; `_` or no value slot: presence only.
+                                  ;; (An optional merge that binds nothing is
+                                  ;; left to the generic executor.)
+                                  (not (:optional? op)) {:attr ma :mode :present}
                                   :else nil))]
                      (if spec (conj acc spec) (reduced nil))))
                  [] merge-ops)]
@@ -4195,6 +4458,7 @@
                             md (first (di/-slice eavt (datom e attr nil tx0)
                                                  (datom e attr nil txmax) :eavt))]
                         (case mode
+                          :present (when md (recur (inc i) binds))
                           :lit (when (and md (val-eq? (.-v ^Datom md) val))
                                  (recur (inc i) binds))
                           :cval (let [cv (get consts var)]
@@ -4248,14 +4512,20 @@
    shape must fall back to the relation engine."
   [plan db find-vars rels base-consts max-results cancel outer-ctx]
   (let [rel-consts (when (seq rels) (single-tuple-rel-consts rels))]
-    (when (or (empty? rels) (seq rel-consts))
+    (when (and (nil? resource/*max-intermediate-slots*)
+               (or (empty? rels) (seq rel-consts)))
       (let [consts (if (seq rel-consts) (merge base-consts rel-consts) base-consts)
             ckeys (into #{} (keys consts))
             prog (direct-program plan find-vars ckeys)]
-        (if (and (not (identical? ::none prog))
+        (if (and (not= ::none prog)
                  (pss-instance? (:avet db))
                  (pss-instance? (:eavt db))
-                 #?(:clj (not (:attribute-refs? (dbi/-config db))) :cljs true))
+                 ;; The compiled point program is JVM-only: it was written for and
+                 ;; only ever run by the JVM wire server, and on ClojureScript it
+                 ;; answered #{} for a single-pattern query once prepared execution
+                 ;; became the default. ClojureScript rebinds the plan and runs the
+                 ;; generic direct executor below.
+                 #?(:clj (not (:attribute-refs? (dbi/-config db))) :cljs false))
           (do (check-cancel! cancel)
               ;; A compiled point program applies attached predicates and hash
               ;; dedup only after its scan.  Bound only the already-distinct,
@@ -4284,7 +4554,8 @@
     ;; this in a broad catch that turns any exception into "not fusable", so a
     ;; throw here is indistinguishable from a genuine fused-scan failure — which
     ;; would then surface as an unexplained slowdown instead of an error.
-    (when (and (not (:has-passthrough? plan))
+    (when (and (nil? resource/*max-intermediate-slots*)
+               (not (:has-passthrough? plan))
                ;; direct-rel only handles pure group plans — no predicates/functions
                ;; (unlike execute-plan-direct which has post-filter machinery)
                (seq ops)
@@ -4342,10 +4613,44 @@
 ;; ---------------------------------------------------------------------------
 ;; Relation-based execution (fallback path for predicates, functions, etc.)
 
+#?(:clj
+   (defn- probe-value-rows
+     "How many datoms `k` value-position probe keys select on `resolved-a`, or nil when
+      that cannot be told cheaply.
+
+      A probe KEY is not a ROW. An entity key selects about one datom of an attribute; a
+      value key selects every entity that has that value, which is anything from one to
+      the whole attribute. `parameterize-entity-group` compares this score with the current
+      scan's row estimate, so the two must be in the same unit. They were not: measured on
+      300k entities, `[?e :item/name \"n7\"]` (15 rows) lost the scan slot to
+      `[?e :item/kind ?kind]` probed by TWO kinds, because 2 < 15 — and the two kinds
+      select 100k entities. 40 ms a query instead of well under one (#1107).
+
+      Counted exactly on AVET, which is O(log n) per value with subtree counts: up to
+      `sample` values, scaled to `k`. Without counts there is no cheap answer and the
+      rotation is declined — the planned driver stays."
+     [db resolved-a probe-values k]
+     (let [avet (:avet db)]
+       (when (and avet (di/-has-subtree-counts? avet))
+         (let [^objects vs (probe-set-sorted-seek-array probe-values)
+               n (alength vs)
+               sample (min n 8)
+               ;; spread over the value range rather than the first few, which are neighbours
+               step (max 1 (quot n sample))
+               total (loop [i 0 taken 0 acc 0]
+                       (if (or (>= i n) (>= taken sample))
+                         acc
+                         (recur (+ i step) (inc taken)
+                                (+ acc (long (di/-count-slice avet
+                                                              (datom e0 resolved-a (aget vs i) tx0)
+                                                              (datom emax resolved-a (aget vs i) txmax)
+                                                              datom/cmp-datoms-av-only))))))]
+           (long (Math/ceil (* (double total) (/ (double (long k)) (double sample))))))))))
+
 (defn- bound-probe-score
-  "Return the number of distinct upstream keys with which `op` can drive an
-   index seek, or nil when executing it as a scan would still walk/filter its
-   full extent.
+  "Return the number of ROWS `op` would produce when driven as an index seek from the
+   distinct upstream keys bound to it, or nil when executing it as a scan would still
+   walk/filter its full extent (or the row count cannot be told; see `probe-value-rows`).
 
    This deliberately uses the same eligibility and cost threshold as
    `scan-datoms`: choosing a different entity-group driver must not turn a
@@ -4364,7 +4669,9 @@
              (when (and (:seekable? probe)
                         (pss-instance? seek-index)
                         (< (* k (long probe-driven-threshold)) scan-n))
-               k)))))
+               (if (== field 0)
+                 k
+                 (probe-value-rows db resolved-a (:values probe) k)))))))
      ;; Probe sets and persistent-set forward cursors are JVM-only. CLJS keeps
      ;; the existing scan driver, matching scan-datoms' full-scan fallback.
      :cljs nil))
@@ -4419,6 +4726,8 @@
   "Execute an entity-group as a fused scan, returning a Relation."
   [db scan-op merge-ops context]
   (let [[scan-op merge-ops] (parameterize-entity-group db scan-op merge-ops (:rels context))
+        ;; only ever called on a plain DB (the caller tests for PSS indexes)
+        [scan-op merge-ops] (current-db-added scan-op merge-ops)
         cancel (:cancel context)
         {:keys [clause index pushdown-preds]} scan-op
         [e a v tx] clause
@@ -4479,7 +4788,15 @@
                     new-tx? (boolean (and binds? (some? mtx) (symbol? mtx) (analyze/free-var? mtx)
                                           (not (contains? attrs mtx))))
                     attrs (cond-> attrs new-tx? (assoc mtx (inc idx)))
-                    idx (cond-> idx new-tx? inc)]
+                    idx (cond-> idx new-tx? inc)
+                    ;; This executor runs on a current database, where every
+                    ;; datom is an assertion: a merge's `added` variable reads
+                    ;; the scan's flag (tuple slot 4), which is always true.
+                    madded (get c 4)
+                    attrs (cond-> attrs
+                            (and binds? (symbol? madded) (analyze/free-var? madded)
+                                 (not (contains? attrs madded)))
+                            (assoc madded 4))]
                 (recur (inc i) attrs idx (conj! ev new-v?) (conj! et new-tx?))))))
 
         ;; Check for entity-filter from upstream secondary index searches
@@ -4641,7 +4958,7 @@
         a           (second scan-clause)
         resolved-a  (when (and (some? a) (not (symbol? a))) (resolve-attr index-db a))
         scan-n      (or (:estimated-card scan-op)
-                        (di/-count (get index-db (:index scan-op))))
+                        (di/estimated-count (:index (dbi/-config index-db)) (get index-db (:index scan-op))))
         ;; SIP probe-set is a JVM-only fast-path optimization (HashSet + ForwardCursor
         ;; seeks). On cljs fall back to a full temporal scan — slower but identical
         ;; results, since the probe only restricts the scan to already-bound values.
@@ -4654,7 +4971,11 @@
         ;; joins — reference those clause vars, so the fused tuples must carry them.
         find-vars   (vec (distinct (filter #(and (symbol? %) (analyze/free-var? %))
                                            (concat scan-clause
-                                                   (mapcat :clause merge-ops)))))
+                                                   ;; an anti-merge binds nothing:
+                                                   ;; its variables are local to
+                                                   ;; the negation and it leaves
+                                                   ;; no datom to read them from
+                                                   (mapcat :clause (remove :anti? merge-ops))))))
         ;; A group with no free var at all — every position ground, typically
         ;; after the :in fold — is a pure EXISTENCE test. The fused scan emits
         ;; one tuple per emitted var, so with none it emitted nothing whether
@@ -4740,7 +5061,11 @@
                  {:error :query/where :form (:clause op)}))
     (cond
       (some #(= branch-true %) branch-rels) ctx
-      (seq valid) (update ctx :rels rel/collapse-rels (reduce rel/sum-rel valid))
+      ;; The branches saw projected copies of the caller's bindings. Multiple
+      ;; outer rows may have the same visible key, and several branches can
+      ;; produce the same binding. Joining those copies back to the caller
+      ;; would multiply each outer row again at every disjunction.
+      (seq valid) (update ctx :rels rel/collapse-rels (rel/distinct-rel (reduce rel/sum-rel valid)))
       (some #(= branch-false %) branch-rels)
       (update ctx :rels rel/collapse-rels (rel/empty-rel))
       :else ctx)))
@@ -5609,7 +5934,8 @@
                                   ;; stricter `delta-driven-sound?`. Unlike the
                                   ;; magic-set use, this one bites with NO ground
                                   ;; argument.
-                                           use-delta-driven? (and #?(:cljs false :clj base-scan-attr)
+                                           use-delta-driven? (and (nil? resource/*max-intermediate-slots*)
+                                                                  #?(:cljs false :clj base-scan-attr)
                                                                   delta-driven-sound?
                                                                   rec-has-db-pattern?
                                                                   rec-shape-simple?
@@ -6149,7 +6475,10 @@
   [op-db op ctx]
   (case (:op op)
     :pattern-scan (count (:tuples (execute-pattern-scan op-db op (:cancel ctx) (:rels ctx))))
-    :entity-group (ctx-total-tuples (first (execute-fused-scan-rel op-db (:scan-op op) (:merge-ops op) ctx)))
+    ;; A cost probe materializes the same fused join as execution. Do not
+    ;; bypass the guard merely to measure a candidate before dispatch.
+    :entity-group (when (nil? resource/*max-intermediate-slots*)
+                    (ctx-total-tuples (first (execute-fused-scan-rel op-db (:scan-op op) (:merge-ops op) ctx))))
     nil))
 
 (defn- probe-candidate?
@@ -6272,11 +6601,14 @@
               ;; filter via context, not index structure, so fused scan would bypass filters)
                 :entity-group
                 (let [ti (temporal-info op-db)]
+                  ;; Under the internal size policy, keep planner ordering but
+                  ;; let per-pattern lookup reach the guarded relation joins.
                   (cond
                 ;; Single temporal wrapper over a PSS-backed origin — stay on the
                 ;; FUSED path (temporal-aware execute-group-direct + SIP probe)
                 ;; rather than the per-clause legacy lookup-batch-search fallback.
-                    (and (some? ti) (pss-instance? (:eavt (:origin-db ti))))
+                    (and (nil? resource/*max-intermediate-slots*)
+                         (some? ti) (pss-instance? (:eavt (:origin-db ti))))
                     (let [[ctx' _] (execute-temporal-group-rel op-db op ctx ti)
                           actual-card (ctx-total-tuples ctx')
                       ;; Re-plan cardinality estimation reads index subtree counts
@@ -6290,7 +6622,8 @@
                                   plan)]
                       (recur ctx' plan' (inc idx)))
 
-                    (pss-instance? (:eavt op-db))
+                    (and (nil? resource/*max-intermediate-slots*)
+                         (pss-instance? (:eavt op-db)))
                     (let [[ctx' consumed] (execute-fused-scan-rel op-db (:scan-op op) (:merge-ops op) ctx)
                           actual-card (ctx-total-tuples ctx')
                           plan' (if (and (> (- (count (:ops plan)) idx) 2)
@@ -6435,7 +6768,8 @@
                     (if (not (pss-instance? (:eavt op-db)))
                       (let [ti (temporal-info op-db)
                             scan-attr (second (:clause op))]
-                        (if (and (some? ti)
+                        (if (and (nil? resource/*max-intermediate-slots*)
+                                 (some? ti)
                                  (pss-instance? (:eavt (:origin-db ti)))
                                  (not (:optional? op))
                                  (some? scan-attr) (not (symbol? scan-attr)))
@@ -6474,13 +6808,16 @@
                             all-ops (:ops plan)
                             e-var (first (:clause op))
                             op-source (:source op)
-                            fusable (when (and (= :scan (:join-method op)) (empty? (:rels ctx)))
+                            fusable (when (and (nil? resource/*max-intermediate-slots*)
+                                               (= :scan (:join-method op)) (empty? (:rels ctx)))
                                       (loop [j (inc idx) fused []]
                                         (if (>= j (count all-ops))
                                           fused
                                           (let [next-op (nth all-ops j)]
                                             (if (and (= :pattern-scan (:op next-op))
                                                      (= :lookup (:join-method next-op))
+                                                     ;; a merge seeks by attribute
+                                                     (plan/can-be-merge? next-op)
                                                      (= e-var (first (:clause next-op)))
                                                ;; Only fuse ops on the same source
                                                      (= op-source (:source next-op)))
@@ -6632,7 +6969,8 @@
    plan, db: as usual"
      [plan db find-elements aggregate-fn cancel]
      (let [ops (:ops plan)]
-       (when (and (not (:has-passthrough? plan))
+       (when (and (nil? resource/*max-intermediate-slots*)
+                  (not (:has-passthrough? plan))
                   (seq ops)
                   (every? #(#{:entity-group :pattern-scan} (:op %)) ops)
                   (not-any? :source ops)
