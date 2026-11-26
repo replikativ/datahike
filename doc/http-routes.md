@@ -570,6 +570,119 @@ mid-step. In practice a query that scans and joins is stopped promptly; the
 deadline is a bound on how long a request occupies a thread, not a hard
 real-time guarantee.
 
+### Follow a PostgreSQL 18 primary (beta)
+
+The standalone server JAR can run a read-only logical replica of a PostgreSQL
+publication. Run `mirror` as its own process, with a dedicated file store and
+SQL port. The mirror mode owns that store and serves it over PostgreSQL wire
+protocol. The HTTP server's `:pg-listener` serves the native Datahike catalog.
+
+```clojure
+{:publication "analytics"
+ :store-path "/var/lib/datahike/mirrors/analytics"
+ :server {:host "127.0.0.1" :port 15432 :default "analytics"}}
+```
+
+Supply the publisher's JDBC URL in `PG_MIRROR_SOURCE_URL`. Check the
+publication first, then start the follower:
+
+```bash
+java -jar datahike-http-server.jar mirror --check mirror.edn
+java -jar datahike-http-server.jar mirror mirror.edn
+psql -h 127.0.0.1 -p 15432 -U datahike -d analytics
+```
+
+The SQL port opens after snapshot and catch-up. After a publisher connection
+failure, an open listener serves the last durable state while the worker
+reconnects. Restart using the same store path and its adjacent
+`.mirror-lock` file to resume from the recorded slot and WAL checkpoint.
+The mirror publishes progress and errors on standard output. A missing,
+invalidated, or advanced slot pauses apply by default. To choose how to
+recover from slot loss or to follow a promoted standby, use the publisher
+setup and recovery procedures in the
+[pg-datahike logical replication guide](https://github.com/replikativ/pg-datahike/blob/main/doc/postgres-mirroring.md).
+
+#### Run named mirrors from the server configuration
+
+Put deployment settings for each worker in the optional `:pg-mirrors` map
+in `server.edn`. A worker reads the selected entry and the secret files it
+references. Keep credentials out of the shared file.
+
+```clojure
+{:pg-mirrors
+ {"analytics" {:publication "analytics"
+               :source-url-file "/run/secrets/analytics-jdbc-url"
+               :store-path "/var/lib/datahike/mirror"
+               :schema-refresh? true
+               :server {:host "0.0.0.0" :port 15432}
+               :server-config-file "/run/secrets/analytics-sql.edn"}}}
+```
+
+The source URL file contains a single PostgreSQL JDBC URL. The optional
+SQL listener secret file contains a map with `:users` and `:tls` in the
+same format as `:pg-listener`. A non-loopback bind requires both.
+The worker name is the SQL database name unless `:server :default` is
+configured. The normal HTTP launch reads the same deployment file and
+leaves worker startup to the process supervisor.
+
+```bash
+java -jar datahike-http-server.jar mirror --check --name analytics --config server.edn
+java -jar datahike-http-server.jar mirror --name analytics --config server.edn
+```
+
+With pg-datahike 0.1.427, add `:max-in-flight-commits 8` to a named mirror
+entry to try experimental queued replay for ordinary row changes. The
+default is one. An exclusive writer can make several source commits durable
+in one storage write while preserving a separate history point for each.
+Give the worker exclusive access to its store. See the
+[queued replay guide](https://github.com/replikativ/pg-datahike/blob/v0.1.427/doc/postgres-mirroring.md#group-commit-for-ordinary-row-changes)
+for limits and serial replay boundaries.
+
+With Docker Compose, use the same server image for each service. Mount
+`server.edn` read-only, give each worker a different named volume at
+`/var/lib/datahike`, and mount its source and listener secrets only into its
+container. The container runs as UID 10001. File mounts must be readable
+by that user. The worker command is
+`["mirror", "--name", "analytics", "--config", "/etc/datahike/server.edn"]`.
+Disable the image's HTTP health check for the worker and monitor its SQL
+readiness and replication status separately. Use the publisher's network
+address as seen from the worker container.
+
+```yaml
+services:
+  server:
+    image: ${DATAHIKE_SERVER_IMAGE}
+    command: ["--config", "/etc/datahike/server.edn"]
+    environment:
+      DATAHIKE_TOKEN_FILE: /run/secrets/http-token
+    ports: ["127.0.0.1:4444:4444"]
+    volumes:
+      - native:/var/lib/datahike
+      - ./server.edn:/etc/datahike/server.edn:ro
+      - ./secrets/http-token:/run/secrets/http-token:ro
+  analytics:
+    image: ${DATAHIKE_SERVER_IMAGE}
+    command: ["mirror", "--name", "analytics", "--config", "/etc/datahike/server.edn"]
+    healthcheck:
+      disable: true
+    stop_grace_period: 40s
+    ports: ["127.0.0.1:15432:15432"]
+    volumes:
+      - analytics:/var/lib/datahike
+      - ./server.edn:/etc/datahike/server.edn:ro
+      - ./secrets/analytics-jdbc-url:/run/secrets/analytics-jdbc-url:ro
+      - ./secrets/analytics-sql.edn:/run/secrets/analytics-sql.edn:ro
+      - ./secrets/analytics.p12:/run/secrets/analytics.p12:ro
+volumes:
+  native:
+  analytics:
+```
+
+Set `:tls :keystore` in the listener secret file to
+`/run/secrets/analytics.p12`. The mirror logs include `:serving?`, `:state`,
+and `:last-publisher-poll-ms`. During an outage an already-open listener
+keeps serving its last durable state, so also monitor replication progress.
+
 ### Operator landing page
 
 Open the server root (or `/admin`) for a read-only overview of readiness, build
