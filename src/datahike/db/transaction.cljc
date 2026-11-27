@@ -2232,11 +2232,23 @@
    Schema before data, retractions before assertions, the transaction entity
    first.
 
+   Only a transaction that names each fact, `[e a v]`, once is reordered. One
+   that names a fact twice was stored before transactions recorded their net
+   effect (`load-entities` reproduces such transactions): it asserted and
+   retracted a value, or replaced a cardinality-one value and retracted the one
+   it replaced, and the order of its records is the only record of how it
+   ended. It is replayed as given.
+
    An importer cuts batches at transaction boundaries, except for a
    transaction too large for one batch (`:max-pending`); such a transaction is
    ordered within each part."
   [db es]
-  (into [] (mapcat #(sort-by (partial replay-phase db) %))
+  (into []
+        (mapcat (fn [tx]
+                  (if (= (count tx) (count (into #{} (map (fn [[e a v]] [e a v])) tx)))
+                    ;; `sort-by` is stable: records keep their order within a phase
+                    (sort-by (partial replay-phase db) tx)
+                    tx)))
         (partition-by #(nth % 3 nil) es)))
 
 (defn- backfill-enabled-indices
