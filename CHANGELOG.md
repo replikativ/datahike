@@ -6,6 +6,14 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **A computed `:eids` mapping no longer keeps one entry per imported entity
+  ([#1127]).** Under `:offset`, `:preserve`, a caller's `ILookup` or a caller's
+  function, `import-db`/`import-source` remembered every id the mapping had
+  already answered for — one entry per source entity, and a second one per
+  transaction — rebuilding the O(entities) table these mappings exist to
+  avoid. Only ids the importer allocates itself (those a partial mapping
+  leaves unnamed) are remembered now. The import still keeps one entry per
+  transaction. Regression from #970.
 - **The JDBC backend connects again ([#1133]).** konserve-jdbc 0.2.101,
   as pinned, did not implement the `-store-exists?` probe konserve 0.9.385+
   makes on every connect, so creating or connecting a `:backend :jdbc` database
@@ -1243,6 +1251,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1123]: https://github.com/replikativ/datahike/pull/1123
 [#1112]: https://github.com/replikativ/datahike/issues/1112
 [#1105]: https://github.com/replikativ/datahike/issues/1105
+[#1127]: https://github.com/replikativ/datahike/pull/1127
 [#1133]: https://github.com/replikativ/datahike/pull/1133
 [#1134]: https://github.com/replikativ/datahike/pull/1134
 [#1151]: https://github.com/replikativ/datahike/pull/1151
