@@ -69,8 +69,9 @@
    ;; subscription writes into the frontend directly, so a cold frontend would
    ;; be refilled with the branch's whole reachable state by the sync anyway —
    ;; over the network instead of from the local backend.
-   (when (false? (:populate-on-connect? store-config))
-     (throw (ex-info (str ":populate-on-connect? false is not supported on a kabel-synced tiered "
+   (when-not (true? (get store-config :populate-on-connect? true))
+     (throw (ex-info (str ":populate-on-connect? " (pr-str (:populate-on-connect? store-config))
+                          " is not supported on a kabel-synced tiered "
                           "store: the frontend is populated by the branch walk that the sync "
                           "handshake depends on. Remove the option.")
                      {:type :store/tiered-populate-required :writer :kabel})))

@@ -11,7 +11,10 @@ When something is added, it's typically marked *Experimental*. When the API cont
   answers into `:writer/timeout` (under `:import/apply-failed`), for each batch
   and for the index build's publish. Before, the import waited forever. The
   write in flight may still land, so the import keeps its GC protection until
-  it resolves; release and reconnect before resuming. Separately, an `Error`
+  it resolves; releasing the connection does not stop that write, so restart
+  the process before resuming. The bound does not apply to legacy single-file
+  dumps. A writer that answers with nothing is a failure too, not an empty
+  success. Separately, an `Error`
   the writer *did* deliver passed through the async import as a batch report
   and ended in a successful-looking report (#971); it now fails the import as
   `:import/apply-failed` on both paths.

@@ -174,8 +174,9 @@ backend and caches the value.
 
 This makes connecting cheap; it does **not** bound the frontend. No konserve
 frontend evicts on its own, every value read stays cached, and a full GC mark
-reads every live node, so after a collection the frontend holds the whole live
-store again. Use it to avoid the connect-time copy, and size the frontend as
+reads every live index node, so after a collection the frontend holds the live
+indexes again (blobs behind `:db.type/store-ref` values are marked by key and
+stay cold). Use it to avoid the connect-time copy, and size the frontend as
 you would without it. A frontend that bounds itself (a Redis with an eviction
 policy, say) is safe under `:frontend-first` as long as the backend holds every
 write (`:write-through`, the default): an evicted key is read through again.

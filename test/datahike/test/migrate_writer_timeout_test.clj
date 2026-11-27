@@ -85,14 +85,14 @@
               ;; carrying the cause, never `:import/corrupt-datom`
               (is (= :import/apply-failed (:error (ex-data r))))
               (is (= :writer/timeout (:cause-error (ex-data r))) "and said why")
-              (is (re-find #"reconnect before resuming" (ex-message r))
-                  "and that the batch may still land, so a resume needs a fresh connection")))
+              (is (re-find #"Restart the process before resuming" (ex-message r))
+                  "and that the batch may still land, which a reconnect does not prevent")))
           (finally (teardown conn)))))))
 
 (deftest an-error-from-the-writer-is-not-a-report
   (testing "#971: an `Error` delivered by the writer passed `<?-` as a value.
-            On main the async import returned `:async/no-result` (the go block
-            died on the rethrown Error) and the sync one let a bare
+            On main the async import took it for a batch report and returned
+            a normal report with no errors; the sync one let a bare
             AssertionError escape unclassified."
     (doseq [sync? [true false]]
       (let [conn (fresh :memory)
@@ -174,6 +174,59 @@
           (is (not (guard/in-flight? store-id)) "the guard is released once the publish resolved")
           (is (empty? (checkpoints)) "and so is the root"))
         (finally (teardown conn))))))
+
+(deftest an-empty-reply-from-the-writer-is-not-a-report
+  (testing "a writer that answers with nothing has not applied anything the
+            import can account for; it used to read as a batch with no errors"
+    (testing "a batch"
+      (doseq [sync? [true false]
+              on-error [:abort :collect]]
+        (let [conn (fresh :memory)
+              calls (atom 0)
+              orig dwriter/load-entities-migrating]
+          (try
+            (with-redefs [dwriter/load-entities-migrating
+                          (fn [& args]
+                            (if (= 2 (swap! calls inc))
+                              (doto (dt/throwable-promise) (deliver nil))
+                              (apply orig args)))]
+              (let [r (bounded 20000 #(import! conn {:sync? sync? :on-error on-error}))]
+                (is (instance? clojure.lang.ExceptionInfo r)
+                    (str ":sync? " sync? " " on-error ": got " (pr-str r)))
+                (is (= :import/apply-failed (:error (ex-data r))))))
+            (finally (teardown conn))))))
+    (testing "the index build's publish, with verification off"
+      (let [conn (fresh :memory)]
+        (try
+          (let [r (with-redefs [dwriter/publish-built-db!
+                                (fn [_ _] (doto (dt/throwable-promise) (deliver nil)))]
+                    (bounded 30000 #(import! conn {:sync? true :build-indexes? true :schema {}})))]
+            (is (instance? clojure.lang.ExceptionInfo r) (str "got " (pr-str r)))
+            (is (= :import/apply-failed (:error (ex-data r)))))
+          (finally (teardown conn)))))))
+
+(deftest protection-is-released-after-the-connection-is
+  (testing "the publish timed out, the caller released the connection, and the
+            writer then answered with a failure: the deferred cleanup must not
+            need the connection to let go of the guard"
+    (let [conn (fresh :memory)
+          store-id (dh-store/canonical-store-id (:store @conn) (get-in @conn [:config :store]))
+          cfg (:config @conn)
+          held (promise)]
+      (try
+        (let [r (with-redefs [dwriter/publish-built-db!
+                              (fn [_ _] (let [p (dt/throwable-promise)] (deliver held p) p))]
+                  (bounded 30000 #(import! conn {:sync? true :build-indexes? true :schema {}
+                                                 :writer-timeout-ms 300})))]
+          (is (= :writer/timeout (:cause-error (ex-data r))))
+          (is (guard/in-flight? store-id))
+          (d/release conn)
+          ((deref held 1000 nil) (ex-info "late failure" {}))
+          (let [deadline (+ (System/currentTimeMillis) 10000)]
+            (while (and (guard/in-flight? store-id) (< (System/currentTimeMillis) deadline))
+              (Thread/sleep 50)))
+          (is (not (guard/in-flight? store-id)) "the guard is released"))
+        (finally (try (d/delete-database cfg) (catch Throwable _ nil)))))))
 
 (deftest a-timed-deref-returns-its-timeout-value
   (testing "`IBlockingDeref` promises the timeout value; `throwable-promise`

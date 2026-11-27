@@ -1362,8 +1362,10 @@
    A timeout does NOT mean the write was dropped: it may still be queued, and
    land later. So the promise is recorded in `opts`'s `::pending-write` atom,
    and the callers' cleanups (`release-when-landed!`) keep their GC protection
-   until it resolves. A resume on the same connection could re-send the batch
-   and apply it twice — release and reconnect first; the error says so.
+   until it resolves. Nothing in this process can make that write safe to
+   ignore: `release` does not wait for a commit in flight, so a reconnect can
+   be overwritten by it. The error says what is safe — wait for the write, or
+   restart the process.
 
    A JVM `Error` from the writer is raised wrapped (`dt/error->ex-info`) on
    both paths, so the import classifies it as `:import/apply-failed` instead of
@@ -1378,9 +1380,11 @@
                    (throw (ex-info (str "The writer did not answer within " ms " ms (" (name (:op what))
                                         "; the wait includes queueing behind other transactions). "
                                         "It may have died on an Error, or still be working: the write "
-                                        "in flight may yet land. The import is stopped. Release this "
-                                        "connection and reconnect before resuming or retrying, or the "
-                                        "write in flight may be applied twice.")
+                                        "in flight may yet land. The import is stopped. Do not write "
+                                        "to this database from this process again, on this connection "
+                                        "or a new one: releasing the connection does not stop a commit "
+                                        "in flight, and a late one can replace newer commits. Restart "
+                                        "the process before resuming or retrying.")
                                    (merge {:error :writer/timeout :timeout-ms ms} what))))]
     (async+sync
      (:sync? opts) *default-sync-translation*
@@ -1420,6 +1424,14 @@
     (async/take! p (fn [_] #?(:clj (future (release!)) :cljs (release!))))
     (release!)))
 
+(defn- db-for-release
+  "The connection's database, taken while the connection is known to be open,
+   for a cleanup that may run after it has been released (`release-when-landed!`).
+   Dereferencing a released connection throws, and a cleanup that did so first
+   never reached the steps after it."
+  [conn]
+  (try @conn (catch #?(:clj Exception :cljs :default) _ nil)))
+
 (defn- load-batch!
   "One `load-entities` call, awaited. `async+sync`: yields the tx-report in sync
    mode, a channel of it otherwise.
@@ -1444,7 +1456,11 @@
     ;; back out; see `transact-entities-directly` for why it does not live on
     ;; the database value.
     (let [p (dwriter/load-entities-migrating conn batch migration)
-          r (<?- (await-writer p opts {:op :load-entities :batch-size (count batch)}))]
+          ;; `delivered!`: a writer that answers with nothing has not reported
+          ;; a batch, and every caller below reads "no exception" as success.
+          r (dt/delivered! (<?- (await-writer p opts {:op :load-entities :batch-size (count batch)}))
+                           {:op :load-entities :batch-size (count batch)}
+                           "the writer answered a batch without a report")]
       ;; A JVM `Error` the writer delivered used to arrive here as a VALUE:
       ;; superv.async rethrows only `Exception`s (#971). `throwable-promise`
       ;; now wraps it on the channel side and `await-writer` on the deref side,
@@ -2764,6 +2780,9 @@
                                                    (log/warn :datahike/gc-root-checkpoint-failed
                                                              {:error (.getMessage ^Throwable e)}))))))
                                  :cljs (fn [] nil))
+            ;; held here: the hook is removed by a cleanup that can run after
+            ;; the connection is released
+            build-store (:store @conn)
             hook-id #?(:clj (when build-root
                               (let [store (:store @conn)
                                     id (keyword "datahike.migrate" (str "build-capture-" (random-uuid)))]
@@ -2786,7 +2805,7 @@
                                             (recur))))
                                       (fn []
                                         (async/close! stop)
-                                        (when hook-id (k/remove-write-hook! (:store @conn) hook-id)))))
+                                        (when hook-id (k/remove-write-hook! build-store hook-id)))))
                              :cljs nil)
             res
             (try
@@ -3008,7 +3027,10 @@
                     ;; cannot park inside a `catch`). Every publish failure is
                     ;; the store's or the writer's, never a record's, so it is
                     ;; `:import/apply-failed` — a timeout included.
-                    pub      (try {:rep (<?- (await-writer p opts {:op :publish-built-db}))}
+                    pub      (try {:rep (dt/delivered!
+                                         (<?- (await-writer p opts {:op :publish-built-db}))
+                                         {:op :publish-built-db}
+                                         "the writer answered the publish without a report")}
                                   (catch #?(:clj Exception :cljs :default) e {:ex e}))
                     _        (when-let [e (:ex pub)]
                                (throw (ex-info (str "Import aborted: publishing the built indexes failed — "
@@ -3083,12 +3105,14 @@
         ;; connection. A publish that TIMED OUT has not resolved and may still
         ;; land, so `release-when-landed!` defers the release until it does.
         ;; The spool is local scratch the publish never reads; it goes now.
-        (release-when-landed!
-         opts
-         (fn []
-           #?(:clj (when stop-capture! (stop-capture!)) :cljs nil)
-           (quiet-release-root! @conn build-root stop-build-renewal!)
-           (guard/done! store-id token)))
+        (let [db (db-for-release conn)]
+          (release-when-landed!
+           opts
+           (fn []
+             (try
+               #?(:clj (when stop-capture! (stop-capture!)) :cljs nil)
+               (quiet-release-root! db build-root stop-build-renewal!)
+               (finally (guard/done! store-id token))))))
         (doseq [n (or (fs/list-names tmp) [])] (fs/delete! (fs/join tmp n)))
         (fs/delete! tmp)
         (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res))))))
@@ -3567,9 +3591,10 @@
              (when blob-root (roots/assert-live! @conn blob-root nil {:sync? true})))
            ;; Deferred past a timed-out write that may still land and name a
            ;; carried blob (`release-when-landed!`).
-           (release-when-landed! opts (fn []
-                                        (quiet-release-root! @conn blob-root stop-blob-renewal!)
-                                        (guard/done! gc-sid gc-token)))
+           (let [db (db-for-release conn)]
+             (release-when-landed! opts (fn []
+                                          (try (quiet-release-root! db blob-root stop-blob-renewal!)
+                                               (finally (guard/done! gc-sid gc-token))))))
            (<?- (mstore/close m opts))
            (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res))
          (let [dump (open-dump source opts)]
@@ -3617,9 +3642,10 @@
                  (when-not (instance? #?(:clj Throwable :cljs js/Error) res)
                    (assert-root-kept! blob-lost "import")
                    (when blob-root (roots/assert-live! @conn blob-root nil {:sync? true})))
-                 (release-when-landed! opts (fn []
-                                              (quiet-release-root! @conn blob-root stop-blob-renewal!)
-                                              (guard/done! gc-sid gc-token)))
+                 (let [db (db-for-release conn)]
+                   (release-when-landed! opts (fn []
+                                                (try (quiet-release-root! db blob-root stop-blob-renewal!)
+                                                     (finally (guard/done! gc-sid gc-token))))))
                  (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res)))))))))))
 
 ;; ---------------------------------------------------------------------------
