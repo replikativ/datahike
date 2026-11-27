@@ -6,7 +6,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
-- **A restore keeps the value index and history right across storage-setting changes ([#TODO]).**
+- **A restore keeps the value index and history right across storage-setting changes ([#1194]).**
   The import replay skipped what an ordinary transaction does when `:db/index`
   or `:db/unique` changes on an attribute with data: an attribute indexed after
   it was written came back with an empty AVET (range reads and lookup refs
@@ -14,7 +14,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
   both with `:verified? true`. Separately, a retraction in the transaction that
   changes `:db/noHistory` was dropped or kept depending on the replay order.
   The replay now brings AVET in line after each index-setting change and keeps
-  every retraction the dump carries. (0.8, [#TODO])
+  every retraction the dump carries. (0.8, [#1194])
 - **`:attribute-refs?` databases accept entity specs, map-form renames and long schema values** —
   `:db.entity/attrs` / `:db.entity/preds` had no system entity, so a spec could
   not be transacted (attribute `nil`) and `:db/ensure` checked nothing; they are
