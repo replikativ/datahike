@@ -612,15 +612,23 @@
 
 (defn- with-datom
   "`removing`, for a retraction, is the current datom it removes when the
-   caller has already looked it up (see `transact-report`)."
-  ([db datom tx-meta] (with-datom db datom tx-meta ::not-looked-up))
-  ([db ^Datom datom tx-meta removing-known]
+   caller has already looked it up (see `transact-report`).
+
+   `as-given?` is the migration replay. A retraction it carries was in the
+   source's history, so it is stored in history here whatever `:db/noHistory`
+   says at this point of the replay: the dump decides what the history holds,
+   and it does not say whether the flag changed before or after the retraction
+   inside one transaction."
+  ([db datom tx-meta] (with-datom db datom tx-meta ::not-looked-up false))
+  ([db datom tx-meta removing-known] (with-datom db datom tx-meta removing-known false))
+  ([db ^Datom datom tx-meta removing-known as-given?]
    (validate-datom db datom)
    (let [{a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
          indexing? (dbu/indexing? db a-ident)
          schema? (or (ds/schema-attr? a-ident) (ds/entity-spec-attr? a-ident)
                      (ds/secondary-index-attr? a-ident))
-         keep-history? (and (dbi/-keep-history? db) (not (dbu/no-history? db a-ident)))
+         keep-history? (and (dbi/-keep-history? db)
+                            (or as-given? (not (dbu/no-history? db a-ident))))
          op-count (:op-count db)
          has-secondary? (seq (get-in db [:rschema :db.secondary/index a-ident]))
          secondary-only? (dbu/secondary-only? db a-ident)
@@ -1047,7 +1055,7 @@
              write   (fn [db]
                        (cond
                          upsert?  (with-datom-upsert db datom old tx-meta)
-                         as-given? (with-datom db datom tx-meta)
+                         as-given? (with-datom db datom tx-meta ::not-looked-up true)
                          added?   (with-datom db datom tx-meta)
                          :else    (with-datom db datom tx-meta removing)))
              report' (cond-> report
@@ -2124,6 +2132,74 @@
                       :value (.-v current)}))
         (recur (next remaining) current)))))
 
+(defn- backfill-avet
+  "Put the datoms of the attribute stored as `a` into AVET, and its history
+   into temporal AVET on a history database. Re-inserting a datom AVET already
+   holds is an idempotent upsert, so this sweeps the whole attribute."
+  [db a]
+  (as-> db db
+    (reduce (fn [db ^Datom d]
+              (let [op-count (:op-count db)]
+                (-> db
+                    (update :avet #(di/-insert % d :avet op-count))
+                    (update :op-count inc))))
+            db (schema-attr-current-datoms db a))
+    (if (dbi/-keep-history? db)
+      (reduce (fn [db ^Datom d]
+                (let [op-count (:op-count db)]
+                  (-> db
+                      (update :temporal-avet
+                              #(di/-temporal-insert % d :avet op-count))
+                      (update :op-count inc))))
+              db (schema-attr-history-datoms db a))
+      db)))
+
+(defn- drop-current-avet
+  "Remove the current AVET entries of the attribute stored as `a`. Temporal
+   AVET is kept; see `remove-disabled-indices`."
+  [db a]
+  (reduce (fn [db ^Datom datom]
+            (let [op-count (:op-count db)]
+              (-> db
+                  (update :avet #(di/-remove % datom :avet op-count))
+                  (update :op-count inc))))
+          db
+          (schema-attr-current-datoms db a)))
+
+(defn- follow-index-setting
+  "Migration replay: after a `:db/index`, `:db/unique` or `:db/valueType` datom
+   on attribute entity `e`, bring AVET in line with whether that attribute is
+   indexed now. `db-before` is the database before that datom.
+
+   An ordinary transaction does this once, at its end, by comparing the schema
+   before and after (`backfill-enabled-indices`, `remove-disabled-indices`). A
+   replay did not do it at all: an attribute indexed after it had data came
+   out of a restore with an empty AVET, and one that stopped being indexed
+   kept its entries. A replay batch holds many transactions, so an attribute
+   can be installed, written and then indexed inside one batch; comparing the
+   batch's two ends would miss that, hence datom by datom.
+
+   `:db/valueType` because a ref attribute is indexed whatever `:db/index`
+   says. An entity with no ident yet (its `:db/ident` comes later in the
+   transaction) is a new attribute with no data to sweep."
+  [db-after db-before e]
+  (let [ident (let [x (get (dbi/-schema db-after) e)] (when (keyword? x) x))
+        has? (fn [db prop] (contains? (dbi/-attrs-by db prop) ident))]
+    (if (nil? ident)
+      db-after
+      (let [was (has? db-before :db/index)
+            is  (has? db-after :db/index)
+            a   (if (:attribute-refs? (dbi/-config db-after)) e ident)
+            db  (cond
+                  (= was is) db-after
+                  is  (backfill-avet db-after a)
+                  :else (drop-current-avet db-after a))]
+        ;; as `backfill-enabled-indices` does: values written before the
+        ;; attribute became unique must be unique now
+        (when (and (has? db :db/unique) (not (has? db-before :db/unique)))
+          (validate-unique-avet! db ident))
+        db))))
+
 (defn- backfill-enabled-indices
   "Index-backfill migration: for every attribute whose :db/index or
    :db/unique was ENABLED by this transaction (assess-schema-transition's
@@ -2166,22 +2242,7 @@
                        (let [unique? (get-in new-schema [ident :db/unique])
                              db (if (indexed-entry? (get old-schema ident))
                                   db
-                                  (as-> db db
-                                    (reduce (fn [db ^Datom d]
-                                              (let [op-count (:op-count db)]
-                                                (-> db
-                                                    (update :avet #(di/-insert % d :avet op-count))
-                                                    (update :op-count inc))))
-                                            db (schema-attr-current-datoms db ident))
-                                    (if (dbi/-keep-history? db)
-                                      (reduce (fn [db ^Datom d]
-                                                (let [op-count (:op-count db)]
-                                                  (-> db
-                                                      (update :temporal-avet
-                                                              #(di/-temporal-insert % d :avet op-count))
-                                                      (update :op-count inc))))
-                                              db (schema-attr-history-datoms db ident))
-                                      db)))]
+                                  (backfill-avet db ident))]
                          ;; Validate only after the candidate index is complete.
                          ;; An ordered scan needs no all-values hash set, and
                          ;; rejection still precedes publication of any changes.
@@ -2224,16 +2285,7 @@
           report
           (update report :db-after
                   (fn [db]
-                    (reduce
-                     (fn [db ident]
-                       (reduce (fn [db ^Datom datom]
-                                 (let [op-count (:op-count db)]
-                                   (-> db
-                                       (update :avet #(di/-remove % datom :avet op-count))
-                                       (update :op-count inc))))
-                               db
-                               (schema-attr-current-datoms db ident)))
-                     db disabled))))))))
+                    (reduce drop-current-avet db disabled))))))))
 
 (defn- validate-ident-renames!
   "Refuse an attribute RENAME that would silently split the attribute in two.
@@ -2787,7 +2839,10 @@
             ;; `:preserve`, a caller's ILookup or function) back into the
             ;; O(entities) table it exists to avoid: one `:allocated` entry per
             ;; source entity.
-            (recur (transact-report report new-datom upsert?) entities
+            (recur (cond-> (transact-report report new-datom upsert?)
+                     (contains? #{:db/index :db/unique :db/valueType} a-ident)
+                     (update :db-after follow-index-setting (:db-after report) (.-e new-datom)))
+                   entities
                    (if mapped
                      migration-state
                      (remember-eid migration-state e (.-e new-datom))))))))))
