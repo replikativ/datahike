@@ -474,10 +474,10 @@
    :sort-buffer, independent of database size — but it spills sorted runs to local
    temp files. With `:sort? false` the export uses **no scratch at all** (for hard
    read-only / diskless targets): it streams schema/tx-entity datoms then data in
-   `:eavt` order straight to the target. This relaxes the global tx ordering — it is
-   safe for the common case (load-entities remaps ids and allocates forward refs),
-   but does not preserve a *same-transaction* card-one replacement; keep the default
-   sort if your history has those.
+   `:eavt` order straight to the target. The dump is then not in replay order and
+   its manifest says so (`:sorted? false`); `import-db` sorts a history dump like
+   that before replaying it, which needs scratch space on the importing side for
+   a dump larger than one `:sort-buffer` window.
 
    The manifest is written LAST as the commit marker.
 
@@ -1893,16 +1893,25 @@
             ref-attrs)))
 
 (defn- replay-order-key
-  "Replay order for one record: by transaction; inside one, its `:db/txInstant`
-   first, then schema before the data that needs it, then retractions before
-   assertions, so a value handed from one entity to another is released before
-   it is claimed."
+  "Replay order for one record: by transaction, its `:db/txInstant` first.
+
+   Inside a transaction the dump does not say in which order things happened,
+   so the order is the one a transaction's net effect implies: retractions of
+   data see the schema as it was before the transaction, assertions of data see
+   it as it is after. Hence data retractions, then the schema changes, then
+   data assertions. A value retracted along with a `:db/index` or
+   `:db/noHistory` change is then removed under the old setting; a ref
+   attribute installed and used in one transaction exists before it is used;
+   and a value handed from one entity to another is released before it is
+   claimed."
   [record]
-  (let [a (nth record 1)]
+  (let [a (nth record 1)
+        added? (nth record 4)
+        schema? (and (keyword? a) (or (ds/schema-attr? a) (ds/entity-spec-attr? a)))]
     [(nth record 3)
      (if (= a :db/txInstant) 0 1)
-     (if (and (keyword? a) (or (ds/schema-attr? a) (ds/entity-spec-attr? a))) 0 1)
-     (if (nth record 4) 1 0)
+     (cond schema? 1 added? 2 :else 0)
+     (if added? 1 0)
      (nth record 0)
      (str a)
      (str (mcbor/norm-val (nth record 2)))]))
@@ -1918,17 +1927,21 @@
    match. The records are all there; only their order is wrong, so they are
    sorted here (`replay-order-key`).
 
+   A source whose transactions already arrive in order is left exactly as it
+   is. That is every sorted dump written before the manifest recorded its
+   order: it restores as it always did.
+
    Memory is one window of `:sort-buffer` records. A source that fits in one is
    sorted in memory; a larger one is spooled to scratch files and merge-sorted
    there, as the index-building import does.
 
-   A record the key cannot be read from (too short, no transaction) is not
+   A record the key cannot be read from (too short, no numeric ids) is not
    sorted: it is handed on first, as it came, for the importer's own validation
-   and any `:xform` to judge.
+   and any `:xform` to judge. More than one window of those is refused.
 
    Returns `{:add! (fn [records]) :finish! (fn [] -> chunk-src) :close! (fn [])}`.
-   The chunk source reads the sorted records in order, once. `:close!` releases
-   the scratch and may be called at any point, more than once."
+   The chunk source reads the records in order, once. `:close!` releases the
+   scratch and may be called at any point, more than once."
   [opts]
   (let [window (long (get opts :sort-buffer 200000))
         size   (max 1000 (long (get opts :batch-size default-batch-size)))
@@ -1937,30 +1950,46 @@
         scratch (volatile! nil)
         merged (volatile! nil)
         n      (volatile! 0)
-        sortable? (fn [r] (and (vector? r) (<= 5 (count r)) (number? (nth r 3))
-                               (some? (nth r 0))))
+        last-t (volatile! nil)
+        in-order? (volatile! true)
+        sortable? (fn [r] (and (vector? r) (<= 5 (count r))
+                               (number? (nth r 3)) (number? (nth r 0))))
         spill! (fn []
                  (when (nil? @scratch)
                    (let [tmp (fs/temp-dir! "dh-import-sort")]
-                     (vreset! scratch {:tmp tmp :spool (init/open-spool! tmp)})))
+                     (vreset! scratch
+                              {:tmp tmp
+                               :spool (init/open-spool!
+                                       tmp mz/default-codec
+                                       (min window (long init/default-spool-chunk-size)))})))
                  (run! (:add! (:spool @scratch)) @buf)
                  (vreset! buf []))]
     {:add! (fn [records]
              (doseq [r records]
                (vswap! n inc)
                (if (sortable? r)
-                 (do (vswap! buf conj r)
-                     (when (>= (count @buf) window) (spill!)))
-                 (vswap! misfits conj r))))
+                 (let [t (nth r 3)]
+                   (when (and @last-t (neg? (compare t @last-t))) (vreset! in-order? false))
+                   (vreset! last-t t)
+                   (when (>= (count @buf) window) (spill!))
+                   (vswap! buf conj r))
+                 (do (when (>= (count @misfits) window)
+                       (throw (ex-info (str "More than " window " records of this source have no"
+                                            " readable [e a v t op] shape; refusing to buffer more.")
+                                       {:error :import/malformed-record :datom r})))
+                     (vswap! misfits conj r)))))
      :finish!
      (fn []
        (let [order {:datahike.migrate.sort/key-fn replay-order-key}
+             spooled (when-let [{:keys [spool]} @scratch]
+                       (spill!)
+                       (init/spool-records ((:close! spool)) mz/default-codec))
              {:keys [records close!]}
-             (if-let [{:keys [tmp spool]} @scratch]
-               (do (spill!)
-                   (msort/open-sorted-records!
-                    (init/spool-records ((:close! spool)) mz/default-codec) window tmp order))
-               (msort/open-sorted-records! @buf (max 1 (count @buf)) nil order))
+             (cond
+               ;; already in transaction order: as it came
+               @in-order? {:records (or spooled @buf) :close! (fn [])}
+               spooled    (msort/open-sorted-records! spooled window (:tmp @scratch) order)
+               :else      (msort/open-sorted-records! @buf (max 1 (count @buf)) nil order))
              remaining (volatile! (concat @misfits records))]
          (vreset! buf nil)
          (vreset! misfits nil)
@@ -1973,14 +2002,16 @@
                                 *default-sync-translation*
                                 (go-try- chunk))))}))
      :close! (fn []
-               (when-let [{:keys [close! remaining]} @merged]
-                 (vreset! merged nil)
-                 (vreset! remaining nil)
-                 (close!))
-               (when-let [{:keys [tmp]} @scratch]
-                 (vreset! scratch nil)
-                 (doseq [nm (or (fs/list-names tmp) [])] (fs/delete! (fs/join tmp nm)))
-                 (fs/delete! tmp)))}))
+               (try
+                 (when-let [{:keys [close! remaining]} @merged]
+                   (vreset! merged nil)
+                   (vreset! remaining nil)
+                   (close!))
+                 (finally
+                   (when-let [{:keys [tmp]} @scratch]
+                     (vreset! scratch nil)
+                     (doseq [nm (or (fs/list-names tmp) [])] (fs/delete! (fs/join tmp nm)))
+                     (fs/delete! tmp)))))}))
 
 (defn- run-import*
   "Medium-agnostic import core.
@@ -2407,7 +2438,9 @@
     (async+sync
      (get opts :sync? true) *default-sync-translation*
      (go-try-
-      (let [res (try (<?- (run-import* conn source-meta mem chunk-src opts sorter-cell))
+      (let [res (try (dt/delivered!
+                      (<?- (run-import* conn source-meta mem chunk-src opts sorter-cell))
+                      {:op :import} "the import ended without a result")
                      (catch #?(:clj Throwable :cljs :default) e e))]
         (when-let [close! @sorter-cell] (close!))
         (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res))))))
@@ -3241,9 +3274,12 @@
    Everything `import-db` takes (`:batch-size` `:xform` `:eids` `:merge?`
    `:build-indexes?` `:on-error` `:sync?` …) plus:
 
-     :source-meta  {:history? :expected-count :max-tx :ident-timeline
+     :source-meta  {:history? :sorted? :expected-count :max-tx :ident-timeline
                     :system-idents}, all
-                   OPTIONAL. Absent `:expected-count` only means the count check
+                   OPTIONAL. `:sorted? false` with `:history? true` says the
+                   records are not in transaction order; they are then sorted
+                   before the replay (see `open-import-sorter`). Saying nothing
+                   means they are in order. Absent `:expected-count` only means the count check
                    has nothing to compare against; absent `:max-tx` only means no
                    drift warning. A source that knows none of them passes none.
 

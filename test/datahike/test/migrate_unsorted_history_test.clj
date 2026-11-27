@@ -162,3 +162,41 @@
           (is (= [:import/malformed-record] (mapv :error (:errors report))))
           (is (= #{["b"]} (d/q '[:find ?v :where [_ :field ?v]] @dst))))
         (finally (d/release dst))))))
+
+(defn- strip-order-mark! [dir]
+  (let [f (io/file dir "manifest.edn")]
+    (spit f (pr-str (dissoc (edn/read-string {:default tagged-literal} (slurp f)) :sorted?)))))
+
+(defn- history-size [db] (count (d/datoms (d/history db) :eavt)))
+
+(deftest a-retraction-sees-the-schema-before-its-transaction
+  (testing "a value retracted in the transaction that also changes how its
+            attribute is stored: the retraction is replayed under the old
+            setting. The data entity is older than the attribute, so it has the
+            lower id."
+    (doseq [attribute-refs? [false true]
+            [label export-opts strip?] [["unsorted" {:history? true :sort? false} false]
+                                        ["sorted, written before the order mark" {:history? true} true]]
+            [change check] [[{:db/noHistory true}
+                             (fn [src dst] (is (= (history-size @src) (history-size @dst))
+                                               "the retraction is in history"))]
+                            [{:db/index false}
+                             (fn [_ dst] (is (empty? (d/q '[:find ?s :where [_ :score ?s]] @dst))))]]]
+      (testing (str "attribute-refs " attribute-refs? ", " label ", " change)
+        (let [src (fresh attribute-refs?)
+              dst (fresh attribute-refs?)
+              dir (dump-dir)]
+          (try
+            (d/transact src [{:db/ident :name :db/valueType :db.type/string
+                              :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}])
+            (d/transact src [{:name "a"}])
+            (d/transact src [{:db/ident :score :db/valueType :db.type/long
+                              :db/cardinality :db.cardinality/one :db/index true}])
+            (d/transact src [{:name "a" :score 7}])
+            (d/transact src [[:db/retract [:name "a"] :score 7]
+                             (assoc change :db/id [:db/ident :score])])
+            (m/export-db @src dir export-opts)
+            (when strip? (strip-order-mark! dir))
+            (is (true? (:verified? (m/import-db dst dir))))
+            (check src dst)
+            (finally (d/release src) (d/release dst))))))))

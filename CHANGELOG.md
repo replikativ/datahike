@@ -6,19 +6,20 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
-- **An unsorted history dump restores correctly ([#1193]).** A history
-  exported with `{:sort? false}` holds the final schema first and each
-  attribute's values in value order. `import-db` replayed it as written, so a
-  later value could be applied before an earlier one: a cardinality-one value
-  set back to an earlier or smaller value came out missing, and an attribute
-  widened to cardinality-many lost values, sometimes with `:verified? true`.
-  The importer now sorts such a dump into transaction order first, in memory
-  when it fits one `:sort-buffer` window and through scratch files otherwise.
-  Inside a transaction, schema is replayed before the data that needs it. The
-  manifest records the order as `:sorted?`; a history dump without it is
-  sorted too. An `:xform` on such an import sees transaction order. Dumps
-  written before same-transaction pairs were netted at export (#1188) can
-  still fail verification. (0.8, [#1193])
+- **`import-db` sorts an unsorted history dump before replaying it ([#1193]).**
+  A history exported with `{:sort? false}` holds the final schema first and
+  each attribute's values in value order. Replayed as written, a later value
+  could be applied before an earlier one: a cardinality-one value set back to
+  an earlier or smaller value came out missing, and an attribute widened to
+  cardinality-many lost values, sometimes with `:verified? true`. Such a dump
+  is now put into transaction order first, in memory when it fits one
+  `:sort-buffer` window and through scratch files otherwise; inside a
+  transaction, data retractions precede schema changes and data assertions
+  follow them. The manifest records the order as `:sorted?`. A dump without
+  the mark whose transactions are already in order is replayed as before. An
+  `:xform` on a sorted import sees transaction order. Not covered: dumps
+  written before same-transaction pairs were netted at export (#1188).
+  (0.8, [#1193])
 - **`:attribute-refs?` databases accept entity specs, map-form renames and long schema values** —
   `:db.entity/attrs` / `:db.entity/preds` had no system entity, so a spec could
   not be transacted (attribute `nil`) and `:db/ensure` checked nothing; they are

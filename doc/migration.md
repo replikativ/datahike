@@ -279,17 +279,21 @@ order, and its manifest says so (`:sorted? false`).
 
 The sort an unsorted **history** dump skipped happens on import instead:
 `import-db` puts the records into transaction order before replaying them.
-A dump that fits in one `:sort-buffer` window (200 000 records by default) is
-sorted in memory; a larger one is spooled to scratch files in the system temp
-directory and merge-sorted there. The sorted runs are not compressed, so allow
-scratch space of several times the dump's size. Memory stays at one window plus
-one chunk and one batch. Two consequences:
+Inside a transaction, data retractions come first, then schema changes, then
+data assertions. A dump that fits in one `:sort-buffer` window (200 000 records
+by default) is sorted in memory; a larger one is spooled to scratch files in
+the system temp directory and merge-sorted there. The sorted runs are not
+compressed, so allow scratch space of several times the dump's size. Memory is
+about one window, plus one chunk and one batch. Things to know:
 
 - An `:xform` on such an import sees the records in transaction order, not in
-  the order the dump holds them.
-- An import with no writable filesystem (a browser) can only sort a dump that
-  fits in one window. This also applies to a history dump written before the
-  manifest recorded its order, which is sorted because its order is unknown.
+  the order the dump holds them. (`:build-indexes?` still passes dump order.)
+- An import with no writable filesystem (a browser) can only handle a dump that
+  fits in one window.
+- A history dump written before the manifest recorded its order is checked the
+  same way. If its transactions are already in order, as in every sorted dump,
+  it is replayed exactly as before; one larger than a window is still spooled
+  first, so it needs scratch space too.
 
 A current-only dump (`:history? false`) is replayed as written.
 
