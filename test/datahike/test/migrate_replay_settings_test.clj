@@ -145,3 +145,25 @@
            ;; can say the value is gone. That is the transactor's to fix.
            (when-not (= label "noHistory on, then retract")
              (is (empty? (d/q '[:find ?v :where [_ :score ?v]] dst))))))))))
+
+(deftest uniqueness-enabled-on-duplicates-is-refused
+  (testing "values written before an attribute became unique are checked when
+            it does, as a live transaction checks them; an :xform that makes
+            two of them equal no longer restores two owners of one value"
+    (doseq [attribute-refs? [false true]]
+      (let [src (fresh attribute-refs?)
+            dst (fresh attribute-refs?)
+            dir (dump-dir)]
+        (try
+          (d/transact src [{:db/ident :code :db/valueType :db.type/long
+                            :db/cardinality :db.cardinality/one}])
+          (d/transact src [{:code 7} {:code 11}])
+          (d/transact src [{:db/id [:db/ident :code] :db/unique :db.unique/value}])
+          (m/export-db @src dir {:history? true})
+          (let [r (try (m/import-db dst dir {:xform (map (fn [[e a v t op :as r]]
+                                                           (if (and (= :code a) (= 11 v))
+                                                             [e a 7 t op]
+                                                             r)))})
+                       (catch Exception e e))]
+            (is (instance? Exception r) (str "got " (pr-str r))))
+          (finally (d/release src) (d/release dst)))))))

@@ -6,13 +6,15 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
-- **A streaming restore keeps the value index right across `:db/index` and `:db/unique` changes ([#1194]).**
+- **A streaming restore keeps the current value index right across `:db/index` and `:db/unique` changes ([#1194]).**
   The import replay skipped the AVET step of an index change: an attribute
   indexed after its data came back with an empty AVET (range reads and lookup
   refs missed its values), and one that stopped being indexed kept stale
-  entries, both with `:verified? true`. The replay now brings AVET in line after
-  each such change. A retraction the replay applies is kept in history when the
-  same transaction changed `:db/noHistory`. (0.8, [#1194])
+  entries, both with `:verified? true`. The replay now brings current AVET in
+  line after each such change, and checks that values written before an
+  attribute became unique are unique. A retraction the replay applies is kept
+  in history even under `:db/noHistory`, since the dump decides what history
+  holds. Historical AVET is not rebuilt. (0.8, [#1194])
 - **`:attribute-refs?` databases accept entity specs, map-form renames and long schema values** —
   `:db.entity/attrs` / `:db.entity/preds` had no system entity, so a spec could
   not be transacted (attribute `nil`) and `:db/ensure` checked nothing; they are

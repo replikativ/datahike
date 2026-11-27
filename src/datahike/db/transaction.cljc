@@ -2184,16 +2184,21 @@
    transaction) is a new attribute with no data to sweep."
   [db-after db-before e]
   (let [ident (let [x (get (dbi/-schema db-after) e)] (when (keyword? x) x))
-        indexed? (fn [db] (contains? (dbi/-attrs-by db :db/index) ident))]
+        has? (fn [db prop] (contains? (dbi/-attrs-by db prop) ident))]
     (if (nil? ident)
       db-after
-      (let [was (indexed? db-before)
-            is  (indexed? db-after)
-            a   (if (:attribute-refs? (dbi/-config db-after)) e ident)]
-        (cond
-          (= was is) db-after
-          is  (backfill-avet db-after a)
-          :else (drop-current-avet db-after a))))))
+      (let [was (has? db-before :db/index)
+            is  (has? db-after :db/index)
+            a   (if (:attribute-refs? (dbi/-config db-after)) e ident)
+            db  (cond
+                  (= was is) db-after
+                  is  (backfill-avet db-after a)
+                  :else (drop-current-avet db-after a))]
+        ;; as `backfill-enabled-indices` does: values written before the
+        ;; attribute became unique must be unique now
+        (when (and (has? db :db/unique) (not (has? db-before :db/unique)))
+          (validate-unique-avet! db ident))
+        db))))
 
 (defn- backfill-enabled-indices
   "Index-backfill migration: for every attribute whose :db/index or
