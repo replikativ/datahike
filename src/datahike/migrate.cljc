@@ -1909,12 +1909,12 @@
   (if (and (vector? record) (<= 5 (count record))
            (number? (nth record 3)) (number? (nth record 0)))
     (msort/sort-key record)
-    [malformed-key-t 0 0 "" 0 (pr-str record)]))
+    [malformed-key-t 0 0 "" 0 ""]))
 
 (defn- open-import-sorter
   "Put a history source into replay order before it is replayed.
 
-   A history written with `{:sort? false}` holds the final schema first and
+   A history written with `{:sort? false}` holds the schema records first and
    then the data in index order, so one attribute's values arrive by value
    rather than by transaction. Replayed as written, a later value can be
    applied before an earlier one and the retraction of the earlier one then

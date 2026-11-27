@@ -7,7 +7,7 @@ When something is added, it's typically marked *Experimental*. When the API cont
 ## 0.8
 
 - **`import-db` sorts an unsorted history dump before replaying it ([#1193]).**
-  A history exported with `{:sort? false}` holds the final schema first and
+  A history exported with `{:sort? false}` holds the schema records first and
   each attribute's values in value order. Replayed as written, a later value
   could be applied before an earlier one: a cardinality-one value set back to
   an earlier or smaller value came out missing, and an attribute widened to
@@ -17,9 +17,12 @@ When something is added, it's typically marked *Experimental*. When the API cont
   sorted export writes. Needs #1194: index changes now reach the replay at
   their own transaction rather than up front. The manifest records whether the exporter sorted as
   `:sorted?`. A dump without the mark whose transactions are already in order
-  is replayed as written. An `:xform` on a sorted import sees transaction
-  order. Not covered: dumps written before same-transaction pairs were netted
-  at export (#1188). (0.8, [#1193])
+  is replayed as written. An `:xform` on a sorted streaming import sees transaction
+  order. Not covered, as with a sorted dump: data in the transaction that
+  installs its attribute, on an entity older than the attribute (a ref
+  attribute installed and used there keeps the source id, or under
+  `:attribute-refs?` the import stops); and dumps written before
+  same-transaction pairs were netted at export (#1188). (0.8, [#1193])
 - **`:attribute-refs?` databases accept entity specs, map-form renames and long schema values** —
   `:db.entity/attrs` / `:db.entity/preds` had no system entity, so a spec could
   not be transacted (attribute `nil`) and `:db/ensure` checked nothing; they are
