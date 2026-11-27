@@ -274,11 +274,17 @@ mount if needed). For a container with **no writable filesystem at all**, pass
 ```
 
 It streams schema/tx-entity datoms then data in `:eavt` order straight to the
-target — no temp files, bounded memory. This relaxes the global transaction
-ordering; it is safe for the common case (`load-entities` remaps ids and allocates
-forward refs on sight), but does **not** preserve a *same-transaction* card-one
-replacement (retract + re-assert of the same `[e a]` in one tx). If your history
-has those, keep the default sorted export and give it a writable scratch path.
+target — no temp files, bounded memory. The dump is complete but not in replay
+order, and its manifest says so (`:sorted? false`).
+
+The sort an unsorted **history** dump skipped happens on import instead:
+`import-db` puts the records into transaction order before replaying them.
+A dump that fits in one `:sort-buffer` window (200 000 records by default) is
+sorted in memory; a larger one is spooled to compressed scratch files in the
+system temp directory and merge-sorted there, so the importing machine needs
+scratch space of roughly twice the dump's size. Memory stays at one window plus
+one batch. A current-only dump (`:history? false`) needs no order and is
+replayed as written.
 
 > **Do not run datahike GC during a long export** on a lazy-loading backend. GC
 > marks reachability from branch heads only and does not pin a reader-held

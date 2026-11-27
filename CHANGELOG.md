@@ -6,6 +6,16 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **An unsorted history dump restores correctly ([#TODO]).** A history
+  exported with `{:sort? false}` holds the final schema first and each
+  attribute's values in value order. `import-db` replayed it as written, so a
+  later value could be applied before an earlier one: a cardinality-one value
+  set back to an earlier or smaller value came out missing, and an attribute
+  widened to cardinality-many lost values, sometimes with `:verified? true`.
+  The importer now sorts such a dump into transaction order first, in memory
+  when it fits one `:sort-buffer` window and through scratch files otherwise.
+  The manifest records the order as `:sorted?`; a history dump without it is
+  sorted too. (0.8, [#TODO])
 - **Imports of older attribute-refs databases keep their entities ([#1122]).**
   A dump from an attribute-refs database created before the system schema
   last grew numbers its user entities where the current system schema now
