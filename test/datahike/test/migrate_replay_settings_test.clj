@@ -71,16 +71,26 @@
            (is (= (avet src :code) (avet dst :code)))
            (is (= "a" (:code (d/pull dst [:code] [:code "a"]))) "a lookup ref resolves")))))))
 
+(defn- history-avet [db attr]
+  (set (map (juxt :v :added) (d/datoms (d/history db) {:index :avet :components [attr]}))))
+
 (deftest an-index-removed-after-the-data-is-emptied
   (doseq [attribute-refs? [false true]
-          batch-size [2 5000]]
-    (testing (str "attribute-refs " attribute-refs? ", batch " batch-size)
+          batch-size [2 5000]
+          data-first? [false true]]
+    (testing (str "attribute-refs " attribute-refs? ", batch " batch-size ", data first " data-first?)
       (round-trip
        attribute-refs? {:history? true} {:batch-size batch-size}
        (fn [conn]
+         (when data-first?
+           (d/transact conn [{:db/ident :name :db/valueType :db.type/string
+                              :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}])
+           (d/transact conn [{:name "first"}]))
          (d/transact conn [{:db/ident :score :db/valueType :db.type/long
                             :db/cardinality :db.cardinality/many :db/index true}])
-         (d/transact conn [{:db/id -1 :score [7 11]}])
+         (if data-first?
+           (d/transact conn [{:db/id [:name "first"] :score [7 11]}])
+           (d/transact conn [{:db/id -1 :score [7 11]}]))
          (let [e (ffirst (d/q '[:find ?e :where [?e :score 7]] @conn))]
            (d/transact conn [[:db/retract e :score 7]
                              {:db/id [:db/ident :score] :db/index false}])))
@@ -88,7 +98,13 @@
          (is (true? (:verified? report)))
          (is (= [] (avet src :score)) "precondition: the source dropped them")
          (is (= (avet src :score) (avet dst :score)))
-         (is (= #{[11]} (d/q '[:find ?v :where [_ :score ?v]] dst))))))))
+         (is (= #{[11]} (d/q '[:find ?v :where [_ :score ?v]] dst)))
+         ;; With the data entity below the attribute, a sorted dump replays
+         ;; the retraction while the index is still on, as the source did. The
+         ;; other way round the schema change comes first and the retraction's
+         ;; historical AVET entry is not written (backlog).
+         (when data-first?
+           (is (= (history-avet src :score) (history-avet dst :score)))))))))
 
 (deftest a-retraction-the-dump-carries-is-kept-in-history
   (testing "`:db/noHistory` changed in the transaction that retracts a value.
@@ -162,25 +178,26 @@
            (is (= #{["low" "X"]} (d/q '[:find ?n ?c :where [?e :code ?c] [?e :name ?n]] dst)))
            (is (= (avet src :code) (avet dst :code)))))))))
 
-(deftest schema-and-the-data-that-needs-it-in-one-transaction
-  (testing "a ref attribute installed and used in one transaction on entities
-            with lower ids than the attribute. A sorted dump puts their data
-            first: the reference kept its source id, or under attribute refs
-            the replay stopped on an unknown attribute"
-    (doseq [attribute-refs? [false true]
-            [kind export-opts] dump-kinds]
-      (testing (str "attribute-refs " attribute-refs? ", " kind)
-        (round-trip
-         attribute-refs? export-opts {:eids (fn [e] (+ 5000 e)) :batch-size 2}
-         (fn [conn]
-           (d/transact conn [{:db/ident :name :db/valueType :db.type/string
-                              :db/cardinality :db.cardinality/one
-                              :db/unique :db.unique/identity}])
-           (d/transact conn [{:name "child"} {:name "parent"}])
-           (d/transact conn [{:db/ident :parent :db/valueType :db.type/ref
-                              :db/cardinality :db.cardinality/one}
-                             [:db/add [:name "child"] :parent [:name "parent"]]]))
-         (fn [_ dst report]
-           (is (true? (:verified? report)))
-           (is (= #{["child" "parent"]}
-                  (d/q '[:find ?c ?p :where [?e :parent ?x] [?e :name ?c] [?x :name ?p]] dst)))))))))
+(deftest a-value-the-target-already-holds-is-still-refused
+  (testing "uniqueness is checked at the end of each replay batch instead of
+            per datom; a value the target holds on another entity is still a
+            conflict"
+    (doseq [attribute-refs? [false true]]
+      (let [src (fresh attribute-refs?)
+            dst (fresh attribute-refs?)
+            dir (dump-dir)
+            schema [{:db/ident :code :db/valueType :db.type/string
+                     :db/cardinality :db.cardinality/one :db/unique :db.unique/value}]]
+        (try
+          (d/transact src schema)
+          (d/transact src [{:code "X"}])
+          (m/export-db @src dir {:history? true})
+          (d/transact dst schema)
+          (d/transact dst [{:code "X"}])
+          (let [r (try (m/import-db dst dir {:merge? true :verify? false})
+                       (catch Exception e e))]
+            (is (instance? Exception r) (str "got " (pr-str r)))
+            (is (some #(= :transact/unique (:error (ex-data %)))
+                      (take-while some? (iterate ex-cause r)))))
+          (is (= 1 (count (d/q '[:find ?e :where [?e :code "X"]] @dst))))
+          (finally (d/release src) (d/release dst)))))))

@@ -6,19 +6,16 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
-- **A restore replays each transaction in a safe order and keeps the value index right ([#1194]).**
-  The import replay applied a transaction's records in dump order, which for a
-  sorted dump is by entity id. Data could come before the schema of its own
-  transaction (a ref attribute installed and used kept the source id, or the
-  replay stopped on an unknown attribute), and a unique value handed to an
-  entity with a lower id was refused. The replay now puts schema before data
-  and retractions before assertions within each transaction; a transaction
-  stored before net-effect recording (one that names a fact twice) is replayed
-  as given. The replay also skipped the AVET step of `:db/index` and
-  `:db/unique` changes: an attribute indexed after its data came back with an
-  empty AVET, and one that stopped being indexed kept stale entries, both with
-  `:verified? true`. And a retraction in a transaction that changes
-  `:db/noHistory` is kept in history when the dump carries it. (0.8, [#1194])
+- **A restore keeps the value index right across `:db/index` and `:db/unique` changes ([#1194]).**
+  The import replay skipped the AVET step of an index change: an attribute
+  indexed after its data came back with an empty AVET (range reads and lookup
+  refs missed its values), and one that stopped being indexed kept stale
+  entries, both with `:verified? true`. The replay now brings AVET in line after
+  each such change. It checks uniqueness on each batch's result instead of per
+  datom, so a unique value handed to an entity with a lower id in one
+  transaction no longer fails a sorted restore; a value the target already
+  holds is still refused. A retraction the replay applies is kept in history
+  when the same transaction changed `:db/noHistory`. (0.8, [#1194])
 - **`:attribute-refs?` databases accept entity specs, map-form renames and long schema values** —
   `:db.entity/attrs` / `:db.entity/preds` had no system entity, so a spec could
   not be transacted (attribute `nil`) and `:db/ensure` checked nothing; they are
@@ -1291,6 +1288,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#980]: https://github.com/replikativ/datahike/pull/980
 [#1092]: https://github.com/replikativ/datahike/pull/1092
 [#1090]: https://github.com/replikativ/datahike/pull/1090
+[#1194]: https://github.com/replikativ/datahike/pull/1194
 [#1122]: https://github.com/replikativ/datahike/pull/1122
 [#1154]: https://github.com/replikativ/datahike/pull/1154
 [#1153]: https://github.com/replikativ/datahike/issues/1153
