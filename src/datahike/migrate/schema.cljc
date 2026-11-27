@@ -107,6 +107,7 @@
                  [:validate-records? {:optional true} :boolean]
                  [:count-source?    {:optional true} :boolean]
                  [:max-pending      {:optional true} pos-int?]
+                 [:sort-buffer      {:optional true} pos-int?]
                  [:spool-chunk-size {:optional true} pos-int?]
                  [:spool-codec      {:optional true} :keyword]])))
 

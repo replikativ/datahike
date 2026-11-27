@@ -92,13 +92,7 @@
 (deftest a-dump-carries-the-net-effect-of-every-pair
   (doseq [[export-name export-opts] [["sorted export" {}] ["streaming export" {:sort? false}]]
           [import-name import-opts] [["replayed" {}] ["index build" {:build-indexes? true}]]
-          [case-name a transactions expected] cases
-          ;; An unsorted dump replays a value's records in value order, so a
-          ;; cardinality-one attribute overwritten by a SMALLER value is
-          ;; replayed new value first. That is the streaming export's own
-          ;; limit, pairs or not (it fails verification); not this test's.
-          :when (not (and (= {:sort? false} export-opts) (= {} import-opts)
-                          (= "set twice in one transaction" case-name)))]
+          [case-name a transactions expected] cases]
     (testing (str export-name ", " import-name ": " case-name)
       (let [src (source transactions)
             [report tgt] (roundtrip src export-opts import-opts)]
