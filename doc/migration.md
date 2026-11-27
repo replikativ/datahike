@@ -83,7 +83,7 @@ flowchart TD
     I3{"guards"}
     I4["✗ import/format-version · config-mismatch ·<br/>non-empty-target · checksum-failed"]
     I5{":attribute-refs?"}
-    I6["seed :migration system identity<br/>(#508 translate, not insert)"]
+    I6["seed :migration system ids, source to target by ident<br/>(#508, #1122: translate, not insert)"]
     I7["stream records → resolve #sysref →<br/>tx-aligned batcher"]
     I8["@load-entities(batch)<br/>remap e/tx ids; id-map O(entities)"]
     I9{":verify?"}
@@ -159,11 +159,11 @@ flowchart TD
         │  fail ─► throw :import/{format-version,config-mismatch,
         │                         non-empty-target,checksum-failed}
         ▼ ok
-  attribute-refs? ─ yes ─► seed :migration system identity  (#508 translate)
+  attribute-refs? ─ yes ─► seed :migration source→target system ids by ident (#508, #1122)
         │
         ▼
   STREAM record lines  (fs: scoped readers │ store: whole-chunk values)
-        │   resolve #datahike/sysref → target system eid
+        │   resolve #datahike/sysref → source system id (the seed translates it)
         ▼
   tx-aligned batcher ─► @(load-entities conn batch)   remap e/tx ids; max-tx
         │   ▲   (tx never split; a tx spanning chunks stays whole)

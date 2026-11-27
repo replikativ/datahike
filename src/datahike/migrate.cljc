@@ -1160,13 +1160,84 @@
 ;; ---------------------------------------------------------------------------
 ;; import
 
+(defn- system-ids
+  "How this import names system entities: `{:resolve :seed :renumbered?}`.
+
+   A record's ids are SOURCE ids until the id mapping translates them, so a
+   `#datahike/sysref` has to become a source id too. It used to become the
+   TARGET's eid, seeded `{eid eid}` into the mapping — which put target ids into
+   the source id space. Wherever the two databases number their system entities
+   differently, a source USER entity that shares a number with a target system
+   entity was then mapped onto it. Every attribute-refs database created before
+   the system schema last grew is such a source: its user ids start where the
+   current system schema still runs.
+
+     :resolve    ident -> the id a record carries for that system entity
+     :seed       {that id -> the target's eid}, merged into the id mapping
+     :strict?    the seed is the source's own numbering, so a system id it does
+                 not cover is an error rather than a target id
+     :overlaps?  some target system entity is not a system entity in the source,
+                 i.e. its id may be a source USER id; preserving source ids would
+                 then collide with it. Conservative: a source that numbers the
+                 same system ids differently is still safe, and is not flagged.
+
+   A source that does not declare its numbering (`:system-idents`) keeps the old
+   behaviour: target ids, seeded to themselves."
+  [db source-idents]
+  (when-not (every? integer? (keys source-idents))
+    (throw (ex-info ":system-idents must map integer source ids to idents."
+                    {:error :import/bad-system-idents
+                     :keys (vec (remove integer? (keys source-idents)))})))
+  (cond
+    (not (attribute-refs? db))
+    {:resolve #(dbi/-ref-for db %) :seed nil :strict? false :overlaps? false}
+
+    (empty? source-idents)
+    {:resolve #(dbi/-ref-for db %)
+     :seed (into {} (map (fn [e] [e e])) (dbi/-system-entities db))
+     :strict? false
+     :overlaps? false}
+
+    :else
+    (let [source (into {} (map (fn [[e i]] [(long e) i])) source-idents)
+          by-ident (into {} (map (fn [[e i]] [i e])) source)]
+      {:resolve (fn [ident]
+                  (let [e (get by-ident ident)]
+                    (when (or (nil? e) (nil? (dbi/-ref-for db ident)))
+                      (throw (ex-info (str "The dump refers to system entity " ident
+                                           ", which "
+                                           (if (nil? e)
+                                             "its manifest's :system-idents does not list."
+                                             "this database does not have."))
+                                      {:error :import/unknown-system-entity
+                                       :ident ident})))
+                    e))
+       ;; idents only, not `-ref-for`: that warns for each ident this target
+       ;; lacks, and a newer source naming one is only an error if a record
+       ;; actually uses it
+       :seed (let [target (into {} (map (fn [[e i]] [i e])) (system-idents db))]
+               (into {} (keep (fn [[e i]] (when-let [t (get target i)] [e t]))) source))
+       :strict? true
+       :overlaps? (not-every? #(contains? source %) (keys (system-idents db)))})))
+
 (defn- resolve-sysrefs
-  "Replace any SysRef value in a record with the target's system-entity eid."
-  [db record]
+  "Replace any SysRef value in a record with the id `system-ids` gives it."
+  [sids record]
   (let [v (nth record 2)]
     (if (mcbor/sysref? v)
-      (assoc record 2 (dbi/-ref-for db (:ident v)))
+      (assoc record 2 ((:resolve sids) (:ident v)))
       record)))
+
+(defn- refuse-preserve-renumbered!
+  "`:eids :preserve` keeps source ids, so it cannot be right for a source whose
+   system entities are numbered differently: its user ids overlap the target's
+   system entities."
+  [sids]
+  (when (:overlaps? sids)
+    (throw (ex-info (str ":eids :preserve cannot import this dump: it numbers its system"
+                         " entities differently from this database, so its entity ids"
+                         " overlap this database's system entities. Use :eids :allocate.")
+                    {:error :import/preserve-renumbered-system}))))
 
 (defn- resolve-attr-refs
   "Replace an `AttrRef` in a record's attribute slot with the ident this TARGET
@@ -1214,12 +1285,6 @@
                            :attribute-entity e :t (nth record 3)
                            :timeline entries})))
         (assoc record 1 ident)))))
-
-(defn- system-eid-seed
-  "Identity seed {eid eid} for every target system entity, so refs resolved to a
-   system entity are not re-allocated by load-entities (#508)."
-  [db]
-  (into {} (map (fn [e] [e e])) (dbi/-system-entities db)))
 
 (defn- user-datom-count
   "Count user-transaction datoms (tx > tx0), i.e. everything an export writes. With
@@ -1712,6 +1777,28 @@
       (throw (ex-info (str "Unsupported dump format-version " fv)
                       {:error :import/format-version :version fv}))))
   (config-compat! manifest conn)
+  (when (= :preserve (:eids opts))
+    (refuse-preserve-renumbered! (system-ids @conn (:system-idents manifest))))
+  ;; ---- a history source into a target that keeps none ----
+  ;; A dump says this through `config-compat!` (`:keep-history?` is in
+  ;; `config-must-match`); a record source has no manifest and says it only as
+  ;; `:source-meta {:history? true}`. Unchecked, the import wrote every record —
+  ;; retractions applied, so the current state even came out right — and then
+  ;; threw "history is only allowed on temporal indexed databases" from the
+  ;; report's count, which reads the history the target does not have. The data
+  ;; was committed and the report lost. Refused here, before anything is
+  ;; written, the same way the dump path refuses it.
+  ;; Manifest-less only: a dump answers this through `config-compat!` above, and
+  ;; a stray `:source-meta` passed to `import-db` must not refuse it.
+  (when (and (nil? manifest)
+             (:history? (:source-meta opts))
+             (not (dbi/-keep-history? @conn)))
+    (throw (ex-info (str "The source carries history (:source-meta {:history? true}) but the target"
+                         " database does not keep history (:keep-history? false). Import into a"
+                         " database created with :keep-history? true, or supply a source of"
+                         " current datoms only.")
+                    {:error :import/config-mismatch :key :keep-history?
+                     :expected true :actual false})))
   ;; ---- machine-local paths inside a portable dump ----
   ;; Secondary indexes ARE recreated automatically on import: their declaration
   ;; lives in the schema, the schema datoms are replayed like any others, and
@@ -1830,7 +1917,10 @@
    ;; Present only for a dump that renamed an attribute; see
    ;; `manifest/ident-timeline`. A source that is not a dump has none, and
    ;; `resolve-attr-refs` is then a type check that never fires.
-   :ident-timeline (:ident-timeline manifest)})
+   :ident-timeline (:ident-timeline manifest)
+   ;; {source eid -> ident} for the source's system entities, so a #sysref
+   ;; resolves within the source's own id space; see `system-ids`.
+   :system-idents  (:system-idents manifest)})
 
 (defn- dangling-refs
   "Ref values in `db` that name an entity holding no datoms.
@@ -1962,17 +2052,20 @@
                           (long (user-datom-count db (boolean (:history? source-meta))))
                           0)
             max-eid-before (:max-eid db)
-          ;; system-entity identity, so refs to a system entity are TRANSLATED
-          ;; rather than re-allocated (#508)
-            sys (when (attribute-refs? db) (system-eid-seed db))
+          ;; system entities are TRANSLATED, never re-allocated (#508), and
+          ;; from the source's own numbering — see `system-ids`
+            sids (system-ids db (:system-idents source-meta))
+            sys (:seed sids)
+            _ (when (= :preserve (:eids opts)) (refuse-preserve-renumbered! sids))
             policy (eid-policy (:eids opts) db)
             eids (cond
                  ;; A policy is about the caller's OWN entities. System entities
-                 ;; keep their identity regardless, or `:offset` would shift the
+                 ;; are translated regardless, or `:offset` would shift the
                  ;; targets of system refs and break them.
-                   (and (fn? policy) (seq sys)) (fn [e] (if (contains? sys e) e (policy e)))
+                   (and (fn? policy) (seq sys)) (fn [e] (if-some [t (get sys e)] t (policy e)))
                    (fn? policy) policy
-                   (and policy (seq sys)) (merge sys policy)
+                   ;; the seed wins here too, as in the function case above
+                   (and policy (seq sys)) (merge policy sys)
                    policy policy
                    (seq sys) sys)
           ;; THE id mapping for this import, owned here and threaded through the
@@ -1983,7 +2076,8 @@
           ;; the writer's own loop), and putting it there cost three bugs.
           ;; Owning it here also means it needs no clearing: it goes out of
           ;; scope when this function returns.
-            migration0 (if eids {:eids eids} {})]
+            migration0 (cond-> (if eids {:eids eids} {})
+                         (:strict? sids) (assoc :system-seed sys))]
     ;; ---- stream records through a tx-aligned batcher (bounded memory) ----
     ;; System-entity idents are stable across the import, so resolve #sysref
     ;; against a captured db value.
@@ -2044,10 +2138,48 @@
                                                     true))))
                                        rs)
                         :else (do (run! mman/validate-record! rs) rs)))
+              ;; A source that declared no system numbering is taken to share the
+              ;; target's. If it does not — an :attribute-refs? database older than
+              ;; the system schema's last addition, read without a manifest — one
+              ;; of its own entities sits on a target system id, and its data would
+              ;; be attached to that system entity. A system entity only ever holds
+              ;; system attributes, so anything else there is such an entity.
+              ;; Only the undeclared case: a declared numbering, an `:eids` mapping
+              ;; or an `:xform` that puts an entity there says so on purpose.
+              sys-attrs (when (and (:seed sids) (not (:strict? sids)))
+                          (set (vals (mman/system-idents sref-db))))
+              undeclared-system-entity!
+              (fn [r]
+                (let [e (nth r 0) a (nth r 1)]
+                  (when (and sys-attrs (contains? (:seed sids) e) (keyword? a)
+                             (not (contains? sys-attrs a)))
+                    (throw (ex-info (str "The source holds " a " on entity " e ", which is a system"
+                                         " entity of this database. Its system entities are numbered"
+                                         " differently: supply the source's numbering as"
+                                         " :source-meta {:system-idents {id ident}}.")
+                                    {:error :import/system-entity-collision
+                                     :entity-id e :attribute a :datom r})))
+                  r))
               prepare (fn [records]
                         (let [tl (:ident-timeline source-meta)
-                              rs (mapv #(->> % (resolve-sysrefs sref-db)
-                                             (resolve-attr-refs sref-db tl))
+                              ;; a record naming a system entity the source
+                                    ;; did not declare is a bad RECORD: under
+                                    ;; `:collect` it is reported like any other
+                              rs (into []
+                                       (keep (fn [r]
+                                               (try (->> r (resolve-sysrefs sids)
+                                                         (resolve-attr-refs sref-db tl)
+                                                         undeclared-system-entity!)
+                                                    (catch #?(:clj Exception :cljs :default) e
+                                                      (if (and collect?
+                                                               (= :import/unknown-system-entity
+                                                                  (:error (ex-data e))))
+                                                        (do (vswap! bad conj
+                                                                    {:error :import/unknown-system-entity
+                                                                     :datom r
+                                                                     :message (ex-message e)})
+                                                            nil)
+                                                        (throw e))))))
                                        records)]
                           (if step
                             (let [out (into [] (mapcat (fn [r]
@@ -2082,7 +2214,7 @@
                              (if (nil? rs)
                                acc
                            ;; Already resolved and transformed by `prepare`. The
-                           ;; xform sees a plain [e a v t op] with real ids and
+                           ;; xform sees a plain [e a v t op] with source ids and
                            ;; never an internal SysRef; dropping is expressed by
                            ;; emitting nothing.
                                (let [rec (first rs)]
@@ -2395,6 +2527,9 @@
    (:sync? opts) *default-sync-translation*
    (go-try-
     (let [read-chunk (:read chunk-src)
+          ;; the index-build path refuses :attribute-refs?, so this resolves
+          ;; against the target exactly as before
+          sids (system-ids sref-db nil)
           step (when-let [xf (:xform opts)] (xf conj))
           ;; wrapped ONCE, around `rf` — so it covers the transducer's output and
           ;; the completion arity's residue without a second call site to forget
@@ -2413,7 +2548,7 @@
                                        "a dump chunk could not be read")]
             (recur (next cs)
                    (reduce (fn [a record]
-                             (let [r (->> record (resolve-sysrefs sref-db)
+                             (let [r (->> record (resolve-sysrefs sids)
                                           (resolve-attr-refs sref-db (:ident-timeline opts)))]
                                (when counter (vswap! counter inc))
                                (if step
@@ -2701,6 +2836,7 @@
                     schema?  (fn [record] (let [a (nth record 1)]
                                             (or (ds/schema-attr? a) (ds/entity-spec-attr? a))))
                     ref?     (fn [a] (= :db.type/ref (:db/valueType (get source-schema a))))
+                    tuple-slots (memoize #(ids/tuple-ref-slots source-schema %))
                     txs      (tx-counter)
                     ;; No `try/finally` around the fold to close the spool. In
                     ;; async mode the fold IS a channel, so a `finally` would
@@ -2766,10 +2902,14 @@
                                            ;; later allocation landing on that id
                                            ;; would silently resurrect the
                                            ;; reference.
+                                           ;; A tuple's ref elements the same.
                                            (update :max-eid max
                                                    (if (< (long e) c/tx0) (long e) 0)
                                                    (if (and (ref? a) (number? v) (< (long v) c/tx0))
-                                                     (long v) 0))
+                                                     (long v) 0)
+                                                   (reduce (fn [m x] (if (< (long x) c/tx0) (max m (long x)) m))
+                                                           0
+                                                           (some-> (tuple-slots a) (ids/tuple-refs v))))
                                            (update :max-tx max (long t))
                                            (cond-> (schema? r) (update :schema-recs conj r)))))
                                    {:n 0 :hash 0 :schema-recs []
@@ -3079,7 +3219,8 @@
    Everything `import-db` takes (`:batch-size` `:xform` `:eids` `:merge?`
    `:build-indexes?` `:on-error` `:sync?` …) plus:
 
-     :source-meta  {:history? :expected-count :max-tx :ident-timeline}, all
+     :source-meta  {:history? :expected-count :max-tx :ident-timeline
+                    :system-idents}, all
                    OPTIONAL. Absent `:expected-count` only means the count check
                    has nothing to compare against; absent `:max-tx` only means no
                    drift warning. A source that knows none of them passes none.
@@ -3091,6 +3232,12 @@
                    `manifest/ident-timeline`; `resolve-attr-refs` then picks the
                    name this target needs, which differs by `:attribute-refs?`.
                    A source that names attributes by keyword needs none of it.
+
+                   `:system-idents` is `{source-eid ident}` for the source's
+                   system entities, as a dump's manifest carries it. With it, a
+                   SysRef and a schema value name system entities in the
+                   source's own numbering, and the import translates them by
+                   ident. Without it, they must already be the target's ids.
      :schema       source schema map, index-build path only (ref detection).
 
    ## Verification is DECLINED, not defaulted away
@@ -3191,8 +3338,9 @@
                              database that came out of it.
      :on-error     :abort    :abort | :collect  (never silently skip)
      :xform        nil       a TRANSDUCER over records. Each record is
-                             `[e a v t op]` with real ids — it runs after
-                             sysref resolution, so a user function never sees an
+                             `[e a v t op]` with the SOURCE's ids, system
+                             entities included — it runs after sysref
+                             resolution, so a user function never sees an
                              internal SysRef. One input may produce zero or more
                              outputs; producing none drops it.
 
@@ -3477,16 +3625,61 @@
 ;; ---------------------------------------------------------------------------
 ;; verify
 
+(defn- id-free-value
+  "`(fn [a v] -> v')`: a value as verify compares it, with the ids that may
+   legitimately differ between a dump and its restore taken out. Two kinds:
+
+     a schema value naming a system entity — `:db/valueType`, `:db/cardinality`,
+       `:db/unique` under `:attribute-refs?` hold that entity's id, and a dump
+       holds the SOURCE's, while `pull` answers `{:db/id … :db/ident …}`.
+       `sys-ident` turns an id into the ident: for the dump
+       side through the dump's own `:system-idents` (never the target's — a
+       database created before #828 numbers them differently), for the live
+       side through the live db. Compared raw, every schema entity was a tier-3
+       `:field-mismatch` against `pull`'s keyword.
+     a tuple's ref elements — ids, which a restore is free to move exactly like
+       a ref attribute's value (which verify already leaves out of the value
+       comparison). Masked, so the rest of the tuple is still compared."
+  [schema sys-ident]
+  (fn [a v]
+    (let [vt (:db/valueType (get schema a))]
+      (cond
+        (#{:db.type/valueType :db.type/cardinality :db.type/unique} vt)
+        (cond (number? v) (or (sys-ident v) v)
+              ;; how `pull` answers it under attribute-refs
+              (map? v)    (or (:db/ident v) v)
+              :else       v)
+
+        (= :db.type/tuple vt)
+        (if-let [slots (ids/tuple-ref-slots schema a)]
+          (ids/map-tuple-refs slots (constantly ::ref) v)
+          v)
+
+        :else v))))
+
 (defn- fp-init [] {:acc (dig/accumulator) :refc {} :outd {}})
-(defn- fp-step [fp [e a v op] ref?]
+(defn- fp-ref [fp k e]
+  (-> fp (update-in [:refc k] (fnil inc 0)) (update-in [:outd e] (fnil inc 0))))
+(defn- fp-step
+  "`norm` is the side's `id-free-value`; `slots-of` answers an attribute's
+   tuple ref slots (`ids/tuple-ref-slots`) or nil."
+  [fp [e a v op] ref? norm slots-of]
   (if (ref? a)
-    (-> fp (update-in [:refc a] (fnil inc 0)) (update-in [:outd e] (fnil inc 0)))
+    (fp-ref fp a e)
     ;; Hash the CBOR encoding of the normalised tuple rather than its `pr-str`.
     ;; This fingerprint compares a DUMP against a LIVE database, so it must be a
     ;; function of the values alone — and `:archival` gives that by construction,
     ;; where `pr-str` does not: it renders a Double and a Float identically and
     ;; differs between JVM and ClojureScript for several types.
-    (update fp :acc dig/add-record (mcbor/encode-record [a (norm-val v) op]))))
+    (let [fp (update fp :acc dig/add-record (mcbor/encode-record [a (norm-val (norm a v)) op]))]
+      ;; A tuple's ref elements are masked out of the digest, so they get the
+      ;; structural check a plain ref gets instead: counted per [attribute
+      ;; slot], and into the entity's out-degree.
+      (if-let [slots (and (vector? v) (slots-of a))]
+        (reduce (fn [fp i] (fp-ref fp [a i] e))
+                fp
+                (keep-indexed (fn [i x] (when (and (get slots i) (number? x)) i)) v))
+        fp))))
 (defn- fp-final [fp]
   {:digest (dig/finalize (:acc fp))
    :ref-counts (:refc fp)
@@ -3519,52 +3712,79 @@
 
 (defn- verify-sample
   "Tier 3 — sampled structural diff. Pick up to `n` entities by a `:db.unique`
-   attribute, reconstruct their non-ref attributes from the dump, and diff against
-   `pull '[*]'` on the live db."
-  [manifest reduce-source db ref? n]
+   attribute value that is CURRENT in the dump, reconstruct their non-ref
+   attributes from the dump, and diff against `pull '[*]'` on the live db.
+   `dump-v`/`live-v` are each side's `id-free-value`.
+
+   `:sampled` is the number of entities actually compared. A history dump holds
+   unique values that later transactions replaced or retracted; those name
+   nothing live, so they are not candidates. Candidates are the first `8n`
+   distinct asserted `[a v e]`, netted (asserts minus retracts) over the whole
+   dump — bounded memory, and order-independent within the dump."
+  [manifest reduce-source db ref? dump-v live-v n]
   (let [schema (:schema manifest)
+        ;; Not a ref (recon leaves refs out, so it could never compare one), and
+        ;; not a tuple with ref elements (its value holds source ids, so it
+        ;; cannot be looked up in a restore that moved them).
         uniq   (set (for [[a m] schema
-                          :when (#{:db.unique/identity :db.unique/value} (:db/unique m))] a))]
+                          :when (and (#{:db.unique/identity :db.unique/value} (:db/unique m))
+                                     (not (ref? a))
+                                     (not (ids/tuple-ref-slots schema a)))] a))
+        budget (* 8 n)]
     (if (empty? uniq)
       {:sampled 0 :ok? true :note "no :db.unique attrs — content covered by tiers 1–2"}
-      (let [picks (reduce-source
-                   (fn [acc record]
-                     (let [[e a v _t op] record]
-                       (if (and op (uniq a) (< (count acc) n) (not (contains? acc [a v])))
-                         (assoc acc [a v] e) acc)))
-                   {})
-            pick-es (set (vals picks))
-            ;; net *current* state per picked entity: asserts add, retracts remove,
-            ;; so a fully-retracted entity nets to empty (and is not compared).
+      (let [cands (reduce-source
+                   (fn [{:keys [net] :as acc} record]
+                     (let [[e a v _t op] record
+                           k [a v e]]
+                       (cond
+                         (not (uniq a)) acc
+                         (contains? net k) (update-in acc [:net k] (if op inc dec))
+                         (and op (< (count net) budget))
+                         (-> acc (assoc-in [:net k] 1) (update :order conj k))
+                         :else acc)))
+                   {:net {} :order []})
+            picks (->> (:order cands)
+                       (filter #(pos? (long (get-in cands [:net %]))))
+                       (reduce (fn [acc [a v e]]
+                                 (if (or (>= (count acc) n) (some #(= e (second %)) acc))
+                                   acc
+                                   (conj acc [[a v] e])))
+                               []))
+            pick-es (set (map second picks))
+            ;; net *current* state per picked entity: asserts add, retracts remove
             recon (reduce-source
                    (fn [acc record]
                      (let [[e a v _t op] record]
                        (if (and (contains? pick-es e) (not (ref? a)))
+                         ;; the values as the dump holds them: with ids
+                         ;; masked first, two values of a card-many tuple can
+                         ;; look the same, and retracting one would remove the
+                         ;; other
                          (update-in acc [e a] (fnil (if op conj disj) #{}) (norm-val v))
                          acc)))
                    {})
             recon (into {} (for [[e am] recon
-                                 :let [am (into {} (remove (comp empty? val) am))]
+                                 :let [am (into {} (for [[a vs] am :when (seq vs)]
+                                                     [a (into #{} (map #(norm-val (dump-v a %))) vs)]))]
                                  :when (seq am)] [e am]))
+            many? (fn [la] (= :db.cardinality/many (:db/cardinality (get schema la))))
             diffs (reduce
                    (fn [ds [[a v] e]]
-                     (if-let [cur (get recon e)]
-                       (let [live (api/q '[:find (pull ?e [*]) . :in $ ?a ?v :where [?e ?a ?v]] db a v)]
-                         (if (nil? live)
-                           (conj ds {:unique [a v] :error :missing-in-live})
-                           ;; pull returns a vector for card-many AND for a tuple
-                           ;; value — disambiguate by declared cardinality, never
-                           ;; by value shape (a tuple is ONE value).
-                           (let [many? (fn [la] (= :db.cardinality/many
-                                                   (:db/cardinality (get schema la))))
-                                 live-attrs (into {} (for [[la lv] (dissoc live :db/id)
-                                                           :when (not (ref? la))]
-                                                       [la (if (many? la)
-                                                             (set (map norm-val lv))
-                                                             #{(norm-val lv)})]))]
-                             (if (= live-attrs cur) ds
-                                 (conj ds {:unique [a v] :error :field-mismatch})))))
-                       ds)) ;; entity net-retracted — not current, not a failure
+                     (let [cur  (get recon e)
+                           live (api/q '[:find (pull ?e [*]) . :in $ ?a ?v :where [?e ?a ?v]] db a v)]
+                       (if (nil? live)
+                         (conj ds {:unique [a v] :error :missing-in-live})
+                         ;; pull returns a vector for card-many AND for a tuple
+                         ;; value — disambiguate by declared cardinality, never
+                         ;; by value shape (a tuple is ONE value).
+                         (let [live-attrs (into {} (for [[la lv] (dissoc live :db/id)
+                                                         :when (not (ref? la))]
+                                                     [la (if (many? la)
+                                                           (set (map #(norm-val (live-v la %)) lv))
+                                                           #{(norm-val (live-v la lv))})]))]
+                           (if (= live-attrs cur) ds
+                               (conj ds {:unique [a v] :error :field-mismatch}))))))
                    [] picks)]
         {:sampled (count picks) :ok? (empty? diffs) :diffs (vec (take 5 diffs))}))))
 
@@ -3942,6 +4162,24 @@
        (let [schema (:schema manifest)
              ref?   (fn [a] (= :db.type/ref (:db/valueType (get schema a))))
              hist?  (boolean (:history? manifest))
+             sidents (:system-idents manifest)
+             dump-v (id-free-value schema #(get sidents %))
+             live-v (id-free-value schema #(dbi/-ident-for db %))
+             slots-of (memoize #(ids/tuple-ref-slots schema %))
+             ;; A renamed attribute's records name it by entity (`AttrRef`); the
+             ;; live side and the manifest schema use its CURRENT ident, which
+             ;; is the timeline's last entry.
+             timeline (:ident-timeline manifest)
+             reduce-source (if (empty? timeline)
+                             reduce-source
+                             (fn [rf init]
+                               (reduce-source
+                                (fn [acc record]
+                                  (let [a (nth record 1)]
+                                    (rf acc (if (mcbor/attr-ref? a)
+                                              (assoc record 1 (or (second (last (get timeline (:eid a)))) a))
+                                              record))))
+                                init)))
                ;; tier 1 — counts
              dump-count (long (or (:count (:semantic-digest manifest)) 0))
              live-count (long (user-datom-count db hist?))
@@ -3961,11 +4199,12 @@
                                         v (if (and op (sec-only? a))
                                             (dbt/secondary-only-hash v)
                                             v)]
-                                    (fp-step fp [e a v op] ref?)))
+                                    (fp-step fp [e a v op] ref? dump-v slots-of)))
                                 (fp-init)))
              live-fp (fp-final (reduce (fn [fp dm]
                                          (if (> (d/datom-tx dm) c/tx0)
-                                           (fp-step fp [(nth dm 0) (a-ident db (nth dm 1)) (nth dm 2) (nth dm 4)] ref?)
+                                           (let [a (a-ident db (nth dm 1))]
+                                             (fp-step fp [(nth dm 0) a (nth dm 2) (nth dm 4)] ref? live-v slots-of))
                                            fp))
                                        (fp-init)
                                        (mman/export-datoms db hist?)))
@@ -3973,7 +4212,7 @@
                          (= (:ref-counts dump-fp) (:ref-counts live-fp))
                          (= (:out-degree dump-fp) (:out-degree live-fp)))
                ;; tier 3 — sampled structural diff
-             t3     (verify-sample manifest reduce-source db ref? 25)
+             t3     (verify-sample manifest reduce-source db ref? dump-v live-v 25)
                ;; blobs — same tier as the chunks, and part of :ok?
              blobs  (verify-blobs manifest source)]
          {:ok? (and (= dump-count live-count) t2-ok (:ok? t3) (:ok? blobs))
