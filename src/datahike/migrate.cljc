@@ -2066,7 +2066,8 @@
               ;; of its own entities sits on a target system id, and its data would
               ;; be attached to that system entity. A system entity only ever holds
               ;; system attributes, so anything else there is such an entity.
-              sys-attrs (when (and (:seed sids) (not (:strict? sids)))
+              ;; Checked on what will be written, after any `:xform`.
+              sys-attrs (when (:seed sids)
                           (set (vals (mman/system-idents sref-db))))
               undeclared-system-entity!
               (fn [r]
@@ -2088,8 +2089,7 @@
                               rs (into []
                                        (keep (fn [r]
                                                (try (->> r (resolve-sysrefs sids)
-                                                         (resolve-attr-refs sref-db tl)
-                                                         undeclared-system-entity!)
+                                                         (resolve-attr-refs sref-db tl))
                                                     (catch #?(:clj Exception :cljs :default) e
                                                       (if (and collect?
                                                                (= :import/unknown-system-entity
@@ -2110,8 +2110,8 @@
                               ;; AFTER the transducer, so an `:xform` can repair a
                               ;; malformed record before it is judged — and so a
                               ;; transducer that PRODUCES one is caught.
-                              (check out))
-                            (check rs))))
+                              (let [ok (check out)] (run! undeclared-system-entity! ok) ok))
+                            (let [ok (check rs)] (run! undeclared-system-entity! ok) ok))))
           ;; TWO NESTED LOOPS, not a reduce. The outer reads one chunk, the inner
           ;; batches its records and flushes — and both the read and the flush are
           ;; awaits, which must sit at statement positions the `go` state machine

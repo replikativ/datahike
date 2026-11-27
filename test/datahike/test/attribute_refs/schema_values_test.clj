@@ -203,16 +203,36 @@
                                       [:db/add -1 :a/y "y"]])]
               (is (= "y" (:a/y (d/pull @conn '[:a/y] (get-in r [:tempids -1]))))))))))))
 
-(deftest a-renamed-required-attribute-still-satisfies-its-spec
-  (with-conn
-    (fn [conn]
-      (d/transact conn guard-schema)
-      (let [aid (:db/id (d/pull @conn '[:db/id] [:db/ident :a/x]))]
-        (d/transact conn [[:db/add aid :db/ident :a/renamed]])
-        (let [r (d/transact conn [{:db/id -1 :a/renamed "x" :a/y "y" :db/ensure :a/g}])]
-          (is (some? (get-in r [:tempids -1]))))
-        (is (thrown? Exception (d/transact conn [{:db/id -1 :a/y "y" :db/ensure :a/g}]))
-            "and a missing one is still missing")))))
+(deftest an-attribute-a-spec-requires-is-not-renamed-under-it
+  (testing "a spec names its attributes by ident, and the old name does not
+            survive as an alias through a restore"
+    (with-conn
+      (fn [conn]
+        (d/transact conn guard-schema)
+        (let [aid (:db/id (d/pull @conn '[:db/id] [:db/ident :a/x]))
+              g (:db/id (d/pull @conn '[:db/id] [:db/ident :a/g]))]
+          (is (re-find #"entity spec :a/g requires it"
+                       (try (d/transact conn [[:db/add aid :db/ident :a/renamed]]) ""
+                            (catch Exception e (root-message e)))))
+          (testing "the spec is changed first, in the same transaction or before"
+            (d/transact conn [[:db/retract g :db.entity/attrs :a/x]
+                              [:db/add g :db.entity/attrs :a/renamed]
+                              [:db/add aid :db/ident :a/renamed]])
+            (is (some? (d/transact conn [{:db/id -1 :a/renamed "x" :a/y "y" :db/ensure :a/g}])))
+            (is (thrown? Exception (d/transact conn [{:db/id -1 :a/y "y" :db/ensure :a/g}])))))))))
+
+(deftest ensure-reads-the-spec-the-transaction-leaves
+  (doseq [refs? [true false]]
+    (with-conn refs?
+      (fn [conn]
+        (d/transact conn guard-schema)
+        (d/transact conn [{:db/ident :a/z :db/valueType :db.type/string
+                           :db/cardinality :db.cardinality/one}])
+        (let [g (:db/id (d/pull @conn '[:db/id] [:db/ident :a/g]))]
+          (is (thrown? Exception
+                       (d/transact conn [{:db/id -1 :a/x "x" :a/y "y" :db/ensure :a/g}
+                                         [:db/add g :db.entity/attrs :a/z]]))
+              (str "refs " refs? ": :a/z is required by the end of the transaction")))))))
 
 (deftest a-rename-may-not-change-the-attribute-in-the-same-transaction
   (with-conn

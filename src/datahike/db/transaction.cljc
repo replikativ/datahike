@@ -417,7 +417,6 @@
             (drop-schema-value db schema-entry a-ident v-ident)
             ;; the entry is held under the entity id (its ident was retracted)
             (-> (drop-schema-value db e a-ident v-ident)
-                (update-in [:schema e] #(dissoc % v-ident))
                 (prune-retracted-schema-entry e)))
           (let [err-msg (str "Schema with entity id " e " does not exist")
                 err-map {:error :retract/schema :entity-id e :attribute a :value e}]
@@ -685,7 +684,6 @@
         has-secondary? (seq (get-in db [:rschema :db.secondary/index a-ident]))]
     (cond-> db
       (or current? history?) (tracking/changed a-ident (or schema?
-                                                           (ds/entity-spec-attr? a-ident)
                                                            (ds/secondary-index-attr? a-ident)))
       current? (update-in [:eavt] #(di/-remove % current-datom :eavt op-count))
       (and current? (effects/enabled? db)) (effects/emit a-ident :current :remove current-datom nil)
@@ -1241,15 +1239,11 @@
                           (dbi/-ref-for db v)
                           v)])))]
     (if ensure
-      (let [{:keys [:db.entity/attrs :db.entity/preds]} (-> db :schema ensure)]
-        (if (empty? attrs)
-          (if (empty? preds)
-            entities
-            (concat entities [[:db.ensure/preds eid ensure preds]]))
-          (if (empty? preds)
-            (concat entities [[:db.ensure/attrs eid ensure attrs]])
-            (concat entities [[:db.ensure/attrs eid ensure attrs]
-                              [:db.ensure/preds eid ensure preds]]))))
+      ;; The spec itself is read when the check runs, at the end of the
+      ;; transaction: one changed in this transaction is checked as it then
+      ;; stands.
+      (concat entities [[:db.ensure/attrs eid ensure]
+                        [:db.ensure/preds eid ensure]])
       entities)))
 
 (defn- vt-meta-attr?
@@ -1992,16 +1986,9 @@
       ;; already has and count retractions as present.
       :db.ensure/attrs (let [{:keys [db-after]} report
                              asserting-datoms (dbi/datoms db-after :eavt [e])
-                             ;; by attribute, not by name: under :attribute-refs? a
-                             ;; renamed attribute still answers to the name the
-                             ;; spec holds
-                             attribute-refs? (:attribute-refs? (dbi/-config db-after))
-                             present (into #{} (map (fn [^Datom d] (.-a d))) asserting-datoms)
-                             diff (into #{}
-                                        (remove (fn [k] (contains? present (if attribute-refs?
-                                                                             (dbi/-ref-for db-after k)
-                                                                             k))))
-                                        v)]
+                             required (get-in (dbi/-schema db-after) [a :db.entity/attrs])
+                             asserting-attributes (map (fn [^Datom d] (dbu/attr-ident db-after (.-a d))) asserting-datoms)
+                             diff (clojure.set/difference (set required) (set asserting-attributes))]
                          (if (empty? diff)
                            [report []]
                            (log/raise "Entity " e " missing attributes " diff " of spec " a
@@ -2009,7 +1996,8 @@
                                        :asserting-datoms asserting-datoms})))
 
       :db.ensure/preds (let [{:keys [db-after]} report
-                             preds (assert-preds db-after op-vec)]
+                             preds (assert-preds db-after [op e a (get-in (dbi/-schema db-after)
+                                                                          [a :db.entity/preds])])]
                          (if-not (empty? preds)
                            (log/raise "Entity " e " failed predicates " preds " of spec " a
                                       {:error :transact/ensure :operation op :tx-data op-vec})
@@ -2283,6 +2271,18 @@
         (doseq [[e new-ident] new-rim]
           (let [old-ident (get old-rim e)]
             (when (and old-ident (not= old-ident new-ident))
+              ;; An entity spec names its required attributes by ident, and
+              ;; the old name is an alias only until it is retracted or the
+              ;; database is restored from a dump.
+              (when-let [spec (some (fn [[k m]]
+                                      (when (and (keyword? k) (map? m)
+                                                 (some #{old-ident} (:db.entity/attrs m)))
+                                        k))
+                                    (dbi/-schema db-after))]
+                (log/raise (str "Cannot rename " old-ident " to " new-ident ": entity spec " spec
+                                " requires it by name. Change the spec's :db.entity/attrs first.")
+                           {:error :transact/schema :attribute old-ident
+                            :new-attribute new-ident :spec spec}))
               (let [old-entry (get (dbi/-schema db-before) old-ident)
                     new-entry (get (dbi/-schema db-after) new-ident)]
                 (when (and (map? old-entry) (map? new-entry)
