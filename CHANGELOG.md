@@ -24,6 +24,35 @@ When something is added, it's typically marked *Experimental*. When the API cont
   `:db.entity/attrs` / `:db.entity/preds` dropped the whole list from the
   schema, so a later `:db/ensure` passed with a required attribute missing.
   Both modes. (0.8.1914, [#1126])
+- **Imports of older attribute-refs databases keep their entities ([#1122]).**
+  A dump from an attribute-refs database created before the system schema
+  last grew numbers its user entities where the current system schema now
+  runs. Importing it mapped those entities onto system entities and aborted
+  with "System schema entity cannot be changed". The import now translates
+  system entities from the dump's own numbering, and `:eids :preserve` refuses
+  such a dump instead of colliding. A legacy single-file dump cannot record
+  its numbering: one whose entities overlap the system schema now fails with
+  an error that says to export the source again, and one that does not
+  overlap imports as before.
+- **A computed `:eids` mapping no longer keeps one entry per imported entity
+  ([#1127]).** Under `:offset`, `:preserve`, a caller's `ILookup` or a caller's
+  function, `import-db`/`import-source` remembered every id the mapping had
+  already answered for — one entry per source entity, and a second one per
+  transaction — rebuilding the O(entities) table these mappings exist to
+  avoid. Only ids the importer allocates itself (those a partial mapping
+  leaves unnamed) are remembered now. The import still keeps one entry per
+  transaction. Regression from #970.
+- **The JDBC backend connects again ([#1133]).** konserve-jdbc 0.2.101,
+  as pinned, did not implement the `-store-exists?` probe konserve 0.9.385+
+  makes on every connect, so creating or connecting a `:backend :jdbc` database
+  failed with `AbstractMethodError: JDBCTable._store_exists_QMARK_`. Bumped to
+  konserve-jdbc 0.2.102 (replikativ/konserve-jdbc#43).
+- **`import-source` refuses a history source into a target without history up front ([#1134]).**
+  `:source-meta {:history? true}` into a `:keep-history? false` database
+  committed the replayed data and only then threw "history is only allowed on temporal
+  indexed databases", and the report was lost. It is now
+  refused before anything is written (`:import/config-mismatch` on
+  `:keep-history?`), as `import-db` already refuses such a dump.
 - **An exclusive writer gives every queued transaction its own transaction id** — with `:writer-ownership :exclusive`, a transaction that was applied while the one before it was still being committed reused that transaction's id: the writer took the transaction counter from the published connection, which only moves when a commit lands. Twenty `transact!` calls submitted without waiting came back with as few as one distinct id, so their datoms shared a transaction and `as-of`, `since` and history could not tell the versions apart. The writer now keeps its own counter and adopts the connection's only when that is higher, which is what the legacy CBOR import relies on. The default `:shared` ownership was not affected. (0.8.1946, [#1189])
 - **`transact!` calls from one caller reach the local writer in call order** — each call used to hand its transaction to the writer from a separate go block, so consecutive calls could be applied in another order than they were made. A local writer now receives the transaction before `transact!` returns its promise; a caller can submit a transaction that depends on an earlier one without waiting for it. Durability and listener delivery are asynchronous as before, and a remote writer gives no such ordering. (0.8.1946, [#1189])
 
@@ -1239,6 +1268,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#980]: https://github.com/replikativ/datahike/pull/980
 [#1092]: https://github.com/replikativ/datahike/pull/1092
 [#1090]: https://github.com/replikativ/datahike/pull/1090
+[#1122]: https://github.com/replikativ/datahike/pull/1122
 [#1154]: https://github.com/replikativ/datahike/pull/1154
 [#1153]: https://github.com/replikativ/datahike/issues/1153
 [#1141]: https://github.com/replikativ/datahike/pull/1141
@@ -1251,6 +1281,9 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1112]: https://github.com/replikativ/datahike/issues/1112
 [#1105]: https://github.com/replikativ/datahike/issues/1105
 [#1126]: https://github.com/replikativ/datahike/pull/1126
+[#1127]: https://github.com/replikativ/datahike/pull/1127
+[#1133]: https://github.com/replikativ/datahike/pull/1133
+[#1134]: https://github.com/replikativ/datahike/pull/1134
 [#1151]: https://github.com/replikativ/datahike/pull/1151
 [#1150]: https://github.com/replikativ/datahike/issues/1150
 [#1149]: https://github.com/replikativ/datahike/pull/1149
