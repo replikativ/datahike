@@ -1834,10 +1834,10 @@
    which is right for any source that has no retractions."
   [manifest]
   {:history?       (boolean (:history? manifest))
-   ;; Whether the records are in replay order (`sort/sort-key`). A dump written
-   ;; before the manifest recorded it is taken as unsorted: sorting a sorted
-   ;; dump only costs time, replaying an unsorted history gives a wrong
-   ;; database. See `open-import-sorter`.
+   ;; Whether the records are in replay order. A dump written before the
+   ;; manifest recorded it is taken as unsorted: sorting a sorted dump costs
+   ;; time and, past one window, scratch space, while replaying an unsorted
+   ;; history gives a wrong database. See `open-import-sorter`.
    :sorted?        (true? (:sorted? manifest))
    :expected-count (:count (:semantic-digest manifest))
    :max-tx         (:max-tx (:stats manifest))
@@ -1892,6 +1892,21 @@
             {:count 0 :sample []}
             ref-attrs)))
 
+(defn- replay-order-key
+  "Replay order for one record: by transaction; inside one, its `:db/txInstant`
+   first, then schema before the data that needs it, then retractions before
+   assertions, so a value handed from one entity to another is released before
+   it is claimed."
+  [record]
+  (let [a (nth record 1)]
+    [(nth record 3)
+     (if (= a :db/txInstant) 0 1)
+     (if (and (keyword? a) (or (ds/schema-attr? a) (ds/entity-spec-attr? a))) 0 1)
+     (if (nth record 4) 1 0)
+     (nth record 0)
+     (str a)
+     (str (mcbor/norm-val (nth record 2)))]))
+
 (defn- open-import-sorter
   "Put a history source into replay order before it is replayed.
 
@@ -1901,20 +1916,29 @@
    applied before an earlier one and the retraction of the earlier one then
    removes it: the restore loses a current value, and the count can still
    match. The records are all there; only their order is wrong, so they are
-   sorted here, by the order a sorted export writes.
+   sorted here (`replay-order-key`).
 
    Memory is one window of `:sort-buffer` records. A source that fits in one is
-   sorted in memory; a larger one is spooled to compressed scratch files and
-   merge-sorted there, as the index-building import does.
+   sorted in memory; a larger one is spooled to scratch files and merge-sorted
+   there, as the index-building import does.
 
-   Returns `{:add! (fn [records]) :finish! (fn [] -> {:chunk-src … :close! fn})}`.
-   The chunk source reads the sorted records in order, once."
+   A record the key cannot be read from (too short, no transaction) is not
+   sorted: it is handed on first, as it came, for the importer's own validation
+   and any `:xform` to judge.
+
+   Returns `{:add! (fn [records]) :finish! (fn [] -> chunk-src) :close! (fn [])}`.
+   The chunk source reads the sorted records in order, once. `:close!` releases
+   the scratch and may be called at any point, more than once."
   [opts]
   (let [window (long (get opts :sort-buffer 200000))
         size   (max 1000 (long (get opts :batch-size default-batch-size)))
         buf    (volatile! [])
+        misfits (volatile! [])
         scratch (volatile! nil)
+        merged (volatile! nil)
         n      (volatile! 0)
+        sortable? (fn [r] (and (vector? r) (<= 5 (count r)) (number? (nth r 3))
+                               (some? (nth r 0))))
         spill! (fn []
                  (when (nil? @scratch)
                    (let [tmp (fs/temp-dir! "dh-import-sort")]
@@ -1922,34 +1946,43 @@
                  (run! (:add! (:spool @scratch)) @buf)
                  (vreset! buf []))]
     {:add! (fn [records]
-             (vswap! n + (count records))
-             (vswap! buf into records)
-             (when (> (count @buf) window) (spill!)))
+             (doseq [r records]
+               (vswap! n inc)
+               (if (sortable? r)
+                 (do (vswap! buf conj r)
+                     (when (>= (count @buf) window) (spill!)))
+                 (vswap! misfits conj r))))
      :finish!
      (fn []
-       (let [sorted (if-let [{:keys [tmp spool]} @scratch]
-                      (do (spill!)
-                          (msort/read-sorted-file
-                           (msort/external-sort-to-file
-                            (init/spool-records ((:close! spool)) mz/default-codec)
-                            window tmp)))
-                      (:records (msort/open-sorted-records! @buf (max 1 (count @buf)) nil)))
-             remaining (volatile! sorted)]
+       (let [order {:datahike.migrate.sort/key-fn replay-order-key}
+             {:keys [records close!]}
+             (if-let [{:keys [tmp spool]} @scratch]
+               (do (spill!)
+                   (msort/open-sorted-records!
+                    (init/spool-records ((:close! spool)) mz/default-codec) window tmp order))
+               (msort/open-sorted-records! @buf (max 1 (count @buf)) nil order))
+             remaining (volatile! (concat @misfits records))]
          (vreset! buf nil)
-         {:chunk-src {:chunks (range (quot (+ (long @n) size -1) size))
-                      :read (fn [_ o]
-                              (let [chunk (into [] (take size) @remaining)]
-                                (vswap! remaining #(drop size %))
-                                (async+sync (get o :sync? default-sync?)
-                                            *default-sync-translation*
-                                            (go-try- chunk))))}
-          :close! (fn []
-                    (vreset! remaining nil)
-                    (when-let [{:keys [tmp]} @scratch]
-                      (doseq [nm (or (fs/list-names tmp) [])] (fs/delete! (fs/join tmp nm)))
-                      (fs/delete! tmp)))}))}))
+         (vreset! misfits nil)
+         (vreset! merged {:close! close! :remaining remaining})
+         {:chunks (range (quot (+ (long @n) size -1) size))
+          :read (fn [_ o]
+                  (let [chunk (into [] (take size) @remaining)]
+                    (vswap! remaining #(drop size %))
+                    (async+sync (get o :sync? default-sync?)
+                                *default-sync-translation*
+                                (go-try- chunk))))}))
+     :close! (fn []
+               (when-let [{:keys [close! remaining]} @merged]
+                 (vreset! merged nil)
+                 (vreset! remaining nil)
+                 (close!))
+               (when-let [{:keys [tmp]} @scratch]
+                 (vreset! scratch nil)
+                 (doseq [nm (or (fs/list-names tmp) [])] (fs/delete! (fs/join tmp nm)))
+                 (fs/delete! tmp)))}))
 
-(defn- run-import
+(defn- run-import*
   "Medium-agnostic import core.
    `chunk-src` yields the dump's records a CHUNK at a time:
    `{:chunks [descriptor…] :read (fn [descriptor opts] -> records)}`, supplied by
@@ -1987,7 +2020,7 @@
    The dump-specific checks stay with the CALLER — `check-capabilities!`,
    `config-compat!` and `restore-blobs!` each already no-op on an absent
    manifest, so a non-dump caller simply does not call them."
-  [conn source-meta mem chunk-src opts]
+  [conn source-meta mem chunk-src opts sorter-cell]
   (let [opts     (merge {:batch-size default-batch-size :verify? true
                          :on-error :abort :sync? true} opts)
         progress (or (:progress-fn opts) (constantly nil))
@@ -2188,6 +2221,7 @@
               ;; source that states nothing is taken to be in order, as before.
               sorted (when (and (:history? source-meta) (false? (:sorted? source-meta)))
                        (let [sorter (open-import-sorter opts)]
+                         (vreset! sorter-cell (:close! sorter))
                          (loop [cs (seq (:chunks chunk-src))]
                            (when cs
                              ((:add! sorter)
@@ -2197,7 +2231,7 @@
                                "a dump chunk could not be read"))
                              (recur (next cs))))
                          ((:finish! sorter))))
-              chunk-src (if sorted (:chunk-src sorted) chunk-src)
+              chunk-src (or sorted chunk-src)
               final (loop [cs (seq (:chunks chunk-src))
                            acc {:batch [] :n 0 :last-t ::start :errors [] :dropped 0
                                 :migration migration0}]
@@ -2262,7 +2296,6 @@
           ;; The completion arity emits any partial group the transducer held.
           ;; Those are outputs with no corresponding input in this pass, so they
           ;; reduce the net-removed count.
-              _ (when sorted ((:close! sorted)))
               residue (if step (vec (step [])) [])
               _ (vswap! removed - (count residue))
               last-flush (<?- (flush-batch! conn (into (:batch final) residue)
@@ -2364,6 +2397,20 @@
                      :recommended-heap (:recommended-heap mem)
                      :errors      errors}
               refs (assoc :dangling-refs refs)))))))))
+
+(defn- run-import
+  "`run-import*`, releasing the scratch of a pre-replay sort on both the success
+   and the failure path. Here rather than in a `finally`, for the reason
+   `run-index-build` gives."
+  [conn source-meta mem chunk-src opts]
+  (let [sorter-cell (volatile! nil)]
+    (async+sync
+     (get opts :sync? true) *default-sync-translation*
+     (go-try-
+      (let [res (try (<?- (run-import* conn source-meta mem chunk-src opts sorter-cell))
+                     (catch #?(:clj Throwable :cljs :default) e e))]
+        (when-let [close! @sorter-cell] (close!))
+        (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res))))))
 
 ;; ---------------------------------------------------------------------------
 ;; the index-build path (opt-in, `:build-indexes? true`)

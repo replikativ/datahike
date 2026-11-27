@@ -280,11 +280,18 @@ order, and its manifest says so (`:sorted? false`).
 The sort an unsorted **history** dump skipped happens on import instead:
 `import-db` puts the records into transaction order before replaying them.
 A dump that fits in one `:sort-buffer` window (200 000 records by default) is
-sorted in memory; a larger one is spooled to compressed scratch files in the
-system temp directory and merge-sorted there, so the importing machine needs
-scratch space of roughly twice the dump's size. Memory stays at one window plus
-one batch. A current-only dump (`:history? false`) needs no order and is
-replayed as written.
+sorted in memory; a larger one is spooled to scratch files in the system temp
+directory and merge-sorted there. The sorted runs are not compressed, so allow
+scratch space of several times the dump's size. Memory stays at one window plus
+one chunk and one batch. Two consequences:
+
+- An `:xform` on such an import sees the records in transaction order, not in
+  the order the dump holds them.
+- An import with no writable filesystem (a browser) can only sort a dump that
+  fits in one window. This also applies to a history dump written before the
+  manifest recorded its order, which is sorted because its order is unknown.
+
+A current-only dump (`:history? false`) is replayed as written.
 
 > **Do not run datahike GC during a long export** on a lazy-loading backend. GC
 > marks reachability from branch heads only and does not pin a reader-held
@@ -401,7 +408,7 @@ Options:
 | `:eids` | `:allocate` | how source ids bind to target ids (`:preserve` by default under `:build-indexes?`) |
 | `:build-indexes?` | `false` | build a fresh database from sorted input — see below |
 | `:checksums` | `:require` | `:skip` imports **without** verifying chunk hashes, and warns |
-| `:sort-buffer` | 200k | records held in memory per sort run (`:build-indexes?`) |
+| `:sort-buffer` | 200k | records held in memory per sort run (`:build-indexes?`, and the sort of an unsorted history dump) |
 | `:spool-codec` | `:gzip` | compression for the index-build scratch spool; `:none` to disable |
 | `:spool-chunk-size` | 100k | records per spool file |
 | `:dangling-sample` | 10 | how many dangling refs `:check-refs?` includes in its report |

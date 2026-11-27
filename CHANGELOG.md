@@ -14,8 +14,11 @@ When something is added, it's typically marked *Experimental*. When the API cont
   widened to cardinality-many lost values, sometimes with `:verified? true`.
   The importer now sorts such a dump into transaction order first, in memory
   when it fits one `:sort-buffer` window and through scratch files otherwise.
-  The manifest records the order as `:sorted?`; a history dump without it is
-  sorted too. (0.8, [#1193])
+  Inside a transaction, schema is replayed before the data that needs it. The
+  manifest records the order as `:sorted?`; a history dump without it is
+  sorted too. An `:xform` on such an import sees transaction order. Dumps
+  written before same-transaction pairs were netted at export (#1188) can
+  still fail verification. (0.8, [#1193])
 - **`:attribute-refs?` databases accept entity specs, map-form renames and long schema values** —
   `:db.entity/attrs` / `:db.entity/preds` had no system entity, so a spec could
   not be transacted (attribute `nil`) and `:db/ensure` checked nothing; they are
