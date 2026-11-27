@@ -304,3 +304,42 @@
       (let [r (m/verify-against @tgt path)]
         (is (:ok? r) (pr-str (select-keys r [:tier1 :tier2 :tier3]))))
       (teardown src) (teardown tgt))))
+
+(deftest only-integers-in-a-ref-slot-are-ids
+  (testing "the transactor's spec admits any number into a ref slot; a fraction
+            names no entity and is carried as it is"
+    (let [slots [true false]]
+      (is (= [3] (ids/tuple-refs slots [3 7])))
+      (is (= [] (ids/tuple-refs slots [3.5 7])))
+      (is (= [3.5 7] (ids/map-tuple-refs slots inc [3.5 7])))
+      (is (= [4 7] (ids/map-tuple-refs slots inc [3 7]))))))
+
+(deftest index-build-counts-a-tuples-referent-towards-max-eid
+  (testing "a tuple may name an entity that holds no datoms; the next entity
+            the target allocates must not land on it"
+    (let [src (source-conn false)
+          dangling 100000
+          _ (d/transact src [{:name "d" :pt [dangling 7]}])
+          path (export! src)
+          tgt (utils/setup-db (mem-cfg {}))]
+      (m/import-db tgt path {:build-indexes? true})
+      (is (<= dangling (:max-eid @tgt)))
+      (teardown tgt)
+      (teardown src))))
+
+(deftest verify-against-a-card-many-tuple-with-a-retracted-value
+  (testing "two values that differ only in their ref element: retracting one
+            must not make tier 3 lose the other"
+    (let [src (source-conn false)
+          _ (d/transact src [{:db/ident :pts :db/valueType :db.type/tuple
+                              :db/tupleTypes [:db.type/ref :db.type/long]
+                              :db/cardinality :db.cardinality/many}])
+          a (eid-of @src "a")
+          c (eid-of @src "c")
+          _ (d/transact src [{:db/id [:name "b"] :pts [[a 7] [c 7]]}])
+          _ (d/transact src [[:db/retract [:name "b"] :pts [c 7]]])
+          path (export! src)
+          r (m/verify-against @src path)]
+      (is (pos? (get-in r [:tier3 :sampled])))
+      (is (:ok? r) (pr-str (:tier3 r)))
+      (teardown src))))

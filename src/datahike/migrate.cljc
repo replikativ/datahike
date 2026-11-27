@@ -2640,6 +2640,7 @@
                     schema?  (fn [record] (let [a (nth record 1)]
                                             (or (ds/schema-attr? a) (ds/entity-spec-attr? a))))
                     ref?     (fn [a] (= :db.type/ref (:db/valueType (get source-schema a))))
+                    tuple-slots (memoize #(ids/tuple-ref-slots source-schema %))
                     txs      (tx-counter)
                     ;; No `try/finally` around the fold to close the spool. In
                     ;; async mode the fold IS a channel, so a `finally` would
@@ -2705,10 +2706,14 @@
                                            ;; later allocation landing on that id
                                            ;; would silently resurrect the
                                            ;; reference.
+                                           ;; A tuple's ref elements the same.
                                            (update :max-eid max
                                                    (if (< (long e) c/tx0) (long e) 0)
                                                    (if (and (ref? a) (number? v) (< (long v) c/tx0))
-                                                     (long v) 0))
+                                                     (long v) 0)
+                                                   (reduce (fn [m x] (if (< (long x) c/tx0) (max m (long x)) m))
+                                                           0
+                                                           (some-> (tuple-slots a) (ids/tuple-refs v))))
                                            (update :max-tx max (long t))
                                            (cond-> (schema? r) (update :schema-recs conj r)))))
                                    {:n 0 :hash 0 :schema-recs []
@@ -3518,11 +3523,16 @@
                    (fn [acc record]
                      (let [[e a v _t op] record]
                        (if (and (contains? pick-es e) (not (ref? a)))
-                         (update-in acc [e a] (fnil (if op conj disj) #{}) (norm-val (dump-v a v)))
+                         ;; the values as the dump holds them: with ids
+                         ;; masked first, two values of a card-many tuple can
+                         ;; look the same, and retracting one would remove the
+                         ;; other
+                         (update-in acc [e a] (fnil (if op conj disj) #{}) (norm-val v))
                          acc)))
                    {})
             recon (into {} (for [[e am] recon
-                                 :let [am (into {} (remove (comp empty? val) am))]
+                                 :let [am (into {} (for [[a vs] am :when (seq vs)]
+                                                     [a (into #{} (map #(norm-val (dump-v a %))) vs)]))]
                                  :when (seq am)] [e am]))
             many? (fn [la] (= :db.cardinality/many (:db/cardinality (get schema la))))
             diffs (reduce

@@ -104,19 +104,19 @@
 (defn tuple-refs
   "The ids in tuple `v` at its ref `slots`.
 
-   Numbers only. nil is an unset composite component, and the transactor's
-   `:db.type/id` spec lets anything else into a ref slot (a keyword, a string);
-   neither names an entity, so neither is allocated or rewritten — the tuple is
-   carried as the source holds it, as before."
+   Integers only. nil is an unset composite component, and the transactor's
+   `:db.type/id` spec lets anything else into a ref slot (a keyword, a string,
+   a fraction); none names an entity, so none is allocated or rewritten — the
+   tuple is carried as the source holds it, as before."
   [slots v]
   (when (vector? v)
-    (into [] (keep-indexed (fn [i x] (when (and (get slots i) (number? x)) x))) v)))
+    (into [] (keep-indexed (fn [i x] (when (and (get slots i) (int? x)) x))) v)))
 
 (defn map-tuple-refs
-  "`v` with `f` applied to each id at a ref slot (numbers only; see `tuple-refs`)."
+  "`v` with `f` applied to each id at a ref slot (integers only; see `tuple-refs`)."
   [slots f v]
   (if (vector? v)
-    (into [] (map-indexed (fn [i x] (if (and (get slots i) (number? x)) (f x) x))) v)
+    (into [] (map-indexed (fn [i x] (if (and (get slots i) (int? x)) (f x) x))) v)
     v))
 
 (defn build-mapping
