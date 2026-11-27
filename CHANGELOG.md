@@ -13,10 +13,9 @@ When something is added, it's typically marked *Experimental*. When the API cont
   an earlier or smaller value came out missing, and an attribute widened to
   cardinality-many lost values, sometimes with `:verified? true`. Such a dump
   is now put into transaction order first, in memory when it fits one
-  `:sort-buffer` window and through scratch files otherwise; inside a
-  transaction, schema comes first, then data retractions, then data
-  assertions. Needs #1194, which makes the replay itself handle index and
-  history-setting changes. The manifest records whether the exporter sorted as
+  `:sort-buffer` window and through scratch files otherwise, in the order a
+  sorted export writes. Needs #1194: index changes now reach the replay at
+  their own transaction rather than up front. The manifest records whether the exporter sorted as
   `:sorted?`. A dump without the mark whose transactions are already in order
   is replayed as written. An `:xform` on a sorted import sees transaction
   order. Not covered: dumps written before same-transaction pairs were netted

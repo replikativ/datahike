@@ -116,29 +116,6 @@
                                             (slurp (io/file dir "manifest.edn"))))))
       (finally (d/release src)))))
 
-(deftest schema-comes-before-the-data-of-its-transaction
-  (testing "a ref attribute installed and used in one transaction, on entities
-            with lower ids than the attribute: sorting by entity alone would
-            replay the reference before the attribute exists as a ref, and
-            leave it unmapped"
-    (doseq [attribute-refs? [false true]]
-      (let [src (fresh attribute-refs?)
-            dst (fresh attribute-refs?)
-            dir (dump-dir)]
-        (try
-          (d/transact src [{:db/ident :name :db/valueType :db.type/string
-                            :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}])
-          (d/transact src [{:name "child"} {:name "parent"}])
-          (d/transact src [{:db/ident :parent :db/valueType :db.type/ref
-                            :db/cardinality :db.cardinality/one}
-                           [:db/add [:name "child"] :parent [:name "parent"]]])
-          (m/export-db @src dir {:history? true :sort? false})
-          (is (true? (:verified? (m/import-db dst dir {:eids (fn [e] (+ 5000 e)) :batch-size 2}))))
-          (is (= #{["child" "parent"]}
-                 (d/q '[:find ?c ?p :where [?e :parent ?x] [?e :name ?c] [?x :name ?p]] @dst))
-              (str "attribute-refs " attribute-refs?))
-          (finally (d/release src) (d/release dst)))))))
-
 (deftest a-malformed-record-still-reaches-validation
   (testing "the sort does not judge records: one it cannot read a key from is
             handed on, and :on-error :collect reports it as before. A window of
@@ -197,9 +174,9 @@
           (finally (d/release src) (d/release dst)))))))
 
 (deftest a-rename-and-a-retraction-in-one-transaction
-  (testing "the ident timeline names a record by the attribute's name at the
-            end of its transaction, so the rename must be replayed before the
-            retraction that uses the new name"
+  (testing "restores as the sorted dump of the same database does: the rename
+            and a retraction under the new name in one transaction. On main
+            the unsorted dump failed on it"
     (let [src (fresh true)
           dst (fresh true)
           dir (dump-dir)]

@@ -280,8 +280,8 @@ sorted one, not in transaction order, and its manifest says so
 
 The sort an unsorted **history** dump skipped happens on import instead:
 `import-db` puts the records into transaction order before replaying them.
-Inside a transaction, schema comes first, then data retractions, then data
-assertions. A dump that fits in one `:sort-buffer` window (200 000 records
+Inside a transaction, records take the order a sorted export writes, so the
+restore is the same as from a sorted dump. A dump that fits in one `:sort-buffer` window (200 000 records
 by default) is sorted in memory; a larger one is spooled to scratch files in
 the system temp directory and merge-sorted there. The sorted runs are not
 compressed, so allow scratch space of several times the dump's size. Memory is

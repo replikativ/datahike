@@ -1897,33 +1897,19 @@
   #?(:clj Long/MIN_VALUE :cljs js/Number.MIN_SAFE_INTEGER))
 
 (defn- replay-order-key
-  "Replay order for one record: by transaction, its `:db/txInstant` first, then
-   schema, then data retractions, then data assertions.
-
-   Schema first, because data can need the schema of its own transaction: a
-   ref attribute installed and used, a cardinality widened and used, an
-   attribute renamed and written or retracted under its new name (the ident
-   timeline resolves records by the name in force at the END of their
-   transaction). Retractions before assertions, so a unique value handed from
-   one entity to another is released before it is claimed. What the order
-   within a transaction would decide about storage settings, `:db/index` and
-   `:db/noHistory`, the replay settles itself (#1194).
+  "Replay order for one record: the order a sorted export writes
+   (`sort/sort-key`), so an unsorted dump restores exactly as a sorted one
+   does. The importer does not choose an order inside a transaction of its own;
+   a dump does not record the order a transaction applied its datoms in.
 
    A record whose transaction or entity is not a number has no key to read; it
-   sorts before everything else, as it came, for the importer's validation and
-   `:on-error` to judge."
+   sorts before everything else, for the importer's validation and `:on-error`
+   to judge."
   [record]
   (if (and (vector? record) (<= 5 (count record))
            (number? (nth record 3)) (number? (nth record 0)))
-    (let [a (nth record 1)
-          schema? (and (keyword? a) (or (ds/schema-attr? a) (ds/entity-spec-attr? a)))]
-      [(nth record 3)
-       (if (= a :db/txInstant) 0 1)
-       (cond schema? 0 (nth record 4) 2 :else 1)
-       (nth record 0)
-       (str a)
-       (str (mcbor/norm-val (nth record 2)))])
-    [malformed-key-t 0 0 0 "" (pr-str record)]))
+    (msort/sort-key record)
+    [malformed-key-t 0 0 "" 0 (pr-str record)]))
 
 (defn- open-import-sorter
   "Put a history source into replay order before it is replayed.
