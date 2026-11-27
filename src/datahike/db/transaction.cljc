@@ -172,6 +172,21 @@
 (defn update-rschema [db]
   (assoc db :rschema (dbu/rschema (:schema db))))
 
+(defn- apply-schema-datom [db ^Datom datom mutate]
+  (let [next-db (mutate db datom)
+        before (:schema db)
+        after (:schema next-db)
+        eid (.-e datom)]
+    (if (identical? before after)
+      next-db
+      ;; An unnamed entry lives under the eid. Assertion or retraction of
+      ;; :db/ident can move the entry to or from its ident; a retraction
+      ;; after a rename may also refer to the previous ident by value.
+      (let [touched (into #{eid} (filter keyword?)
+                          [(get before eid) (get after eid) (.-v datom)])]
+        (assoc next-db :rschema
+               (dbu/rschema-after (:rschema db) before after touched))))))
+
 (defn- last-tx-instant
   "Read the :db/txInstant value of the most-recently-committed tx
    (`:max-tx`). Returns nil only on a truly empty DB that has not
@@ -644,8 +659,7 @@
          has-secondary? (update-secondary-indices a-ident datom true tx-meta)
          true (advance-max-eid (.-e datom))
          true (update :hash + (hash prim))
-         schema? (-> (update-schema datom)
-                     update-rschema)
+         schema? (apply-schema-datom datom update-schema)
          true (update :op-count inc))
 
        (if-some [removing ^Datom (if (= ::not-looked-up removing-known)
@@ -659,7 +673,7 @@
            indexing? (update-in [:avet] #(di/-remove % removing :avet op-count))
            has-secondary? (update-secondary-indices a-ident datom false tx-meta)
            true (update :hash - (hash removing))
-           schema? (-> (remove-schema datom) update-rschema)
+           schema? (apply-schema-datom datom remove-schema)
            keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % removing :eavt op-count))
            keep-history? (update-in [:temporal-eavt] #(di/-temporal-insert % prim :eavt (inc op-count)))
            (and keep-history? (effects/enabled? db)) (effects/emit a-ident :temporal :temporal-insert removing nil)
@@ -694,7 +708,7 @@
       ;; event so they drop the purged datom. Skip when the datom was only
       ;; in history (already retracted earlier — never reached the secondary).
       (and current? has-secondary?) (update-secondary-indices a-ident current-datom false)
-      (and current? schema?) (-> (remove-schema datom) update-rschema)
+      (and current? schema?) (apply-schema-datom datom remove-schema)
       history? (update-in [:temporal-eavt] #(di/-remove % history-datom :eavt op-count))
       (and history? (effects/enabled? db)) (effects/emit a-ident :temporal :remove history-datom nil)
       history? (update-in [:temporal-aevt] #(di/-remove % history-datom :aevt op-count))
@@ -771,7 +785,7 @@
      (cond-> db
             ;; Optimistic removal of the schema entry (because we don't know whether it is already present or not)
        schema? (try
-                 (-> db (remove-schema datom) update-rschema)
+                 (apply-schema-datom db datom remove-schema)
                  (catch ExceptionInfo _e
                    db))
 
@@ -816,8 +830,7 @@
                           (= (hash old-datom) (hash prim))))
        (update :hash - (hash old-datom))
        true    (update :hash + (hash prim))
-       schema? (-> (update-schema datom)
-                   update-rschema)))))
+       schema? (apply-schema-datom datom update-schema)))))
 
 (defn- vt-mode-attr?
   "True when a covering secondary index is in valid-time (SCD2) mode — i.e. keys

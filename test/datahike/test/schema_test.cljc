@@ -4,7 +4,9 @@
    #?(:cljs [cljs.test :as t :refer-macros [is deftest testing]]
       :clj  [clojure.test :as t :refer [is deftest testing]])
    [datahike.api :as d]
+   [datahike.db :as db]
    [datahike.db.interface :as dbi]
+   [datahike.db.utils :as dbu]
    [datahike.db.transaction :as dbt]
    [datahike.datom :as da]
    [datahike.constants :as const]
@@ -412,6 +414,35 @@
       (d/transact conn [{:churn/a 7}])
       (is (= #{[7]} (d/q '[:find ?v :where [_ :churn/a ?v]] (d/db conn)))))
     (d/release conn)))
+
+(deftest ordinary-schema-changes-maintain-the-reverse-index
+  (doseq [refs? [false true]]
+    (let [initial (db/empty-db nil {:schema-flexibility :write :attribute-refs? refs?})
+          rebuild dbu/rschema
+          scans (atom 0)
+          change (fn [snapshot tx]
+                   (let [next-db (with-redefs [dbu/rschema (fn [schema]
+                                                             (swap! scans inc)
+                                                             (rebuild schema))]
+                                   (:db-after (d/with snapshot tx)))]
+                     (is (= (rebuild (:schema next-db)) (:rschema next-db)))
+                     next-db))
+          declared (change initial [{:db/ident :sample/code :db/index true
+                                     :db/valueType :db.type/string
+                                     :db/cardinality :db.cardinality/one}
+                                    {:db/ident :sample/ref :db/index true
+                                     :db/valueType :db.type/ref
+                                     :db/cardinality :db.cardinality/one}])
+          ;; A ref contributes :db/index independently of the explicit flag.
+          toggled (change declared [[:db/retract :sample/ref :db/index true]
+                                    [:db/retract :sample/code :db/index true]])
+          aid (:db/id (d/entity toggled :sample/code))
+          renamed (change toggled [[:db/retract aid :db/ident :sample/code]
+                                   [:db/add aid :db/ident :sample/renamed]])]
+      (is (contains? (get-in toggled [:rschema :db/index]) :sample/ref))
+      (is (not (contains? (get-in toggled [:rschema :db/index]) :sample/code)))
+      (change renamed [[:db/retractEntity aid]])
+      (is (zero? @scans)))))
 
 (deftest test-update-schema
   (let [cfg {:store {:backend :memory
