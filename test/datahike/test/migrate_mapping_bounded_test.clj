@@ -1,5 +1,5 @@
 (ns datahike.test.migrate-mapping-bounded-test
-  "A computed id mapping must keep the streaming import's id state O(1).
+  "A computed id mapping must not keep one entry per imported entity.
 
    `:offset`, `:preserve`, a caller's ILookup and a caller's function exist so an
    import needs no table with one entry per source entity — the term
@@ -104,6 +104,7 @@
       (is (<= (quot n-entities 2) (:max-state reference))
           "precondition: :allocate DOES hold a table, so the probe can see one")
       (doseq [[label eids] [[":offset" :offset]
+                            [":preserve" :preserve]
                             [":preserve-shaped ILookup" (packer)]
                             ["fn" (fn [e] (get (packer) e))]]]
         (let [r (import-observing eids)]
