@@ -57,3 +57,28 @@
                      (try (d/transact dst [{:account/email "b@x" :db/ensure :account/guard}]) ""
                           (catch Exception e (root-message e))))))
       (finally (teardown src) (teardown dst)))))
+
+(deftest a-source-without-numbering-may-not-put-data-on-a-system-entity
+  (testing "a record source that declares no :system-idents is taken to share
+            the target's numbering; a user entity sitting on a system id says
+            it does not"
+    (let [dst (fresh-conn)
+          sys-e (:db/id (d/pull @dst '[:db/id] [:db/ident :db.entity/attrs]))
+          before (count (d/datoms @dst :eavt sys-e))
+          t 536870913
+          records [[t :db/txInstant #inst "2021-01-01" t true]
+                   [200 :db/ident :p/name t true]
+                   [200 :db/valueType :db.type/string t true]
+                   [200 :db/cardinality :db.cardinality/one t true]
+                   [sys-e :p/name "Ann" t true]]]
+      (try
+        (is (= :import/system-entity-collision
+               (try (m/import-source dst (m/records->chunk-src records 10)
+                                     {:source-meta {:expected-count (count records)}})
+                    nil
+                    (catch clojure.lang.ExceptionInfo e
+                      (some #(:error (ex-data %))
+                            (filter #(= :import/system-entity-collision (:error (ex-data %)))
+                                    (take-while some? (iterate ex-cause e))))))))
+        (is (= before (count (d/datoms @dst :eavt sys-e))) "nothing was attached to it")
+        (finally (d/release dst))))))

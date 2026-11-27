@@ -14,16 +14,23 @@ When something is added, it's typically marked *Experimental*. When the API cont
   system entity id was read as that system entity ("Bad entity value
   :dh.ref/temporal"); a value is a system ref only for `:db/valueType`,
   `:db/cardinality` and `:db/unique`. The map form `{:db/id aid :db/ident :new}`
-  is accepted as a rename, like the vector form. A query result cached before an
-  ident was renamed or reused is no longer served afterwards. (0.8.1914, [#1126])
+  is accepted as a rename, like the vector form; a rename may not change the
+  attribute's schema in the same transaction (adding `:db/unique` along with it
+  skipped validation and the index backfill), so rename first and change it in
+  a second transaction. A query result cached before an ident was renamed or
+  reused is no longer served to databases derived from that one afterwards. A
+  record source that declares no `:system-idents` and holds data on one of the
+  target's system entities is refused (`:import/system-entity-collision`)
+  instead of having that data attached to the system entity. (0.8, [#1126])
 - **`:db/ensure` checks the entity, and retracting one spec value keeps the rest** —
   `:db.entity/attrs` was checked against the transaction's own datoms, so an
   existing entity updating one attribute failed for attributes it already had,
   and a retraction counted as present; it is now checked against the entity
-  after the transaction, as in Datomic. Retracting one value of
+  as the whole transaction leaves it, as in Datomic, and a required attribute
+  that was renamed still counts. Retracting or purging one value of
   `:db.entity/attrs` / `:db.entity/preds` dropped the whole list from the
   schema, so a later `:db/ensure` passed with a required attribute missing.
-  Both modes. (0.8.1914, [#1126])
+  Both modes. (0.8, [#1126])
 - **Imports of older attribute-refs databases keep their entities ([#1122]).**
   A dump from an attribute-refs database created before the system schema
   last grew numbers its user entities where the current system schema now
