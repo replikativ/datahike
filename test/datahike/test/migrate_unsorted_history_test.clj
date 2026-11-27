@@ -89,9 +89,9 @@
           (is (= :db.cardinality/many (get-in (d/schema @dst) [:tag :db/cardinality])))
           (finally (d/release src) (d/release dst)))))))
 
-(deftest a-dump-that-does-not-say-its-order-is-sorted-too
-  (testing "dumps written before the manifest recorded :sorted? are taken as
-            unsorted"
+(deftest a-dump-that-does-not-say-its-order-is-checked
+  (testing "an unsorted dump written before the manifest recorded :sorted? is
+            sorted on the way in"
     (let [src (fresh false)
           dst (fresh false)
           dir (dump-dir)]
@@ -141,7 +141,8 @@
 
 (deftest a-malformed-record-still-reaches-validation
   (testing "the sort does not judge records: one it cannot read a key from is
-            handed on, and :on-error :collect reports it as before"
+            handed on, and :on-error :collect reports it as before. A window of
+            one record spills every record, malformed ones included."
     (let [dst (fresh false)
           t 536870913
           records [[t :db/txInstant #inst "2021-01-01" t true]
@@ -149,6 +150,7 @@
                    [1 :db/valueType :db.type/string t true]
                    [1 :db/cardinality :db.cardinality/one t true]
                    [2 :field "a"]
+                   ["bad" :field "c" t true]
                    [3 :field "b" t true]]]
       (try
         (let [report (m/import-source dst (m/records->chunk-src (subvec records 0 4) 10)
@@ -158,8 +160,10 @@
         (let [report (m/import-source dst {:chunks [0]
                                            :read (fn [_ _] (subvec records 4))}
                                       {:source-meta {:history? true :sorted? false}
+                                       :sort-buffer 1
                                        :on-error :collect :verify? false :merge? true})]
-          (is (= [:import/malformed-record] (mapv :error (:errors report))))
+          (is (= [:import/malformed-record :import/malformed-record]
+                 (mapv :error (:errors report))))
           (is (= #{["b"]} (d/q '[:find ?v :where [_ :field ?v]] @dst))))
         (finally (d/release dst))))))
 
@@ -167,36 +171,63 @@
   (let [f (io/file dir "manifest.edn")]
     (spit f (pr-str (dissoc (edn/read-string {:default tagged-literal} (slurp f)) :sorted?)))))
 
-(defn- history-size [db] (count (d/datoms (d/history db) :eavt)))
+(deftest an-unmarked-sorted-dump-is-replayed-as-it-was-written
+  (testing "a sorted dump from before the order mark is not re-sorted: its
+            transactions already arrive in order. The case: a retraction in the
+            transaction that sets :db/noHistory, where the data entity has the
+            lower id, which main restores correctly from the sorted dump"
+    (doseq [attribute-refs? [false true]]
+      (let [src (fresh attribute-refs?)
+            dst (fresh attribute-refs?)
+            dir (dump-dir)]
+        (try
+          (d/transact src [{:db/ident :name :db/valueType :db.type/string
+                            :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}])
+          (d/transact src [{:name "a"}])
+          (d/transact src [{:db/ident :score :db/valueType :db.type/long
+                            :db/cardinality :db.cardinality/one}])
+          (d/transact src [{:name "a" :score 7}])
+          (d/transact src [[:db/retract [:name "a"] :score 7]
+                           {:db/id [:db/ident :score] :db/noHistory true}])
+          (m/export-db @src dir {:history? true})
+          (strip-order-mark! dir)
+          (is (true? (:verified? (m/import-db dst dir))))
+          (is (= (count (d/datoms (d/history @src) :eavt))
+                 (count (d/datoms (d/history @dst) :eavt))))
+          (finally (d/release src) (d/release dst)))))))
 
-(deftest a-retraction-sees-the-schema-before-its-transaction
-  (testing "a value retracted in the transaction that also changes how its
-            attribute is stored: the retraction is replayed under the old
-            setting. The data entity is older than the attribute, so it has the
-            lower id."
-    (doseq [attribute-refs? [false true]
-            [label export-opts strip?] [["unsorted" {:history? true :sort? false} false]
-                                        ["sorted, written before the order mark" {:history? true} true]]
-            [change check] [[{:db/noHistory true}
-                             (fn [src dst] (is (= (history-size @src) (history-size @dst))
-                                               "the retraction is in history"))]
-                            [{:db/index false}
-                             (fn [_ dst] (is (empty? (d/q '[:find ?s :where [_ :score ?s]] @dst))))]]]
-      (testing (str "attribute-refs " attribute-refs? ", " label ", " change)
-        (let [src (fresh attribute-refs?)
-              dst (fresh attribute-refs?)
-              dir (dump-dir)]
-          (try
-            (d/transact src [{:db/ident :name :db/valueType :db.type/string
-                              :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}])
-            (d/transact src [{:name "a"}])
-            (d/transact src [{:db/ident :score :db/valueType :db.type/long
-                              :db/cardinality :db.cardinality/one :db/index true}])
-            (d/transact src [{:name "a" :score 7}])
-            (d/transact src [[:db/retract [:name "a"] :score 7]
-                             (assoc change :db/id [:db/ident :score])])
-            (m/export-db @src dir export-opts)
-            (when strip? (strip-order-mark! dir))
-            (is (true? (:verified? (m/import-db dst dir))))
-            (check src dst)
-            (finally (d/release src) (d/release dst))))))))
+(deftest a-rename-and-a-retraction-in-one-transaction
+  (testing "the ident timeline names a record by the attribute's name at the
+            end of its transaction, so the rename must be replayed before the
+            retraction that uses the new name"
+    (let [src (fresh true)
+          dst (fresh true)
+          dir (dump-dir)]
+      (try
+        (d/transact src [{:db/ident :score :db/valueType :db.type/long
+                          :db/cardinality :db.cardinality/one}])
+        (d/transact src [{:db/id -1 :score 7}])
+        (let [e (ffirst (d/q '[:find ?e :where [?e :score 7]] @src))]
+          (d/transact src [[:db/retract e :score 7]
+                           {:db/id [:db/ident :score] :db/ident :rating}]))
+        (m/export-db @src dir {:history? true :sort? false})
+        (is (true? (:verified? (m/import-db dst dir {:batch-size 2}))))
+        (is (empty? (d/q '[:find ?v :where [_ :rating ?v]] @dst)))
+        (finally (d/release src) (d/release dst))))))
+
+(deftest a-one-transaction-unsorted-dump-is-sorted
+  (testing "everything in one transaction: the unsorted exporter writes the
+            schema before the :db/txInstant, which allocated an extra
+            transaction id on replay"
+    (let [src (fresh false)
+          dst (fresh false)
+          dir (dump-dir)]
+      (try
+        (d/transact src [{:db/ident :score :db/valueType :db.type/long
+                          :db/cardinality :db.cardinality/one}
+                         {:db/id -1 :score 7}])
+        (m/export-db @src dir {:history? true :sort? false})
+        (let [report (m/import-db dst dir)]
+          (is (true? (:verified? report)))
+          (is (zero? (or (:max-tx-drift report) 0)) (str "drift " (:max-tx-drift report))))
+        (finally (d/release src) (d/release dst))))))

@@ -274,26 +274,28 @@ mount if needed). For a container with **no writable filesystem at all**, pass
 ```
 
 It streams schema/tx-entity datoms then data in `:eavt` order straight to the
-target — no temp files, bounded memory. The dump is complete but not in replay
-order, and its manifest says so (`:sorted? false`).
+target — no temp files, bounded memory. The dump holds the same records as a
+sorted one, not in transaction order, and its manifest says so
+(`:sorted? false`).
 
 The sort an unsorted **history** dump skipped happens on import instead:
 `import-db` puts the records into transaction order before replaying them.
-Inside a transaction, data retractions come first, then schema changes, then
-data assertions. A dump that fits in one `:sort-buffer` window (200 000 records
+Inside a transaction, schema comes first, then data retractions, then data
+assertions. A dump that fits in one `:sort-buffer` window (200 000 records
 by default) is sorted in memory; a larger one is spooled to scratch files in
 the system temp directory and merge-sorted there. The sorted runs are not
 compressed, so allow scratch space of several times the dump's size. Memory is
 about one window, plus one chunk and one batch. Things to know:
 
 - An `:xform` on such an import sees the records in transaction order, not in
-  the order the dump holds them. (`:build-indexes?` still passes dump order.)
+  the order the dump holds them, with any record that has no readable
+  transaction or entity first. (`:build-indexes?` still passes dump order.)
 - An import with no writable filesystem (a browser) can only handle a dump that
   fits in one window.
-- A history dump written before the manifest recorded its order is checked the
-  same way. If its transactions are already in order, as in every sorted dump,
-  it is replayed exactly as before; one larger than a window is still spooled
-  first, so it needs scratch space too.
+- A history dump written before the manifest recorded its order is checked on
+  the way in. If its transactions are already in order, as in every sorted
+  dump, it is replayed exactly as it was written; one larger than a window is
+  still spooled first, so it needs scratch space too.
 
 A current-only dump (`:history? false`) is replayed as written.
 

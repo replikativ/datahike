@@ -14,12 +14,13 @@ When something is added, it's typically marked *Experimental*. When the API cont
   cardinality-many lost values, sometimes with `:verified? true`. Such a dump
   is now put into transaction order first, in memory when it fits one
   `:sort-buffer` window and through scratch files otherwise; inside a
-  transaction, data retractions precede schema changes and data assertions
-  follow them. The manifest records the order as `:sorted?`. A dump without
-  the mark whose transactions are already in order is replayed as before. An
-  `:xform` on a sorted import sees transaction order. Not covered: dumps
-  written before same-transaction pairs were netted at export (#1188).
-  (0.8, [#1193])
+  transaction, schema comes first, then data retractions, then data
+  assertions. Needs #1194, which makes the replay itself handle index and
+  history-setting changes. The manifest records whether the exporter sorted as
+  `:sorted?`. A dump without the mark whose transactions are already in order
+  is replayed as written. An `:xform` on a sorted import sees transaction
+  order. Not covered: dumps written before same-transaction pairs were netted
+  at export (#1188). (0.8, [#1193])
 - **`:attribute-refs?` databases accept entity specs, map-form renames and long schema values** —
   `:db.entity/attrs` / `:db.entity/preds` had no system entity, so a spec could
   not be transacted (attribute `nil`) and `:db/ensure` checked nothing; they are

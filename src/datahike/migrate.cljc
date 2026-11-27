@@ -1834,11 +1834,10 @@
    which is right for any source that has no retractions."
   [manifest]
   {:history?       (boolean (:history? manifest))
-   ;; Whether the records are in replay order. A dump written before the
-   ;; manifest recorded it is taken as unsorted: sorting a sorted dump costs
-   ;; time and, past one window, scratch space, while replaying an unsorted
-   ;; history gives a wrong database. See `open-import-sorter`.
-   :sorted?        (true? (:sorted? manifest))
+   ;; Whether the exporter sorted the records (`:sort?`). `:unknown` for a dump
+   ;; written before the manifest recorded it: its order is checked on the way
+   ;; in. See `open-import-sorter`.
+   :sorted?        (if (contains? manifest :sorted?) (true? (:sorted? manifest)) :unknown)
    :expected-count (:count (:semantic-digest manifest))
    :max-tx         (:max-tx (:stats manifest))
    ;; Present only for a dump that renamed an attribute; see
@@ -1892,29 +1891,39 @@
             {:count 0 :sample []}
             ref-attrs)))
 
-(defn- replay-order-key
-  "Replay order for one record: by transaction, its `:db/txInstant` first.
+(def ^:private malformed-key-t
+  "Transaction position of a record the replay key cannot be read from: before
+   every real transaction."
+  #?(:clj Long/MIN_VALUE :cljs js/Number.MIN_SAFE_INTEGER))
 
-   Inside a transaction the dump does not say in which order things happened,
-   so the order is the one a transaction's net effect implies: retractions of
-   data see the schema as it was before the transaction, assertions of data see
-   it as it is after. Hence data retractions, then the schema changes, then
-   data assertions. A value retracted along with a `:db/index` or
-   `:db/noHistory` change is then removed under the old setting; a ref
-   attribute installed and used in one transaction exists before it is used;
-   and a value handed from one entity to another is released before it is
-   claimed."
+(defn- replay-order-key
+  "Replay order for one record: by transaction, its `:db/txInstant` first, then
+   schema, then data retractions, then data assertions.
+
+   Schema first, because data can need the schema of its own transaction: a
+   ref attribute installed and used, a cardinality widened and used, an
+   attribute renamed and written or retracted under its new name (the ident
+   timeline resolves records by the name in force at the END of their
+   transaction). Retractions before assertions, so a unique value handed from
+   one entity to another is released before it is claimed. What the order
+   within a transaction would decide about storage settings, `:db/index` and
+   `:db/noHistory`, the replay settles itself (#1194).
+
+   A record whose transaction or entity is not a number has no key to read; it
+   sorts before everything else, as it came, for the importer's validation and
+   `:on-error` to judge."
   [record]
-  (let [a (nth record 1)
-        added? (nth record 4)
-        schema? (and (keyword? a) (or (ds/schema-attr? a) (ds/entity-spec-attr? a)))]
-    [(nth record 3)
-     (if (= a :db/txInstant) 0 1)
-     (cond schema? 1 added? 2 :else 0)
-     (if added? 1 0)
-     (nth record 0)
-     (str a)
-     (str (mcbor/norm-val (nth record 2)))]))
+  (if (and (vector? record) (<= 5 (count record))
+           (number? (nth record 3)) (number? (nth record 0)))
+    (let [a (nth record 1)
+          schema? (and (keyword? a) (or (ds/schema-attr? a) (ds/entity-spec-attr? a)))]
+      [(nth record 3)
+       (if (= a :db/txInstant) 0 1)
+       (cond schema? 0 (nth record 4) 2 :else 1)
+       (nth record 0)
+       (str a)
+       (str (mcbor/norm-val (nth record 2)))])
+    [malformed-key-t 0 0 0 "" (pr-str record)]))
 
 (defn- open-import-sorter
   "Put a history source into replay order before it is replayed.
@@ -1927,33 +1936,26 @@
    match. The records are all there; only their order is wrong, so they are
    sorted here (`replay-order-key`).
 
-   A source whose transactions already arrive in order is left exactly as it
-   is. That is every sorted dump written before the manifest recorded its
-   order: it restores as it always did.
+   `:force?` false is for a dump that does not say whether it is sorted
+   (written before the manifest recorded it). If its transactions arrive in
+   order, as in every sorted dump, it is handed on exactly as it came.
 
    Memory is one window of `:sort-buffer` records. A source that fits in one is
    sorted in memory; a larger one is spooled to scratch files and merge-sorted
    there, as the index-building import does.
 
-   A record the key cannot be read from (too short, no numeric ids) is not
-   sorted: it is handed on first, as it came, for the importer's own validation
-   and any `:xform` to judge. More than one window of those is refused.
-
    Returns `{:add! (fn [records]) :finish! (fn [] -> chunk-src) :close! (fn [])}`.
    The chunk source reads the records in order, once. `:close!` releases the
-   scratch and may be called at any point, more than once."
-  [opts]
+   scratch, never throws, and may be called at any point, more than once."
+  [opts force?]
   (let [window (long (get opts :sort-buffer 200000))
         size   (max 1000 (long (get opts :batch-size default-batch-size)))
         buf    (volatile! [])
-        misfits (volatile! [])
         scratch (volatile! nil)
         merged (volatile! nil)
         n      (volatile! 0)
         last-t (volatile! nil)
-        in-order? (volatile! true)
-        sortable? (fn [r] (and (vector? r) (<= 5 (count r))
-                               (number? (nth r 3)) (number? (nth r 0))))
+        in-order? (volatile! (not force?))
         spill! (fn []
                  (when (nil? @scratch)
                    (let [tmp (fs/temp-dir! "dh-import-sort")]
@@ -1961,23 +1963,20 @@
                               {:tmp tmp
                                :spool (init/open-spool!
                                        tmp mz/default-codec
-                                       (min window (long init/default-spool-chunk-size)))})))
+                                       (max 1000 (min window (long init/default-spool-chunk-size))))})))
                  (run! (:add! (:spool @scratch)) @buf)
                  (vreset! buf []))]
     {:add! (fn [records]
              (doseq [r records]
                (vswap! n inc)
-               (if (sortable? r)
-                 (let [t (nth r 3)]
-                   (when (and @last-t (neg? (compare t @last-t))) (vreset! in-order? false))
-                   (vreset! last-t t)
-                   (when (>= (count @buf) window) (spill!))
-                   (vswap! buf conj r))
-                 (do (when (>= (count @misfits) window)
-                       (throw (ex-info (str "More than " window " records of this source have no"
-                                            " readable [e a v t op] shape; refusing to buffer more.")
-                                       {:error :import/malformed-record :datom r})))
-                     (vswap! misfits conj r)))))
+               (when @in-order?
+                 (let [t (when (and (vector? r) (<= 4 (count r))) (nth r 3))]
+                   (if (number? t)
+                     (do (when (and @last-t (< t @last-t)) (vreset! in-order? false))
+                         (vreset! last-t t))
+                     (vreset! in-order? false))))
+               (when (>= (count @buf) window) (spill!))
+               (vswap! buf conj r)))
      :finish!
      (fn []
        (let [order {:datahike.migrate.sort/key-fn replay-order-key}
@@ -1986,13 +1985,11 @@
                        (init/spool-records ((:close! spool)) mz/default-codec))
              {:keys [records close!]}
              (cond
-               ;; already in transaction order: as it came
                @in-order? {:records (or spooled @buf) :close! (fn [])}
                spooled    (msort/open-sorted-records! spooled window (:tmp @scratch) order)
                :else      (msort/open-sorted-records! @buf (max 1 (count @buf)) nil order))
-             remaining (volatile! (concat @misfits records))]
+             remaining (volatile! records)]
          (vreset! buf nil)
-         (vreset! misfits nil)
          (vreset! merged {:close! close! :remaining remaining})
          {:chunks (range (quot (+ (long @n) size -1) size))
           :read (fn [_ o]
@@ -2007,11 +2004,18 @@
                    (vreset! merged nil)
                    (vreset! remaining nil)
                    (close!))
-                 (finally
-                   (when-let [{:keys [tmp]} @scratch]
-                     (vreset! scratch nil)
-                     (doseq [nm (or (fs/list-names tmp) [])] (fs/delete! (fs/join tmp nm)))
-                     (fs/delete! tmp)))))}))
+                 (catch #?(:clj Throwable :cljs :default) e
+                   (log/warn :datahike/import-sort-close-failed {:error (ex-message e)})))
+               (when-let [{:keys [tmp]} @scratch]
+                 (vreset! scratch nil)
+                 (try
+                   (doseq [nm (or (fs/list-names tmp) [])]
+                     (when (false? (fs/delete! (fs/join tmp nm)))
+                       (log/warn :datahike/import-sort-scratch-left {:file (fs/join tmp nm)})))
+                   (when (false? (fs/delete! tmp))
+                     (log/warn :datahike/import-sort-scratch-left {:dir tmp}))
+                   (catch #?(:clj Throwable :cljs :default) e
+                     (log/warn :datahike/import-sort-scratch-left {:dir tmp :error (ex-message e)})))))}))
 
 (defn- run-import*
   "Medium-agnostic import core.
@@ -2250,8 +2254,9 @@
               ;; A history that is not in replay order is sorted first; see
               ;; `open-import-sorter`. Only when the source says so: a record
               ;; source that states nothing is taken to be in order, as before.
-              sorted (when (and (:history? source-meta) (false? (:sorted? source-meta)))
-                       (let [sorter (open-import-sorter opts)]
+              sorted (when (and (:history? source-meta)
+                                (contains? #{false :unknown} (:sorted? source-meta)))
+                       (let [sorter (open-import-sorter opts (false? (:sorted? source-meta)))]
                          (vreset! sorter-cell (:close! sorter))
                          (loop [cs (seq (:chunks chunk-src))]
                            (when cs

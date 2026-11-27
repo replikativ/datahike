@@ -683,8 +683,8 @@
                                        :transformed?       (boolean (:xform opts))
                                        :max-eid            (:max-eid db)
                                        :max-tx             (:max-tx db)}
-      ;; Whether the records are in replay order; an importer sorts a history
-      ;; that is not before replaying it.
+      ;; Whether this exporter sorted the records (`:sort?`). An importer sorts
+      ;; a history written without it before replaying it.
       :sorted?                        (boolean (:sort? opts))
       :semantic-digest                digest
      ;; Which `:db.type/store-ref` blobs this dump carries, and which it could
