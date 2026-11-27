@@ -2663,7 +2663,11 @@
                                                           " have it.")
                                                      {:error :import/unknown-system-entity
                                                       :value v :attribute a-ident :data entity}))
-                                      (or (migrated-eid migration-state v) v))
+                                      ;; no declared numbering: the value is
+                                      ;; already the target's, as before. It
+                                      ;; is not an entity the importer mapped,
+                                      ;; even when a source entity has its id.
+                                      v)
                                     :else v)
                                   (get-in migration-state [:tids t])
                                   op)

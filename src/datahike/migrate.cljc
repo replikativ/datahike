@@ -2062,8 +2062,23 @@
                         :else (do (run! mman/validate-record! rs) rs)))
               prepare (fn [records]
                         (let [tl (:ident-timeline source-meta)
-                              rs (mapv #(->> % (resolve-sysrefs sids)
-                                             (resolve-attr-refs sref-db tl))
+                              ;; a record naming a system entity the source
+                                    ;; did not declare is a bad RECORD: under
+                                    ;; `:collect` it is reported like any other
+                              rs (into []
+                                       (keep (fn [r]
+                                               (try (->> r (resolve-sysrefs sids)
+                                                         (resolve-attr-refs sref-db tl))
+                                                    (catch #?(:clj Exception :cljs :default) e
+                                                      (if (and collect?
+                                                               (= :import/unknown-system-entity
+                                                                  (:error (ex-data e))))
+                                                        (do (vswap! bad conj
+                                                                    {:error :import/unknown-system-entity
+                                                                     :datom r
+                                                                     :message (ex-message e)})
+                                                            nil)
+                                                        (throw e))))))
                                        records)]
                           (if step
                             (let [out (into [] (mapcat (fn [r]

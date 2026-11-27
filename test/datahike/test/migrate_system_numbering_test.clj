@@ -16,6 +16,7 @@
    plus tx-meta, retractions, a retractEntity and two tuple attributes."
   (:require [clojure.test :refer [deftest testing is]]
             [datahike.api :as d]
+            [datahike.db.interface :as dbi]
             [datahike.migrate :as m]
             [datahike.migrate.cbor :as mcbor]
             [datahike.migrate.manifest :as mman]))
@@ -154,21 +155,63 @@
               (pr-str (ex-message e))))
         (finally (teardown conn))))))
 
+(defn- import-error [conn records opts]
+  (try (m/import-source conn (m/records->chunk-src records 4) opts)
+       nil
+       (catch clojure.lang.ExceptionInfo e
+         (some #(:error (ex-data %))
+               (filter #(= :import/unknown-system-entity (:error (ex-data %)))
+                       (take-while some? (iterate ex-cause e)))))))
+
 (deftest an-undeclared-system-id-is-an-error-not-a-target-id
-  (testing "a schema value the source's :system-idents does not cover would
-            otherwise land as a target id and verify"
+  (testing "a numeric schema value the source's :system-idents does not cover
+            would otherwise land as a target id and verify"
     (let [conn (fresh-conn)]
       (try
         (let [{:keys [records source-meta]} (source @conn)
-              ;; drop :db.type/string from the declared numbering
+              ;; the TARGET's id for :db.type/string: valid here, and not an id
+              ;; the shifted source declared
+              target-string (dbi/-ref-for @conn :db.type/string)
+              records' (mapv (fn [[e a v :as r]]
+                               (if (and (= 1 e) (= :db/valueType a)) (assoc r 2 target-string) r))
+                             records)]
+          (is (not (contains? (:system-idents source-meta) target-string)) "precondition")
+          (is (= :import/unknown-system-entity
+                 (import-error conn records' {:source-meta source-meta}))))
+        (finally (teardown conn)))))
+  (testing "so is a tagged ref to a system entity the source did not declare"
+    (let [conn (fresh-conn)]
+      (try
+        (let [{:keys [records source-meta]} (source @conn)
               meta' (update source-meta :system-idents
                             #(into {} (remove (fn [[_ i]] (= i :db.type/string))) %))]
           (is (= :import/unknown-system-entity
-                 (try (m/import-source conn (m/records->chunk-src records 4)
-                                       {:source-meta meta'})
-                      nil
-                      (catch clojure.lang.ExceptionInfo e
-                        (some #(:error (ex-data %))
-                              (filter #(= :import/unknown-system-entity (:error (ex-data %)))
-                                      (take-while some? (iterate ex-cause e)))))))))
+                 (import-error conn records {:source-meta meta'}))))
+        (finally (teardown conn))))))
+
+(deftest collect-reports-an-undeclared-tagged-ref-and-keeps-the-rest
+  (let [conn (fresh-conn)]
+    (try
+      (let [{:keys [records source-meta]} (source @conn)
+            records' (conj records [4 :person/kind (mcbor/->SysRef :db.type/no-such) t2 true])
+            report (m/import-source conn (m/records->chunk-src records' 4)
+                                    {:source-meta source-meta :on-error :collect})]
+        (is (= [:import/unknown-system-entity] (mapv :error (:errors report))))
+        (imported-correctly? conn))
+      (finally (teardown conn)))))
+
+(deftest load-entities-without-a-declared-numbering-leaves-schema-values-alone
+  (testing "the public loader has no source numbering: a schema value is the
+            target's id, also when a source entity happens to carry that id"
+    (let [conn (fresh-conn)]
+      (try
+        (let [string (dbi/-ref-for @conn :db.type/string)
+              one (dbi/-ref-for @conn :db.cardinality/one)]
+          ;; the source entity's id IS the value-type id
+          @(d/load-entities conn [[string :db/ident :probe/name t1 true]
+                                  [string :db/valueType string t1 true]
+                                  [string :db/cardinality one t1 true]])
+          (is (= :db.type/string (get-in (d/schema @conn) [:probe/name :db/valueType])))
+          (d/transact conn [{:probe/name "x"}])
+          (is (= #{["x"]} (d/q '[:find ?n :where [_ :probe/name ?n]] @conn))))
         (finally (teardown conn))))))

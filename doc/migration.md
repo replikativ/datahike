@@ -83,7 +83,7 @@ flowchart TD
     I3{"guards"}
     I4["✗ import/format-version · config-mismatch ·<br/>non-empty-target · checksum-failed"]
     I5{":attribute-refs?"}
-    I6["seed :migration system identity<br/>(#508 translate, not insert)"]
+    I6["seed :migration system ids, source to target by ident<br/>(#508, #1122: translate, not insert)"]
     I7["stream records → resolve #sysref →<br/>tx-aligned batcher"]
     I8["@load-entities(batch)<br/>remap e/tx ids; id-map O(entities)"]
     I9{":verify?"}

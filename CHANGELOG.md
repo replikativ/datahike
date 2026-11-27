@@ -13,7 +13,9 @@ When something is added, it's typically marked *Experimental*. When the API cont
   with "System schema entity cannot be changed". The import now translates
   system entities from the dump's own numbering, and `:eids :preserve` refuses
   such a dump instead of colliding. A legacy single-file dump cannot record
-  its numbering; importing one now says to export the source again.
+  its numbering: one whose entities overlap the system schema now fails with
+  an error that says to export the source again, and one that does not
+  overlap imports as before.
 - **`import-source` refuses a history source into a target without history up front ([#1134]).**
   `:source-meta {:history? true}` into a `:keep-history? false` database
   committed the replayed data and only then threw "history is only allowed on temporal
