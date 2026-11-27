@@ -7,7 +7,7 @@
    under `:read-policy :frontend-first` a frontend miss reads through to the
    backend — so the copy is optional there. (It does not bound the frontend:
    what is read stays cached.)"
-  (:require [clojure.test :refer [deftest is]]
+  (:require [clojure.test :refer [deftest is testing]]
             [datahike.api :as d]
             [datahike.store :as ds]
             [datahike.migrate.fs :as fs]
@@ -49,6 +49,11 @@
       (is (< after-connect backend) "connect no longer copies the whole backend")
       (is (= 1000 (count (d/q '[:find ?n :where [_ :name ?n]] @conn)))
           "and every query still answers, reading through the frontend")
+      ;; the frontend is filled in the background; give it a moment
+      (let [deadline (+ (System/currentTimeMillis) 5000)]
+        (while (and (<= (key-count frontend-store) after-connect)
+                    (< (System/currentTimeMillis) deadline))
+          (Thread/sleep 20)))
       (is (< after-connect (key-count frontend-store)) "what was read is now cached")
       (d/transact conn [{:name "after"}])
       (is (= 1001 (count (d/q '[:find ?n :where [_ :name ?n]] @conn))))
@@ -85,3 +90,22 @@
                 (catch Exception e (or (:type (ex-data e))
                                        (:type (ex-data (ex-cause e))))))))
     (try (d/delete-database c) (catch Exception _ nil))))
+
+(deftest an-open-connection-does-not-skip-the-check
+  (testing "a second connect with an invalid option is refused even though a
+            connection to the same store is open and would be reused"
+    (let [c (cfg false)]
+      (filled! c)
+      (let [conn (d/connect c)]
+        (try
+          (doseq [[label bad] [["not a boolean" (assoc-in c [:store :populate-on-connect?] "no")]
+                               ["frontend-only reads" (assoc-in c [:store :read-policy] :frontend-only)]]]
+            (is (= :store/tiered-populate-required-or-invalid
+                   (try (d/connect bad) :connected
+                        (catch Exception e
+                          (when (#{:store/invalid-populate-on-connect :store/tiered-populate-required}
+                                 (or (:type (ex-data e)) (:type (ex-data (ex-cause e)))))
+                            :store/tiered-populate-required-or-invalid))))
+                label))
+          (finally (d/release conn))))
+      (d/delete-database c))))

@@ -531,6 +531,12 @@
               (go-try-
                (let [_ (log/debug :datahike/connect {:config (update-in config [:store] dissoc :password)})
                      store-config (:store config)
+                     ;; Validated before anything is opened or reused: a
+                     ;; connect that would have been refused must not succeed
+                     ;; because a connection is already open, and a refused
+                     ;; one must not leave a store open behind it.
+                     _ (when (= :tiered (:backend store-config))
+                         (ds/tiered-populate-on-connect? store-config))
                      store-id (ds/store-identity store-config)
                      conn-id [store-id (:branch config)]
                      lease* (volatile! nil)]

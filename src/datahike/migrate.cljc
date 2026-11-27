@@ -1424,14 +1424,6 @@
     (async/take! p (fn [_] #?(:clj (future (release!)) :cljs (release!))))
     (release!)))
 
-(defn- db-for-release
-  "The connection's database, taken while the connection is known to be open,
-   for a cleanup that may run after it has been released (`release-when-landed!`).
-   Dereferencing a released connection throws, and a cleanup that did so first
-   never reached the steps after it."
-  [conn]
-  (try @conn (catch #?(:clj Exception :cljs :default) _ nil)))
-
 (defn- load-batch!
   "One `load-entities` call, awaited. `async+sync`: yields the tx-report in sync
    mode, a channel of it otherwise.
@@ -1465,6 +1457,11 @@
       ;; kill the go block and close its channel empty.
       (when (instance? #?(:clj Throwable :cljs js/Error) r)
         (throw #?(:clj (dt/error->ex-info r) :cljs r)))
+      ;; nil is left to the callers' `delivered!`; any other non-report (a
+      ;; `false`, say) is not a batch that applied either
+      (when (and (some? r) (not (map? r)))
+        (throw (ex-info (str "The writer answered a batch with " (pr-str r) " instead of a report.")
+                        {:error :writer/malformed-reply :reply r})))
       r))))
 
 (defn- verification-result
@@ -2758,8 +2755,13 @@
             ;; floor (others).
             checkpoint-record (atom {:meta {:datahike/commit-id (random-uuid)}
                                      :config (:config @conn)})
+            ;; The database the root is taken on is also the one it is released
+            ;; on. A cleanup can run after a writer timeout, when dereferencing
+            ;; the connection may reload the head from the storage that is
+            ;; failing, or after the connection was released, when it throws.
+            root-db @conn
             [build-root stop-build-renewal! build-lost]
-            (quiet-root! @conn :checkpoint @checkpoint-record "index build")
+            (quiet-root! root-db :checkpoint @checkpoint-record "index build")
             ;; The family IN FLIGHT flushes nodes for possibly longer than any
             ;; sweep floor. Capture every key the build writes (a konserve
             ;; write hook) and fold them into the checkpoint's
@@ -3040,14 +3042,24 @@
                                (throw (ex-info (str "Import aborted: publishing the built indexes failed — "
                                                     (ex-message e)
                                                     (when (= :writer/timeout (dt/ex-error e))
-                                                      (str " This import keeps its GC root and guard until "
-                                                           "the publish resolves, so a late publish cannot "
-                                                           "name swept nodes.")))
+                                                      (str " This import keeps its GC guard and renews its "
+                                                           "GC root until the publish resolves. A collector "
+                                                           "in another process spares the built trees only "
+                                                           "while that root's lease holds; if this process "
+                                                           "stalls past it, a late publish can name swept "
+                                                           "nodes.")))
                                                {:error :import/apply-failed
                                                 :cause-error (dt/ex-error e)
                                                 :op :publish-built-db}
                                                e)))
                     report   (:rep pub)
+                    _        (when-not (or (map? report)
+                                           (instance? #?(:clj Throwable :cljs js/Error) report))
+                               (throw (ex-info (str "Import aborted: the writer answered the publish with "
+                                                    (pr-str report) " instead of a report.")
+                                               {:error :import/apply-failed
+                                                :cause-error :writer/malformed-reply
+                                                :op :publish-built-db})))
                     _        (when (instance? #?(:clj Throwable :cljs js/Error) report)
                                (throw #?(:clj (dt/error->ex-info report) :cljs report)))
                     live (long (user-datom-count @conn (boolean (:history? source-meta))))
@@ -3109,7 +3121,7 @@
         ;; connection. A publish that TIMED OUT has not resolved and may still
         ;; land, so `release-when-landed!` defers the release until it does.
         ;; The spool is local scratch the publish never reads; it goes now.
-        (let [db (db-for-release conn)]
+        (let [db root-db]
           (release-when-landed!
            opts
            (fn []
@@ -3554,9 +3566,12 @@
                ;; until a datom names them, possibly in the LAST batch. The
                ;; in-process guard above covers this process; the root covers
                ;; every other collector.
+               ;; taken once and used to release the root too; see the index
+               ;; build's `root-db`
+               root-db @conn
                [blob-root stop-blob-renewal! blob-lost]
                (if-let [carried (seq (get-in manifest [:store-refs :carried]))]
-                 (quiet-root! @conn :checkpoint
+                 (quiet-root! root-db :checkpoint
                               {:meta {:datahike/commit-id (random-uuid)}
                                :datahike.gc/keys (set carried)}
                               "import-db carried blobs")
@@ -3595,7 +3610,7 @@
              (when blob-root (roots/assert-live! @conn blob-root nil {:sync? true})))
            ;; Deferred past a timed-out write that may still land and name a
            ;; carried blob (`release-when-landed!`).
-           (let [db (db-for-release conn)]
+           (let [db root-db]
              (release-when-landed! opts (fn []
                                           (try (quiet-release-root! db blob-root stop-blob-renewal!)
                                                (finally (guard/done! gc-sid gc-token))))))
@@ -3626,9 +3641,10 @@
                (let [gc-sid (dh-store/canonical-store-id
                              (:store @conn) (get-in @conn [:config :store]))
                      gc-token (guard/writing! gc-sid)
+                     root-db @conn
                      [blob-root stop-blob-renewal! blob-lost]
                      (if-let [carried (seq (get-in manifest [:store-refs :carried]))]
-                       (quiet-root! @conn :checkpoint
+                       (quiet-root! root-db :checkpoint
                                     {:meta {:datahike/commit-id (random-uuid)}
                                      :datahike.gc/keys (set carried)}
                                     "import-db carried blobs")
@@ -3646,7 +3662,7 @@
                  (when-not (instance? #?(:clj Throwable :cljs js/Error) res)
                    (assert-root-kept! blob-lost "import")
                    (when blob-root (roots/assert-live! @conn blob-root nil {:sync? true})))
-                 (let [db (db-for-release conn)]
+                 (let [db root-db]
                    (release-when-landed! opts (fn []
                                                 (try (quiet-release-root! db blob-root stop-blob-renewal!)
                                                      (finally (guard/done! gc-sid gc-token))))))

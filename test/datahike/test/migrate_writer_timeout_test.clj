@@ -195,6 +195,23 @@
                     (str ":sync? " sync? " " on-error ": got " (pr-str r)))
                 (is (= expected (:error (ex-data r))))))
             (finally (teardown conn))))))
+    (testing "a reply that is neither nothing nor a report"
+      (doseq [sync? [true false]
+              on-error [:abort :collect]]
+        (let [conn (fresh :memory)
+              calls (atom 0)
+              orig dwriter/load-entities-migrating]
+          (try
+            (with-redefs [dwriter/load-entities-migrating
+                          (fn [& args]
+                            (if (= 2 (swap! calls inc))
+                              (doto (dt/throwable-promise) (deliver false))
+                              (apply orig args)))]
+              (let [r (bounded 20000 #(import! conn {:sync? sync? :on-error on-error}))]
+                (is (instance? clojure.lang.ExceptionInfo r)
+                    (str ":sync? " sync? " " on-error ": got " (pr-str r)))
+                (is (= :import/apply-failed (:error (ex-data r))))))
+            (finally (teardown conn))))))
     (testing "a retry while :on-error :collect narrows a failed batch down: the
               first attempt fails on a record, the retry is answered with
               nothing. It was counted as neither a report nor an error."

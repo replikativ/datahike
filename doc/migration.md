@@ -166,7 +166,7 @@ flowchart TD
         │   resolve #datahike/sysref → source system id (the seed translates it)
         ▼
   tx-aligned batcher ─► @(load-entities conn batch)   remap e/tx ids; max-tx
-        │   ▲   (tx never split; a tx spanning chunks stays whole)
+        │   ▲   (tx-aligned; only a tx over :max-pending is split)
         │   └── next batch      id-remap map O(entities), held for the import
         ▼ done
   :verify?  ─► dump count == live count   else ► throw :import/verify-failed
@@ -388,7 +388,7 @@ Options:
 |---|---|---|
 | `:verify?` | `true` | check the imported datom count against the manifest's |
 | `:on-error` | `:abort` | `:abort` or `:collect` — never silently skips |
-| `:batch-size` | 100k | datoms per `load-entities` call (default path; tx-aligned, never split) |
+| `:batch-size` | 100k | datoms per `load-entities` call (default path; tx-aligned, except a transaction over `:max-pending`, which is split) |
 | `:xform` | — | a transducer over `[e a v t op]` records |
 | `:check-refs?` | `false` | report ref values naming an entity that holds no datoms |
 | `:merge?` | `false` | add this dump to a non-empty target (append-only) |
@@ -401,7 +401,7 @@ Options:
 | `:dangling-sample` | 10 | how many dangling refs `:check-refs?` includes in its report |
 | `:allow-partial?` | `false` | import a dump with an unexplained shortfall anyway |
 | `:progress-fn` | — | called with `{:phase … :datoms …}` (see below) |
-| `:writer-timeout-ms` | — (unbounded) | fail with `:import/apply-failed` / `:writer/timeout` when the writer does not answer a batch (or the index build's publish) in time, instead of waiting forever. The clock includes time queued behind other transactions on the connection. The write in flight may still land, and releasing the connection does not stop it: restart the process before resuming or retrying. Not applied to a legacy single-file dump, which is imported with blocking transactions |
+| `:writer-timeout-ms` | — (unbounded) | fail with `:import/apply-failed` / `:writer/timeout` when the writer does not answer a batch (or the index build's publish) in time, instead of waiting forever. The clock includes time queued behind other transactions on the connection. The write in flight may still land, and releasing the connection does not stop it: restart the process before retrying. Batches already committed stay (part of a source transaction, if it was split), and there is no resume cursor, so a restore into a fresh target starts over. Not applied to a legacy single-file dump, which is imported with blocking transactions |
 
 `:progress-fn` receives `{:phase … :datoms …}`, where `:datoms` means one of two
 things and `:phase` tells you which:
