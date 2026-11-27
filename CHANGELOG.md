@@ -6,6 +6,11 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **The JDBC backend connects again ([#1133]).** konserve-jdbc 0.2.101,
+  as pinned, did not implement the `-store-exists?` probe konserve 0.9.385+
+  makes on every connect, so creating or connecting a `:backend :jdbc` database
+  failed with `AbstractMethodError: JDBCTable._store_exists_QMARK_`. Bumped to
+  konserve-jdbc 0.2.102 (replikativ/konserve-jdbc#43).
 - **`import-source` refuses a history source into a target without history up front ([#1134]).**
   `:source-meta {:history? true}` into a `:keep-history? false` database
   committed the replayed data and only then threw "history is only allowed on temporal
@@ -1238,6 +1243,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1123]: https://github.com/replikativ/datahike/pull/1123
 [#1112]: https://github.com/replikativ/datahike/issues/1112
 [#1105]: https://github.com/replikativ/datahike/issues/1105
+[#1133]: https://github.com/replikativ/datahike/pull/1133
 [#1134]: https://github.com/replikativ/datahike/pull/1134
 [#1151]: https://github.com/replikativ/datahike/pull/1151
 [#1150]: https://github.com/replikativ/datahike/issues/1150
