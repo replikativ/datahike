@@ -209,6 +209,19 @@
    {:db/id 54
     :db/ident :db.attr/preds
     :db/valueType :db.type/symbol
+    :db/cardinality :db.cardinality/many}
+   ;; Entity specs. Under :attribute-refs? a datom names its attribute by entity
+   ;; id, so without a system entity a spec `{:db.entity/attrs [...]}` resolved
+   ;; to attribute nil and could not be transacted. Types as in
+   ;; `implicit-schema-spec`. `:db/ensure` needs none: it is read off the entity
+   ;; map and never stored. APPENDED, like 52-54.
+   {:db/id 55
+    :db/ident :db.entity/attrs
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/many}
+   {:db/id 56
+    :db/ident :db.entity/preds
+    :db/valueType :db.type/symbol
     :db/cardinality :db.cardinality/many}])
 
 (def ^:const system-entities
