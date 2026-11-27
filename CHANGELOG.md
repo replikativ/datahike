@@ -14,6 +14,12 @@ When something is added, it's typically marked *Experimental*. When the API cont
   system entities from the dump's own numbering, and `:eids :preserve` refuses
   such a dump instead of colliding. A legacy single-file dump cannot record
   its numbering; importing one now says to export the source again.
+- **`import-source` refuses a history source into a target without history up front ([#1134]).**
+  `:source-meta {:history? true}` into a `:keep-history? false` database
+  committed the replayed data and only then threw "history is only allowed on temporal
+  indexed databases", and the report was lost. It is now
+  refused before anything is written (`:import/config-mismatch` on
+  `:keep-history?`), as `import-db` already refuses such a dump.
 - **An exclusive writer gives every queued transaction its own transaction id** — with `:writer-ownership :exclusive`, a transaction that was applied while the one before it was still being committed reused that transaction's id: the writer took the transaction counter from the published connection, which only moves when a commit lands. Twenty `transact!` calls submitted without waiting came back with as few as one distinct id, so their datoms shared a transaction and `as-of`, `since` and history could not tell the versions apart. The writer now keeps its own counter and adopts the connection's only when that is higher, which is what the legacy CBOR import relies on. The default `:shared` ownership was not affected. (0.8.1946, [#1189])
 - **`transact!` calls from one caller reach the local writer in call order** — each call used to hand its transaction to the writer from a separate go block, so consecutive calls could be applied in another order than they were made. A local writer now receives the transaction before `transact!` returns its promise; a caller can submit a transaction that depends on an earlier one without waiting for it. Durability and listener delivery are asynchronous as before, and a remote writer gives no such ordering. (0.8.1946, [#1189])
 
@@ -1241,6 +1247,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1123]: https://github.com/replikativ/datahike/pull/1123
 [#1112]: https://github.com/replikativ/datahike/issues/1112
 [#1105]: https://github.com/replikativ/datahike/issues/1105
+[#1134]: https://github.com/replikativ/datahike/pull/1134
 [#1151]: https://github.com/replikativ/datahike/pull/1151
 [#1150]: https://github.com/replikativ/datahike/issues/1150
 [#1149]: https://github.com/replikativ/datahike/pull/1149
