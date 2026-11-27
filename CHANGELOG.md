@@ -6,6 +6,16 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Imports of older attribute-refs databases keep their entities ([#1122]).**
+  A dump from an attribute-refs database created before the system schema
+  last grew numbers its user entities where the current system schema now
+  runs. Importing it mapped those entities onto system entities and aborted
+  with "System schema entity cannot be changed". The import now translates
+  system entities from the dump's own numbering, and `:eids :preserve` refuses
+  such a dump instead of colliding. A legacy single-file dump cannot record
+  its numbering: one whose entities overlap the system schema now fails with
+  an error that says to export the source again, and one that does not
+  overlap imports as before.
 - **A computed `:eids` mapping no longer keeps one entry per imported entity
   ([#1127]).** Under `:offset`, `:preserve`, a caller's `ILookup` or a caller's
   function, `import-db`/`import-source` remembered every id the mapping had
@@ -1240,6 +1250,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#980]: https://github.com/replikativ/datahike/pull/980
 [#1092]: https://github.com/replikativ/datahike/pull/1092
 [#1090]: https://github.com/replikativ/datahike/pull/1090
+[#1122]: https://github.com/replikativ/datahike/pull/1122
 [#1154]: https://github.com/replikativ/datahike/pull/1154
 [#1153]: https://github.com/replikativ/datahike/issues/1153
 [#1141]: https://github.com/replikativ/datahike/pull/1141
