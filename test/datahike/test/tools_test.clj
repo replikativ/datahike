@@ -132,3 +132,20 @@
           odds (iterate #(+ 2 %) 1)
           result (dt/merge-distinct-sorted-seqs compare odds evens)]
       (is (= (range 1000) (take 1000 result))))))
+
+(deftest throwable-promise-timed-deref
+  (let [p (dt/throwable-promise)
+        fallback (Exception. "timeout sentinel")]
+    (is (identical? fallback (deref p 0 fallback)))
+    (is (not (realized? p))))
+  (doseq [v [nil false :ok]]
+    (let [p (dt/throwable-promise)]
+      (deliver p v)
+      (is (= v (deref p 0 :timeout)))))
+  (let [p (dt/throwable-promise)
+        failure (java.util.concurrent.TimeoutException. "writer timed out")]
+    (deliver p failure)
+    (is (identical? failure
+                    (try (deref p 0 :timeout)
+                         nil
+                         (catch Exception e (ex-cause e)))))))

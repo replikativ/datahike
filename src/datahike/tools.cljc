@@ -134,10 +134,10 @@
          (deref [_] (throw-if-throwable- (try (.get cf) (catch Throwable t (unwrap-execution t)))))
          clojure.lang.IBlockingDeref
          (deref [_ timeout-ms timeout-val]
-           (if-let [v (try (.get cf timeout-ms java.util.concurrent.TimeUnit/MILLISECONDS)
-                           (catch Throwable t (unwrap-execution t)))]
-             (throw-if-throwable- v)
-             timeout-val))
+           (try
+             (.get cf timeout-ms java.util.concurrent.TimeUnit/MILLISECONDS)
+             (catch java.util.concurrent.TimeoutException _ timeout-val)
+             (catch Throwable t (throw-if-throwable- (unwrap-execution t)))))
          clojure.lang.IPending
          (isRealized [_] (.isDone cf))
          clojure.lang.IFn
