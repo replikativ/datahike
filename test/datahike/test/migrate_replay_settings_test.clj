@@ -129,3 +129,58 @@
            ;; can say the value is gone. That is the transactor's to fix.
            (when-not (= label "noHistory on, then retract")
              (is (empty? (d/q '[:find ?v :where [_ :score ?v]] dst))))))))))
+
+(deftest a-unique-value-handed-to-a-lower-entity
+  (testing "one transaction retracts a unique value from an entity and asserts
+            it on one with a lower id. A sorted dump puts the lower entity's
+            assertion first; the replay must release the value before it is
+            claimed. Unique from the start, and unique enabled after the data
+            (where the replay now backfills the index the check reads)."
+    (doseq [attribute-refs? [false true]
+            [kind export-opts] dump-kinds
+            unique-later? [false true]
+            batch-size [2 5000]]
+      (testing (str "attribute-refs " attribute-refs? ", " kind ", unique later "
+                    unique-later? ", batch " batch-size)
+        (round-trip
+         attribute-refs? export-opts {:batch-size batch-size}
+         (fn [conn]
+           (d/transact conn [{:db/ident :name :db/valueType :db.type/string
+                              :db/cardinality :db.cardinality/one
+                              :db/unique :db.unique/identity}
+                             (cond-> {:db/ident :code :db/valueType :db.type/string
+                                      :db/cardinality :db.cardinality/one}
+                               (not unique-later?) (assoc :db/unique :db.unique/value))])
+           (d/transact conn [{:name "low"}])
+           (d/transact conn [{:name "high" :code "X"}])
+           (when unique-later?
+             (d/transact conn [{:db/id [:db/ident :code] :db/unique :db.unique/value}]))
+           (d/transact conn [[:db/retract [:name "high"] :code "X"]
+                             [:db/add [:name "low"] :code "X"]]))
+         (fn [src dst report]
+           (is (true? (:verified? report)))
+           (is (= #{["low" "X"]} (d/q '[:find ?n ?c :where [?e :code ?c] [?e :name ?n]] dst)))
+           (is (= (avet src :code) (avet dst :code)))))))))
+
+(deftest schema-and-the-data-that-needs-it-in-one-transaction
+  (testing "a ref attribute installed and used in one transaction on entities
+            with lower ids than the attribute. A sorted dump puts their data
+            first: the reference kept its source id, or under attribute refs
+            the replay stopped on an unknown attribute"
+    (doseq [attribute-refs? [false true]
+            [kind export-opts] dump-kinds]
+      (testing (str "attribute-refs " attribute-refs? ", " kind)
+        (round-trip
+         attribute-refs? export-opts {:eids (fn [e] (+ 5000 e)) :batch-size 2}
+         (fn [conn]
+           (d/transact conn [{:db/ident :name :db/valueType :db.type/string
+                              :db/cardinality :db.cardinality/one
+                              :db/unique :db.unique/identity}])
+           (d/transact conn [{:name "child"} {:name "parent"}])
+           (d/transact conn [{:db/ident :parent :db/valueType :db.type/ref
+                              :db/cardinality :db.cardinality/one}
+                             [:db/add [:name "child"] :parent [:name "parent"]]]))
+         (fn [_ dst report]
+           (is (true? (:verified? report)))
+           (is (= #{["child" "parent"]}
+                  (d/q '[:find ?c ?p :where [?e :parent ?x] [?e :name ?c] [?x :name ?p]] dst)))))))))

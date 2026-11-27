@@ -2167,8 +2167,9 @@
           (schema-attr-current-datoms db a)))
 
 (defn- follow-index-setting
-  "Migration replay: after a schema datom, bring AVET in line with which
-   attributes are indexed now. `db-before` is the database before that datom.
+  "Migration replay: after a `:db/index`, `:db/unique` or `:db/valueType` datom
+   on attribute entity `e`, bring AVET in line with whether that attribute is
+   indexed now. `db-before` is the database before that datom.
 
    An ordinary transaction does this once, at its end, by comparing the schema
    before and after (`backfill-enabled-indices`, `remove-disabled-indices`). A
@@ -2178,21 +2179,65 @@
    can be installed, written and then indexed inside one batch; comparing the
    batch's two ends would miss that, hence datom by datom.
 
-   Attributes are compared as they are stored, so a rename under
-   `:attribute-refs?` is not taken for one attribute going and another coming."
-  [db-after db-before]
-  (let [stored (fn [db]
-                 (let [idents (dbi/-attrs-by db :db/index)]
-                   (if (:attribute-refs? (dbi/-config db))
-                     (into #{} (keep #(dbi/-ref-for db %)) idents)
-                     (set idents))))
-        was (stored db-before)
-        is  (stored db-after)]
-    (if (= was is)
+   `:db/valueType` because a ref attribute is indexed whatever `:db/index`
+   says. An entity with no ident yet (its `:db/ident` comes later in the
+   transaction) is a new attribute with no data to sweep."
+  [db-after db-before e]
+  (let [ident (let [x (get (dbi/-schema db-after) e)] (when (keyword? x) x))
+        indexed? (fn [db] (contains? (dbi/-attrs-by db :db/index) ident))]
+    (if (nil? ident)
       db-after
-      (as-> db-after db
-        (reduce backfill-avet db (remove was is))
-        (reduce drop-current-avet db (remove is was))))))
+      (let [was (indexed? db-before)
+            is  (indexed? db-after)
+            a   (if (:attribute-refs? (dbi/-config db-after)) e ident)]
+        (cond
+          (= was is) db-after
+          is  (backfill-avet db-after a)
+          :else (drop-current-avet db-after a))))))
+
+(defn- replay-phase
+  "Position of record `[e a v t op]` inside its transaction on replay: the
+   transaction entity's own attributes, then schema retractions, schema
+   assertions, data retractions, data assertions. See `in-replay-order`."
+  [db [_ a _ _ op]]
+  (let [a-ident (if (number? a)
+                  (try (dbi/-ident-for db a) (catch #?(:clj Exception :cljs :default) _ nil))
+                  a)]
+    (cond
+      (not (keyword? a-ident)) (if op 4 3)
+      (ds/meta-attr? a-ident) 0
+      (or (ds/schema-attr? a-ident) (ds/entity-spec-attr? a-ident)
+          (ds/secondary-index-attr? a-ident)) (if op 2 1)
+      op 4
+      :else 3)))
+
+(defn- in-replay-order
+  "`es` with the records of each transaction put in an order that replays
+   correctly; transactions themselves keep their order, and records within one
+   phase keep theirs.
+
+   A dump records what a transaction did, not in which order its datoms were
+   applied, and a replay applies them one at a time against checks a
+   transaction runs on its finished state. A sorted dump orders a
+   transaction's records by entity id, which went wrong whenever the order
+   mattered:
+   - data before the schema of its own transaction: a ref attribute installed
+     and used on an entity with a lower id kept the source id, unmapped; a
+     cardinality widened and used lost values; under `:attribute-refs?` the
+     replay stopped with `:transact/unknown-attribute`;
+   - a unique value handed from a higher entity to a lower one: the new owner's
+     assertion came first and was refused as `:transact/unique`;
+   - schema written before the transaction's `:db/txInstant` allocated an
+     extra transaction id.
+   Schema before data, retractions before assertions, the transaction entity
+   first.
+
+   An importer cuts batches at transaction boundaries, except for a
+   transaction too large for one batch (`:max-pending`); such a transaction is
+   ordered within each part."
+  [db es]
+  (into [] (mapcat #(sort-by (partial replay-phase db) %))
+        (partition-by #(nth % 3 nil) es)))
 
 (defn- backfill-enabled-indices
   "Index-backfill migration: for every attribute whose :db/index or
@@ -2686,7 +2731,7 @@
                     (assoc ::as-given true)
                     (update :datahike/tx-ops #(or % #{}))
                     (update :db-after db/db-transient))
-         es initial-es
+         es (in-replay-order (:db-after initial-report) initial-es)
          migration-state (or (:migration initial-report) {})]
     (if (empty? es)
       ;; NO `max-tx` bump here. One call is one BATCH, not one transaction, and
@@ -2835,7 +2880,7 @@
             ;; source entity.
             (recur (cond-> (transact-report report new-datom upsert?)
                      (contains? #{:db/index :db/unique :db/valueType} a-ident)
-                     (update :db-after follow-index-setting (:db-after report)))
+                     (update :db-after follow-index-setting (:db-after report) (.-e new-datom)))
                    entities
                    (if mapped
                      migration-state
