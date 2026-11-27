@@ -8,8 +8,8 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 - **`import-source` refuses a history source into a target without history up front ([#1134]).**
   `:source-meta {:history? true}` into a `:keep-history? false` database
-  wrote every record and only then threw "history is only allowed on temporal
-  indexed databases", with the data committed and the report lost. It is now
+  committed the replayed data and only then threw "history is only allowed on temporal
+  indexed databases", and the report was lost. It is now
   refused before anything is written (`:import/config-mismatch` on
   `:keep-history?`), as `import-db` already refuses such a dump.
 - **An exclusive writer gives every queued transaction its own transaction id** — with `:writer-ownership :exclusive`, a transaction that was applied while the one before it was still being committed reused that transaction's id: the writer took the transaction counter from the published connection, which only moves when a commit lands. Twenty `transact!` calls submitted without waiting came back with as few as one distinct id, so their datoms shared a transaction and `as-of`, `since` and history could not tell the versions apart. The writer now keeps its own counter and adopts the connection's only when that is higher, which is what the legacy CBOR import relies on. The default `:shared` ownership was not affected. (0.8.1946, [#1189])

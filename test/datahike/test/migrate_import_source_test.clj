@@ -88,8 +88,9 @@
             It used to write every record and then throw \"history is only
             allowed on temporal indexed databases\" from the report's count, with
             the data committed and the report lost."
-    ;; `:schema` on the index-build half, which otherwise refuses for lacking
-    ;; one — and would pass this test without ever reaching the history check
+    ;; `:schema` on the index-build half: without one it is refused for lacking
+    ;; a schema before the history check is reached, so the case under test
+    ;; would not be exercised
     (doseq [opts [{} {:build-indexes? true
                       :schema {:person/name {:db/valueType :db.type/string
                                              :db/cardinality :db.cardinality/one}}}]]
