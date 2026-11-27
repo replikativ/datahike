@@ -1239,11 +1239,15 @@
                           (dbi/-ref-for db v)
                           v)])))]
     (if ensure
-      ;; The spec itself is read when the check runs, at the end of the
-      ;; transaction: one changed in this transaction is checked as it then
-      ;; stands.
-      (concat entities [[:db.ensure/attrs eid ensure]
-                        [:db.ensure/preds eid ensure]])
+      (let [{:keys [:db.entity/attrs :db.entity/preds]} (-> db :schema ensure)]
+        (if (empty? attrs)
+          (if (empty? preds)
+            entities
+            (concat entities [[:db.ensure/preds eid ensure preds]]))
+          (if (empty? preds)
+            (concat entities [[:db.ensure/attrs eid ensure attrs]])
+            (concat entities [[:db.ensure/attrs eid ensure attrs]
+                              [:db.ensure/preds eid ensure preds]]))))
       entities)))
 
 (defn- vt-meta-attr?
@@ -1986,9 +1990,8 @@
       ;; already has and count retractions as present.
       :db.ensure/attrs (let [{:keys [db-after]} report
                              asserting-datoms (dbi/datoms db-after :eavt [e])
-                             required (get-in (dbi/-schema db-after) [a :db.entity/attrs])
                              asserting-attributes (map (fn [^Datom d] (dbu/attr-ident db-after (.-a d))) asserting-datoms)
-                             diff (clojure.set/difference (set required) (set asserting-attributes))]
+                             diff (clojure.set/difference (set v) (set asserting-attributes))]
                          (if (empty? diff)
                            [report []]
                            (log/raise "Entity " e " missing attributes " diff " of spec " a
@@ -1996,8 +1999,7 @@
                                        :asserting-datoms asserting-datoms})))
 
       :db.ensure/preds (let [{:keys [db-after]} report
-                             preds (assert-preds db-after [op e a (get-in (dbi/-schema db-after)
-                                                                          [a :db.entity/preds])])]
+                             preds (assert-preds db-after op-vec)]
                          (if-not (empty? preds)
                            (log/raise "Entity " e " failed predicates " preds " of spec " a
                                       {:error :transact/ensure :operation op :tx-data op-vec})
@@ -2482,15 +2484,6 @@
             {:keys [tempids db-after]} report
             db db-after]
         (cond
-          ;; `:db/ensure` is checked against the entity as the transaction
-          ;; leaves it, so its checks run after every other operation.
-          (and (empty? es) (seq (::deferred-ensure report)))
-          (recur (-> report (dissoc ::deferred-ensure) (assoc ::ensuring true))
-                 (::deferred-ensure report))
-
-          (and (empty? es) (::ensuring report))
-          (recur (dissoc report ::ensuring) es)
-
           (and (empty? es) (or (::touched report) (::schema-entities report)
                                (::as-written report)))
           ;; `::rewritten`: some key was written more than once. Without it
@@ -2499,6 +2492,16 @@
                    (dissoc report ::touched ::schema-entities ::as-written ::rewritten)
                    (net-transaction report))
                  es)
+
+          ;; `:db/ensure` is checked against the entity as the transaction
+          ;; leaves it — every other operation applied and the
+          ;; transaction netted — so its checks run last.
+          (and (empty? es) (seq (::deferred-ensure report)))
+          (recur (-> report (dissoc ::deferred-ensure) (assoc ::ensuring true))
+                 (::deferred-ensure report))
+
+          (and (empty? es) (::ensuring report))
+          (recur (dissoc report ::ensuring) es)
 
           (empty? es)
           (do

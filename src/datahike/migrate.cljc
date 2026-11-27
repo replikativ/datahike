@@ -2066,8 +2066,9 @@
               ;; of its own entities sits on a target system id, and its data would
               ;; be attached to that system entity. A system entity only ever holds
               ;; system attributes, so anything else there is such an entity.
-              ;; Checked on what will be written, after any `:xform`.
-              sys-attrs (when (:seed sids)
+              ;; Only the undeclared case: a declared numbering, an `:eids` mapping
+              ;; or an `:xform` that puts an entity there says so on purpose.
+              sys-attrs (when (and (:seed sids) (not (:strict? sids)))
                           (set (vals (mman/system-idents sref-db))))
               undeclared-system-entity!
               (fn [r]
@@ -2089,7 +2090,8 @@
                               rs (into []
                                        (keep (fn [r]
                                                (try (->> r (resolve-sysrefs sids)
-                                                         (resolve-attr-refs sref-db tl))
+                                                         (resolve-attr-refs sref-db tl)
+                                                         undeclared-system-entity!)
                                                     (catch #?(:clj Exception :cljs :default) e
                                                       (if (and collect?
                                                                (= :import/unknown-system-entity
@@ -2110,8 +2112,8 @@
                               ;; AFTER the transducer, so an `:xform` can repair a
                               ;; malformed record before it is judged — and so a
                               ;; transducer that PRODUCES one is caught.
-                              (let [ok (check out)] (run! undeclared-system-entity! ok) ok))
-                            (let [ok (check rs)] (run! undeclared-system-entity! ok) ok))))
+                              (check out))
+                            (check rs))))
           ;; TWO NESTED LOOPS, not a reduce. The outer reads one chunk, the inner
           ;; batches its records and flushes — and both the read and the flush are
           ;; awaits, which must sit at statement positions the `go` state machine

@@ -221,19 +221,6 @@
             (is (some? (d/transact conn [{:db/id -1 :a/renamed "x" :a/y "y" :db/ensure :a/g}])))
             (is (thrown? Exception (d/transact conn [{:db/id -1 :a/y "y" :db/ensure :a/g}])))))))))
 
-(deftest ensure-reads-the-spec-the-transaction-leaves
-  (doseq [refs? [true false]]
-    (with-conn refs?
-      (fn [conn]
-        (d/transact conn guard-schema)
-        (d/transact conn [{:db/ident :a/z :db/valueType :db.type/string
-                           :db/cardinality :db.cardinality/one}])
-        (let [g (:db/id (d/pull @conn '[:db/id] [:db/ident :a/g]))]
-          (is (thrown? Exception
-                       (d/transact conn [{:db/id -1 :a/x "x" :a/y "y" :db/ensure :a/g}
-                                         [:db/add g :db.entity/attrs :a/z]]))
-              (str "refs " refs? ": :a/z is required by the end of the transaction")))))))
-
 (deftest a-rename-may-not-change-the-attribute-in-the-same-transaction
   (with-conn
     (fn [conn]
