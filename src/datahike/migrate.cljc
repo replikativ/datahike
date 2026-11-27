@@ -1456,11 +1456,7 @@
     ;; back out; see `transact-entities-directly` for why it does not live on
     ;; the database value.
     (let [p (dwriter/load-entities-migrating conn batch migration)
-          ;; `delivered!`: a writer that answers with nothing has not reported
-          ;; a batch, and every caller below reads "no exception" as success.
-          r (dt/delivered! (<?- (await-writer p opts {:op :load-entities :batch-size (count batch)}))
-                           {:op :load-entities :batch-size (count batch)}
-                           "the writer answered a batch without a report")]
+          r (<?- (await-writer p opts {:op :load-entities :batch-size (count batch)}))]
       ;; A JVM `Error` the writer delivered used to arrive here as a VALUE:
       ;; superv.async rethrows only `Exception`s (#971). `throwable-promise`
       ;; now wraps it on the channel side and `await-writer` on the deref side,
@@ -1691,7 +1687,12 @@
           (if (nil? groups)
             {:errors errs :migration m}
             (let [tx-group (vec (first groups))
-                  rt (try {:rep (<?- (load-batch! conn tx-group m opts))}
+                  ;; `delivered!` here and below as on the first attempt: a
+                  ;; retry the writer answers with nothing is not a retry that
+                  ;; applied, and it is not a bad record either.
+                  rt (try {:rep (dt/delivered! (<?- (load-batch! conn tx-group m opts))
+                                               {:op :load-entities :tx-size (count tx-group)}
+                                               "a batch was applied but the writer returned no report")}
                           (catch #?(:clj Exception :cljs :default) e {:ex e}))
                   tx-rep (:rep rt)]
               (when (and (:ex rt) (not (record-fault? (:ex rt))))
@@ -1703,7 +1704,10 @@
                                    (if (nil? ds)
                                      [errs m]
                                      (let [d (first ds)
-                                           r (try {:rep (<?- (load-batch! conn [d] m opts))}
+                                           r (try {:rep (dt/delivered!
+                                                         (<?- (load-batch! conn [d] m opts))
+                                                         {:op :load-entities :datom d}
+                                                         "a batch was applied but the writer returned no report")}
                                                   (catch #?(:clj Exception :cljs :default) e {:ex e}))]
                                        (when (and (:ex r) (not (record-fault? (:ex r))))
                                          (abort-not-a-record-fault! (:ex r) {:datom d}))

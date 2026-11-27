@@ -180,7 +180,7 @@
             import can account for; it used to read as a batch with no errors"
     (testing "a batch"
       (doseq [sync? [true false]
-              on-error [:abort :collect]]
+              [on-error expected] [[:abort :async/no-result] [:collect :import/apply-failed]]]
         (let [conn (fresh :memory)
               calls (atom 0)
               orig dwriter/load-entities-migrating]
@@ -193,6 +193,26 @@
               (let [r (bounded 20000 #(import! conn {:sync? sync? :on-error on-error}))]
                 (is (instance? clojure.lang.ExceptionInfo r)
                     (str ":sync? " sync? " " on-error ": got " (pr-str r)))
+                (is (= expected (:error (ex-data r))))))
+            (finally (teardown conn))))))
+    (testing "a retry while :on-error :collect narrows a failed batch down: the
+              first attempt fails on a record, the retry is answered with
+              nothing. It was counted as neither a report nor an error."
+      (doseq [sync? [true false]]
+        (let [conn (fresh :memory)
+              calls (atom 0)
+              orig dwriter/load-entities-migrating]
+          (try
+            (with-redefs [dwriter/load-entities-migrating
+                          (fn [& args]
+                            (case (long (swap! calls inc))
+                              2 (doto (dt/throwable-promise)
+                                  (deliver (ex-info "taken" {:error :transact/unique})))
+                              3 (doto (dt/throwable-promise) (deliver nil))
+                              (apply orig args)))]
+              (let [r (bounded 20000 #(import! conn {:sync? sync? :on-error :collect}))]
+                (is (instance? clojure.lang.ExceptionInfo r)
+                    (str ":sync? " sync? ": got " (pr-str r)))
                 (is (= :import/apply-failed (:error (ex-data r))))))
             (finally (teardown conn))))))
     (testing "the index build's publish, with verification off"
