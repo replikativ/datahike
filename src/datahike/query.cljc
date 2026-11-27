@@ -2183,9 +2183,28 @@
           false))
       true)))
 
+(def ^:dynamic ^:private *delta-meter* nil)
+
+(defn- spend-delta! [event]
+  (when-let [meter *delta-meter*]
+    (let [{:keys [used limit]} @meter]
+      (when (= used limit)
+        (throw (ex-info "Delta query exhausted its fuel" {:datahike/delta-out-of-fuel true})))
+      (vswap! meter #(-> % (update :used inc) (update-in [:events event] inc))))))
+
 (defn lookup-pattern-coll [coll pattern orig-pattern]
   (let [attr->idx (var-mapping orig-pattern (range))
-        data (filter #(matches-pattern? pattern %) coll)]
+        accept? (if *delta-meter*
+                  (fn [row]
+                    (spend-delta! :scan)
+                    (when-not (and (vector? row) (= 4 (count row))
+                                   (nat-int? (nth row 0)) (keyword? (nth row 1))
+                                   (keyword? (nth row 2)) (int? (nth row 3))
+                                   (<= -2147483648 (nth row 3) 2147483647))
+                      (throw (ex-info "Invalid inventory delta tuple" {:type :invalid-delta-row})))
+                    (matches-pattern? pattern row))
+                  #(matches-pattern? pattern %))
+        data (filter accept? coll)]
     (rel/->Relation
      attr->idx
      (if-not resource/*max-intermediate-slots*
@@ -3645,6 +3664,7 @@
                                :clj ^{:tag "[[Ljava.lang.Object;"} t1) acc
                             t2 (:tuples rel)]
                         (let [_ (tick)
+                              _ (when *delta-meter* (spend-delta! :project))
                               res (aclone t1)]
                           (dotimes [i len]
                             (when-some [idx (aget copy-map i)]
@@ -3680,7 +3700,10 @@
           (if (instance? Aggregate element)
             (let [f (-context-resolve (:fn element) context)
                   args (map #(-context-resolve % context) (butlast (:args element)))
-                  vals (map #(nth % i) tuples)]
+                  value-at (if *delta-meter*
+                             (fn [tuple] (spend-delta! :aggregate) (nth tuple i))
+                             #(nth % i))
+                  vals (map value-at tuples)]
               (apply f (concat args [vals])))
             fixed-value))
         find-elements
@@ -6632,3 +6655,28 @@
   :bind-by-fn         bind-by-fn
   :lookup-batch-search lookup-batch-search
   :lookup-pattern-coll lookup-pattern-coll})
+
+#?(:clj
+   (def delta-sum-query
+     "Frozen v1 relation profile: [leg-id commodity location signed-quantity].
+     The leg id in :with preserves distinct movements of equal quantities."
+     '[:find ?commodity (sum ?quantity) :with ?leg :in $delta
+       :where [$delta ?leg ?commodity ?location ?quantity]]))
+
+#?(:clj
+   (defn metered-delta-query
+     "Run the supported v1 aggregation with a deterministic logical-work budget.
+     One unit per source tuple examined, projected tuple, and aggregate input.
+     Exhaustion consumes exactly the limit. Unrelated engine errors propagate."
+     [query rows limit]
+     (when-not (and (= query delta-sum-query) (nat-int? limit) (vector? rows))
+       (throw (ex-info "Unsupported metered delta query, source or budget" {})))
+     (let [meter (volatile! {:used 0 :limit limit :events {:scan 0 :project 0 :aggregate 0}})]
+       (binding [*delta-meter* meter *disable-planner* true *query-result-cache?* false]
+         (try
+           (let [result (into #{} (q query rows))]
+             (assoc @meter :status :ok :rows result))
+           (catch clojure.lang.ExceptionInfo e
+             (if (:datahike/delta-out-of-fuel (ex-data e))
+               (assoc @meter :status :out-of-fuel)
+               (throw e))))))))
