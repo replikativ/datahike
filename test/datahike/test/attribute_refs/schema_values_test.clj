@@ -178,3 +178,84 @@
         (is (re-find #"predates entity specs" (str msg)))
         (is (re-find #":db.entity/attrs" (str msg)))
         (is (re-find #"export-db" (str msg)))))))
+
+;; ---- review round: ensure after the transaction, renames, spec removal ----
+
+(def ^:private guard-schema
+  [{:db/ident :a/x :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+   {:db/ident :a/y :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+   {:db/ident :a/g :db.entity/attrs [:a/x :a/y]}])
+
+(deftest ensure-checks-the-entity-the-transaction-leaves
+  (doseq [refs? [true false]]
+    (testing (str "attribute-refs " refs?)
+      (with-conn refs?
+        (fn [conn]
+          (d/transact conn guard-schema)
+          (let [e (get-in (d/transact conn [{:db/id -1 :a/x "x" :a/y "y"}]) [:tempids -1])]
+            (testing "a later retraction in the same transaction is seen"
+              (is (thrown? Exception
+                           (d/transact conn [{:db/id e :a/x "xx" :db/ensure :a/g}
+                                             [:db/retract e :a/y "y"]])))
+              (is (= "y" (:a/y (d/pull @conn '[:a/y] e))) "nothing was committed")))
+          (testing "a later assertion in the same transaction is seen too"
+            (let [r (d/transact conn [{:db/id -1 :a/x "x" :db/ensure :a/g}
+                                      [:db/add -1 :a/y "y"]])]
+              (is (= "y" (:a/y (d/pull @conn '[:a/y] (get-in r [:tempids -1]))))))))))))
+
+(deftest a-renamed-required-attribute-still-satisfies-its-spec
+  (with-conn
+    (fn [conn]
+      (d/transact conn guard-schema)
+      (let [aid (:db/id (d/pull @conn '[:db/id] [:db/ident :a/x]))]
+        (d/transact conn [[:db/add aid :db/ident :a/renamed]])
+        (let [r (d/transact conn [{:db/id -1 :a/renamed "x" :a/y "y" :db/ensure :a/g}])]
+          (is (some? (get-in r [:tempids -1]))))
+        (is (thrown? Exception (d/transact conn [{:db/id -1 :a/y "y" :db/ensure :a/g}]))
+            "and a missing one is still missing")))))
+
+(deftest a-rename-may-not-change-the-attribute-in-the-same-transaction
+  (with-conn
+    (fn [conn]
+      (d/transact conn [{:db/ident :p/name :db/valueType :db.type/string
+                         :db/cardinality :db.cardinality/one}])
+      (d/transact conn [{:p/name "duplicate"} {:p/name "duplicate"}])
+      (let [aid (:db/id (d/pull @conn '[:db/id] [:db/ident :p/name]))]
+        (doseq [[label tx] [["two maps" [{:db/id aid :db/ident :p/new}
+                                         {:db/id aid :db/unique :db.unique/value}]]
+                            ["vector then map" [[:db/add aid :db/ident :p/new]
+                                                {:db/id aid :db/unique :db.unique/value}]]]]
+          (is (thrown-with-msg? Exception #"in the same transaction"
+                                (try (d/transact conn tx)
+                                     (catch Exception e (throw (ex-info (root-message e) {})))))
+              label))
+        (testing "the rename alone is fine, and the change is then validated"
+          (d/transact conn [{:db/id aid :db/ident :p/new}])
+          (is (thrown? Exception (d/transact conn [{:db/id aid :db/unique :db.unique/value}]))
+              "two entities hold the same value"))))))
+
+(deftest spec-datoms-and-enforcement-agree-after-removal
+  (doseq [refs? [true false]]
+    (testing (str "attribute-refs " refs?)
+      (testing "ident retracted, one value retracted, ident asserted again"
+        (with-conn refs?
+          (fn [conn]
+            (d/transact conn guard-schema)
+            (let [g (:db/id (d/pull @conn '[:db/id] [:db/ident :a/g]))]
+              (d/transact conn [[:db/retract g :db/ident :a/g]])
+              (d/transact conn [[:db/retract g :db.entity/attrs :a/y]])
+              (d/transact conn [[:db/add g :db/ident :a/g2]])
+              (is (= [:a/x] (:db.entity/attrs (d/pull @conn '[:db.entity/attrs] g))))
+              (is (thrown? Exception (d/transact conn [{:db/id -1 :a/y "y" :db/ensure :a/g2}]))
+                  ":a/x is still required")
+              (is (some? (d/transact conn [{:db/id -1 :a/x "x" :db/ensure :a/g2}]))
+                  ":a/y no longer is")))))
+      (testing "purging one value"
+        (with-conn refs?
+          (fn [conn]
+            (d/transact conn guard-schema)
+            (let [g (:db/id (d/pull @conn '[:db/id] [:db/ident :a/g]))]
+              (d/transact conn [[:db/purge g :db.entity/attrs :a/y]])
+              (is (= [:a/x] (:db.entity/attrs (d/pull @conn '[:db.entity/attrs] g))))
+              (is (some? (d/transact conn [{:db/id -1 :a/x "x" :db/ensure :a/g}]))
+                  ":a/y no longer is required"))))))))

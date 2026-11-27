@@ -375,6 +375,17 @@
     (update db :schema dissoc e)
     db))
 
+(defn- drop-schema-value
+  "Schema entry `k` without `v-ident` for `a-ident`. A many-valued schema
+   attribute loses just that value and keeps the rest; any other loses the key."
+  [db k a-ident v-ident]
+  (if (contains? #{:db.attr/preds :db.entity/attrs :db.entity/preds} a-ident)
+    (let [left (vec (remove #{v-ident} (get-in db [:schema k a-ident])))]
+      (if (seq left)
+        (assoc-in db [:schema k a-ident] left)
+        (update-in db [:schema k] dissoc a-ident)))
+    (update-in db [:schema k] dissoc a-ident)))
+
 (defn remove-schema [db ^Datom datom]
   (let [schema (dbi/-schema db)
         attribute-refs? (:attribute-refs? (dbi/-config db))
@@ -403,12 +414,10 @@
               (prune-retracted-schema-entry e)))
         (if-let [schema-entry (schema e)]
           (if (schema schema-entry)
-            (if (contains? #{:db.attr/preds :db.entity/attrs :db.entity/preds} a-ident)
-              ;; many-valued: drop just the retracted value, keep the rest
-              (update-in db [:schema schema-entry a-ident]
-                         (fn [old] (vec (remove #{v-ident} old))))
-              (update-in db [:schema schema-entry] #(dissoc % a-ident)))
-            (-> (update-in db [:schema e] #(dissoc % a-ident v-ident))
+            (drop-schema-value db schema-entry a-ident v-ident)
+            ;; the entry is held under the entity id (its ident was retracted)
+            (-> (drop-schema-value db e a-ident v-ident)
+                (update-in [:schema e] #(dissoc % v-ident))
                 (prune-retracted-schema-entry e)))
           (let [err-msg (str "Schema with entity id " e " does not exist")
                 err-map {:error :retract/schema :entity-id e :attribute a :value e}]
@@ -667,7 +676,7 @@
 (defn- with-temporal-datom [db ^Datom datom]
   (let [{a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
         indexing? (dbu/indexing? db a-ident)
-        schema? (ds/schema-attr? a-ident)
+        schema? (or (ds/schema-attr? a-ident) (ds/entity-spec-attr? a-ident))
         current-datom ^Datom (first (dbi/search db [(.-e datom) (.-a datom) (.-v datom)]))
         history-datom ^Datom (first (dbs/search-temporal-indices db [(.-e datom) (.-a datom) (.-v datom) (.-tx datom)]))
         current? (not (nil? current-datom))
@@ -1983,8 +1992,16 @@
       ;; already has and count retractions as present.
       :db.ensure/attrs (let [{:keys [db-after]} report
                              asserting-datoms (dbi/datoms db-after :eavt [e])
-                             asserting-attributes (map (fn [^Datom d] (dbu/attr-ident db-after (.-a d))) asserting-datoms)
-                             diff (clojure.set/difference (set v) (set asserting-attributes))]
+                             ;; by attribute, not by name: under :attribute-refs? a
+                             ;; renamed attribute still answers to the name the
+                             ;; spec holds
+                             attribute-refs? (:attribute-refs? (dbi/-config db-after))
+                             present (into #{} (map (fn [^Datom d] (.-a d))) asserting-datoms)
+                             diff (into #{}
+                                        (remove (fn [k] (contains? present (if attribute-refs?
+                                                                             (dbi/-ref-for db-after k)
+                                                                             k))))
+                                        v)]
                          (if (empty? diff)
                            [report []]
                            (log/raise "Entity " e " missing attributes " diff " of spec " a
@@ -2258,6 +2275,23 @@
   (let [old-rim (:ref-ident-map db-before)
         new-rim (:ref-ident-map db-after)]
     (when-not (identical? old-rim new-rim)
+      ;; A rename is all a transaction may do to that attribute. The schema
+      ;; validators and the index backfill match entries by ident, so anything
+      ;; else changed along with it (`:db/unique`, `:db/index`, …) would be
+      ;; taken for part of a new attribute and applied unchecked.
+      (when (:attribute-refs? (dbi/-config db-after))
+        (doseq [[e new-ident] new-rim]
+          (let [old-ident (get old-rim e)]
+            (when (and old-ident (not= old-ident new-ident))
+              (let [old-entry (get (dbi/-schema db-before) old-ident)
+                    new-entry (get (dbi/-schema db-after) new-ident)]
+                (when (and (map? old-entry) (map? new-entry)
+                           (not= (dissoc old-entry :db/ident) (dissoc new-entry :db/ident)))
+                  (log/raise (str "Cannot rename " old-ident " to " new-ident
+                                  " and change its schema in the same transaction."
+                                  " Rename it in one transaction and change it in another.")
+                             {:error :transact/schema :attribute old-ident
+                              :new-attribute new-ident :entity-id e})))))))
       (when-not (:attribute-refs? (dbi/-config db-after))
         (doseq [[e new-ident] new-rim]
           (let [old-ident (get old-rim e)]
@@ -2448,6 +2482,15 @@
             {:keys [tempids db-after]} report
             db db-after]
         (cond
+          ;; `:db/ensure` is checked against the entity as the transaction
+          ;; leaves it, so its checks run after every other operation.
+          (and (empty? es) (seq (::deferred-ensure report)))
+          (recur (-> report (dissoc ::deferred-ensure) (assoc ::ensuring true))
+                 (::deferred-ensure report))
+
+          (and (empty? es) (::ensuring report))
+          (recur (dissoc report ::ensuring) es)
+
           (and (empty? es) (or (::touched report) (::schema-entities report)
                                (::as-written report)))
           ;; `::rewritten`: some key was written more than once. Without it
@@ -2542,6 +2585,10 @@
               (if-let [vid (get tempids v)]
                 (recur report (cons [op e a vid] entities))
                 (recur (allocate-eid report v (next-eid db)) es))
+
+              (and (contains? #{:db.ensure/attrs :db.ensure/preds} op)
+                   (not (::ensuring report)))
+              (recur (update report ::deferred-ensure (fnil conj []) entity) entities)
 
               :else
               (let [[new-report new-entities] (apply-db-op db report entity)]
