@@ -1,6 +1,7 @@
 (ns datahike.db.utils
   (:require
    [clojure.data]
+   [clojure.set :as set]
    [clojure.walk]
    [datahike.constants :refer [e0 tx0 emax txmax]]
    [datahike.datom :refer [datom datom-tx index-type->cmp-quick]]
@@ -415,19 +416,40 @@
                  m attrs))))
    {} schema))
 
+(defn- reduce-properties [f acc entry]
+  (if (map? entry)
+    (reduce-kv (fn [out key value]
+                 (reduce f out (attr->properties key value)))
+               (f acc :db/ident) entry)
+    acc))
+
+(defn- add-member [rs prop attr]
+  (update rs prop (fnil conj #{}) attr))
+
+(defn- remove-member [rs prop attr]
+  (let [remaining (disj (get rs prop) attr)]
+    (if (seq remaining) (assoc rs prop remaining) (dissoc rs prop))))
+
 (defn rschema [schema]
   (let [rschema (reduce-kv
-                 (fn [m attr keys->values]
-                   (if (keyword? keys->values)
-                     m
-                     (reduce-kv
-                      (fn [m key value]
-                        (reduce
-                         (fn [m prop]
-                           (assoc m prop (conj (get m prop #{}) attr)))
-                         m (attr->properties key value)))
-                      (update m :db/ident (fn [coll] (if coll (conj coll attr) #{attr}))) keys->values)))
+                 (fn [m attr entry]
+                   (reduce-properties #(add-member %1 %2 attr) m entry))
                  {} schema)]
     (-> rschema
         (assoc :db/attrTuples (attrTuples schema rschema))
         (assoc :db.secondary/index (secondary-index-mapping schema)))))
+
+(defn rschema-after
+  "Update the reverse schema for forward-schema entries affected by one datom."
+  [rs before after touched]
+  (let [changed (remove #(identical? (get before %) (get after %)) touched)
+        cross-attribute? (fn [entry] (or (:db/tupleAttrs entry) (:db.secondary/type entry)))]
+    (if (some #(or (cross-attribute? (get before %)) (cross-attribute? (get after %))) changed)
+      (rschema after)
+      (reduce (fn [rs attr]
+                (let [old (reduce-properties conj #{} (get before attr))
+                      new (reduce-properties conj #{} (get after attr))]
+                  (reduce #(add-member %1 %2 attr)
+                          (reduce #(remove-member %1 %2 attr) rs (set/difference old new))
+                          (set/difference new old))))
+              rs changed))))

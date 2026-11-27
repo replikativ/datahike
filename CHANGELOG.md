@@ -6,6 +6,11 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Creating and altering ordinary attributes costs less on large schemas.**
+  The transactor updates reverse-schema memberships for the changed attribute
+  at each operation. Later operations in the same transaction see the update.
+  Composite tuples and secondary-index declarations retain the full rebuild.
+  (0.8, [#1196])
 - **`:attribute-refs?` databases accept entity specs, map-form renames and long schema values** —
   `:db.entity/attrs` / `:db.entity/preds` had no system entity, so a spec could
   not be transacted (attribute `nil`) and `:db/ensure` checked nothing; they are
@@ -1290,6 +1295,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1123]: https://github.com/replikativ/datahike/pull/1123
 [#1112]: https://github.com/replikativ/datahike/issues/1112
 [#1105]: https://github.com/replikativ/datahike/issues/1105
+[#1196]: https://github.com/replikativ/datahike/pull/1196
 [#1126]: https://github.com/replikativ/datahike/pull/1126
 [#1125]: https://github.com/replikativ/datahike/pull/1125
 [#1127]: https://github.com/replikativ/datahike/pull/1127
