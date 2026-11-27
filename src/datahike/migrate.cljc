@@ -2122,6 +2122,28 @@
                                                     true))))
                                        rs)
                         :else (do (run! mman/validate-record! rs) rs)))
+              ;; A source that declared no system numbering is taken to share the
+              ;; target's. If it does not — an :attribute-refs? database older than
+              ;; the system schema's last addition, read without a manifest — one
+              ;; of its own entities sits on a target system id, and its data would
+              ;; be attached to that system entity. A system entity only ever holds
+              ;; system attributes, so anything else there is such an entity.
+              ;; Only the undeclared case: a declared numbering, an `:eids` mapping
+              ;; or an `:xform` that puts an entity there says so on purpose.
+              sys-attrs (when (and (:seed sids) (not (:strict? sids)))
+                          (set (vals (mman/system-idents sref-db))))
+              undeclared-system-entity!
+              (fn [r]
+                (let [e (nth r 0) a (nth r 1)]
+                  (when (and sys-attrs (contains? (:seed sids) e) (keyword? a)
+                             (not (contains? sys-attrs a)))
+                    (throw (ex-info (str "The source holds " a " on entity " e ", which is a system"
+                                         " entity of this database. Its system entities are numbered"
+                                         " differently: supply the source's numbering as"
+                                         " :source-meta {:system-idents {id ident}}.")
+                                    {:error :import/system-entity-collision
+                                     :entity-id e :attribute a :datom r})))
+                  r))
               prepare (fn [records]
                         (let [tl (:ident-timeline source-meta)
                               ;; a record naming a system entity the source
@@ -2130,7 +2152,8 @@
                               rs (into []
                                        (keep (fn [r]
                                                (try (->> r (resolve-sysrefs sids)
-                                                         (resolve-attr-refs sref-db tl))
+                                                         (resolve-attr-refs sref-db tl)
+                                                         undeclared-system-entity!)
                                                     (catch #?(:clj Exception :cljs :default) e
                                                       (if (and collect?
                                                                (= :import/unknown-system-entity

@@ -16,6 +16,32 @@ When something is added, it's typically marked *Experimental*. When the API cont
   when it fits one `:sort-buffer` window and through scratch files otherwise.
   The manifest records the order as `:sorted?`; a history dump without it is
   sorted too. (0.8, [#1193])
+- **`:attribute-refs?` databases accept entity specs, map-form renames and long schema values** —
+  `:db.entity/attrs` / `:db.entity/preds` had no system entity, so a spec could
+  not be transacted (attribute `nil`) and `:db/ensure` checked nothing; they are
+  now system attributes 55/56 of *new* databases, and an older database says so
+  and points at export/import. A long such as `:db/maxLength 50` that equals a
+  system entity id was read as that system entity ("Bad entity value
+  :dh.ref/temporal"); a value is a system ref only for `:db/valueType`,
+  `:db/cardinality` and `:db/unique`. The map form `{:db/id aid :db/ident :new}`
+  is accepted as a rename, like the vector form; a rename may not change the
+  attribute's schema in the same transaction (adding `:db/unique` along with it
+  skipped validation and the index backfill), so rename first and change it in
+  a second transaction. A query result cached before an ident was renamed or
+  reused is no longer served to databases derived from that one afterwards. A
+  record source that declares no `:system-idents` and holds data on one of the
+  target's system entities (its own numbering differs) is refused (`:import/system-entity-collision`)
+  instead of having that data attached to the system entity. (0.8, [#1126])
+- **`:db/ensure` checks the entity, and retracting one spec value keeps the rest** —
+  `:db.entity/attrs` was checked against the transaction's own datoms, so an
+  existing entity updating one attribute failed for attributes it already had,
+  and a retraction counted as present; it is now checked against the entity
+  as the whole transaction leaves it, as in Datomic. An attribute that a spec
+  requires cannot be renamed until the spec is changed.
+  Retracting or purging one value of
+  `:db.entity/attrs` / `:db.entity/preds` dropped the whole list from the
+  schema, so a later `:db/ensure` passed with a required attribute missing.
+  Both modes. (0.8, [#1126])
 - **Imports of older attribute-refs databases keep their entities ([#1122]).**
   A dump from an attribute-refs database created before the system schema
   last grew numbers its user entities where the current system schema now
@@ -1275,6 +1301,7 @@ Thanks to all the contributors and the community for helping on this release. Sp
 [#1123]: https://github.com/replikativ/datahike/pull/1123
 [#1112]: https://github.com/replikativ/datahike/issues/1112
 [#1105]: https://github.com/replikativ/datahike/issues/1105
+[#1126]: https://github.com/replikativ/datahike/pull/1126
 [#1125]: https://github.com/replikativ/datahike/pull/1125
 [#1127]: https://github.com/replikativ/datahike/pull/1127
 [#1133]: https://github.com/replikativ/datahike/pull/1133
