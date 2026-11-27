@@ -614,9 +614,6 @@
   "`removing`, for a retraction, is the current datom it removes when the
    caller has already looked it up (see `transact-report`).
 
-   Under `as-given?` uniqueness is not checked here but once per replay batch
-   (`check-replayed-unique!`).
-
    `as-given?` is the migration replay. A retraction it carries was in the
    source's history, so it is stored in history here whatever `:db/noHistory`
    says at this point of the replay: the dump decides what the history holds,
@@ -625,7 +622,7 @@
   ([db datom tx-meta] (with-datom db datom tx-meta ::not-looked-up false))
   ([db datom tx-meta removing-known] (with-datom db datom tx-meta removing-known false))
   ([db ^Datom datom tx-meta removing-known as-given?]
-   (when-not as-given? (validate-datom db datom))
+   (validate-datom db datom)
    (let [{a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
          indexing? (dbu/indexing? db a-ident)
          schema? (or (ds/schema-attr? a-ident) (ds/entity-spec-attr? a-ident)
@@ -758,9 +755,8 @@
    (with-datom-upsert db datom
      (current-datom-for-ea db (.-e datom) (.-a datom))
      nil))
-  ([db ^Datom datom old-datom tx-meta] (with-datom-upsert db datom old-datom tx-meta false))
-  ([db ^Datom datom old-datom tx-meta as-given?]
-   (when-not as-given? (validate-datom-upsert db datom))
+  ([db ^Datom datom old-datom tx-meta]
+   (validate-datom-upsert db datom)
    (let [indexing?     (dbu/indexing? db (.-a datom))
          {a-ident :ident} (dbu/attr-info db (.-a datom) :error-on-missing)
          schema?       (or (ds/schema-attr? a-ident)
@@ -1058,7 +1054,7 @@
                              (str/starts-with? n "db")))
              write   (fn [db]
                        (cond
-                         upsert?  (with-datom-upsert db datom old tx-meta as-given?)
+                         upsert?  (with-datom-upsert db datom old tx-meta)
                          as-given? (with-datom db datom tx-meta ::not-looked-up true)
                          added?   (with-datom db datom tx-meta)
                          :else    (with-datom db datom tx-meta removing)))
@@ -2199,27 +2195,6 @@
           is  (backfill-avet db-after a)
           :else (drop-current-avet db-after a))))))
 
-(defn- check-replayed-unique!
-  "Migration replay: refuse a batch that leaves two current datoms with one
-   value of a unique attribute. `written` holds `[a v]` of each assertion the
-   batch made on a unique attribute.
-
-   Checked here, on the batch's result, rather than datom by datom as an
-   ordinary transaction does: a dump records a transaction's datoms but not the
-   order they were applied in, and a sorted dump orders them by entity. A
-   unique value handed from one entity to one with a lower id then arrives as
-   the new owner's assertion before the old owner's retraction, and a
-   per-datom check refused a valid restore. What the batch ends with is what
-   the source held, unless the target already held a value the dump claims
-   (`:merge? true`), which this catches. A transaction split across batches
-   (`:max-pending`) is checked at each part's end."
-  [db written]
-  (doseq [[a v] (distinct written)]
-    (let [current (di/-slice (:avet db) (datom e0 a v tx0) (datom emax a v txmax) :avet)]
-      (when (next current)
-        (log/raise "Cannot add " (second current) " because of unique constraint: " (first current)
-                   {:error :transact/unique :attribute a :datom (second current)})))))
-
 (defn- backfill-enabled-indices
   "Index-backfill migration: for every attribute whose :db/index or
    :db/unique was ENABLED by this transaction (assess-schema-transition's
@@ -2729,8 +2704,7 @@
       ;; `max-tx`-identical to its source, which is what the index-build path
       ;; already produced.
       (-> report
-          (doto (-> :db-after (check-replayed-unique! (::unique-written report))))
-          (dissoc ::as-given ::unique-written)
+          (dissoc ::as-given)
           (assoc :migration migration-state)
           (update :db-after db/db-persistent!)
           (update :db-after finalize-secondary-indices)
@@ -2862,10 +2836,7 @@
             ;; source entity.
             (recur (cond-> (transact-report report new-datom upsert?)
                      (contains? #{:db/index :db/unique :db/valueType} a-ident)
-                     (update :db-after follow-index-setting (:db-after report) (.-e new-datom))
-
-                     (and op (dbu/is-attr? db a-ident :db/unique))
-                     (update ::unique-written (fnil conj []) [a (.-v new-datom)]))
+                     (update :db-after follow-index-setting (:db-after report) (.-e new-datom)))
                    entities
                    (if mapped
                      migration-state
