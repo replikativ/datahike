@@ -683,6 +683,9 @@
                                        :transformed?       (boolean (:xform opts))
                                        :max-eid            (:max-eid db)
                                        :max-tx             (:max-tx db)}
+      ;; Whether this exporter sorted the records (`:sort?`). An importer sorts
+      ;; a history written without it before replaying it.
+      :sorted?                        (boolean (:sort? opts))
       :semantic-digest                digest
      ;; Which `:db.type/store-ref` blobs this dump carries, and which it could
      ;; not. A store-ref names an object without saying where the bytes live, so

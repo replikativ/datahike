@@ -474,10 +474,10 @@
    :sort-buffer, independent of database size — but it spills sorted runs to local
    temp files. With `:sort? false` the export uses **no scratch at all** (for hard
    read-only / diskless targets): it streams schema/tx-entity datoms then data in
-   `:eavt` order straight to the target. This relaxes the global tx ordering — it is
-   safe for the common case (load-entities remaps ids and allocates forward refs),
-   but does not preserve a *same-transaction* card-one replacement; keep the default
-   sort if your history has those.
+   `:eavt` order straight to the target. The dump is then not in replay order and
+   its manifest says so (`:sorted? false`); `import-db` sorts a history dump like
+   that before replaying it, which needs scratch space on the importing side for
+   a dump larger than one `:sort-buffer` window.
 
    The manifest is written LAST as the commit marker.
 
@@ -1834,6 +1834,10 @@
    which is right for any source that has no retractions."
   [manifest]
   {:history?       (boolean (:history? manifest))
+   ;; Whether the exporter sorted the records (`:sort?`). `:unknown` for a dump
+   ;; written before the manifest recorded it: its order is checked on the way
+   ;; in. See `open-import-sorter`.
+   :sorted?        (if (contains? manifest :sorted?) (true? (:sorted? manifest)) :unknown)
    :expected-count (:count (:semantic-digest manifest))
    :max-tx         (:max-tx (:stats manifest))
    ;; Present only for a dump that renamed an attribute; see
@@ -1887,7 +1891,119 @@
             {:count 0 :sample []}
             ref-attrs)))
 
-(defn- run-import
+(def ^:private malformed-key-t
+  "Transaction position of a record the replay key cannot be read from: before
+   every real transaction."
+  #?(:clj Long/MIN_VALUE :cljs js/Number.MIN_SAFE_INTEGER))
+
+(defn- replay-order-key
+  "Replay order for one record: the order a sorted export writes
+   (`sort/sort-key`), so an unsorted dump restores exactly as a sorted one
+   does. The importer does not choose an order inside a transaction of its own;
+   a dump does not record the order a transaction applied its datoms in.
+
+   A record whose transaction or entity is not a number has no key to read; it
+   sorts before everything else, for the importer's validation and `:on-error`
+   to judge."
+  [record]
+  (if (and (vector? record) (<= 5 (count record))
+           (number? (nth record 3)) (number? (nth record 0)))
+    (msort/sort-key record)
+    [malformed-key-t 0 0 "" 0 (pr-str record)]))
+
+(defn- open-import-sorter
+  "Put a history source into replay order before it is replayed.
+
+   A history written with `{:sort? false}` holds the final schema first and
+   then the data in index order, so one attribute's values arrive by value
+   rather than by transaction. Replayed as written, a later value can be
+   applied before an earlier one and the retraction of the earlier one then
+   removes it: the restore loses a current value, and the count can still
+   match. The records are all there; only their order is wrong, so they are
+   sorted here (`replay-order-key`).
+
+   `:force?` false is for a dump that does not say whether it is sorted
+   (written before the manifest recorded it). If its transactions arrive in
+   order, as in every sorted dump, it is handed on exactly as it came.
+
+   Memory is one window of `:sort-buffer` records. A source that fits in one is
+   sorted in memory; a larger one is spooled to scratch files and merge-sorted
+   there, as the index-building import does.
+
+   Returns `{:add! (fn [records]) :finish! (fn [] -> chunk-src) :close! (fn [])}`.
+   The chunk source reads the records in order, once. `:close!` releases the
+   scratch, never throws, and may be called at any point, more than once."
+  [opts force?]
+  (let [window (long (get opts :sort-buffer 200000))
+        size   (max 1000 (long (get opts :batch-size default-batch-size)))
+        buf    (volatile! [])
+        scratch (volatile! nil)
+        merged (volatile! nil)
+        n      (volatile! 0)
+        last-t (volatile! nil)
+        in-order? (volatile! (not force?))
+        spill! (fn []
+                 (when (nil? @scratch)
+                   (let [tmp (fs/temp-dir! "dh-import-sort")]
+                     (vreset! scratch
+                              {:tmp tmp
+                               :spool (init/open-spool!
+                                       tmp mz/default-codec
+                                       (max 1000 (min window (long init/default-spool-chunk-size))))})))
+                 (run! (:add! (:spool @scratch)) @buf)
+                 (vreset! buf []))]
+    {:add! (fn [records]
+             (doseq [r records]
+               (vswap! n inc)
+               (when @in-order?
+                 (let [t (when (and (vector? r) (<= 4 (count r))) (nth r 3))]
+                   (if (number? t)
+                     (do (when (and @last-t (< t @last-t)) (vreset! in-order? false))
+                         (vreset! last-t t))
+                     (vreset! in-order? false))))
+               (when (>= (count @buf) window) (spill!))
+               (vswap! buf conj r)))
+     :finish!
+     (fn []
+       (let [order {:datahike.migrate.sort/key-fn replay-order-key}
+             spooled (when-let [{:keys [spool]} @scratch]
+                       (spill!)
+                       (init/spool-records ((:close! spool)) mz/default-codec))
+             {:keys [records close!]}
+             (cond
+               @in-order? {:records (or spooled @buf) :close! (fn [])}
+               spooled    (msort/open-sorted-records! spooled window (:tmp @scratch) order)
+               :else      (msort/open-sorted-records! @buf (max 1 (count @buf)) nil order))
+             remaining (volatile! records)]
+         (vreset! buf nil)
+         (vreset! merged {:close! close! :remaining remaining})
+         {:chunks (range (quot (+ (long @n) size -1) size))
+          :read (fn [_ o]
+                  (let [chunk (into [] (take size) @remaining)]
+                    (vswap! remaining #(drop size %))
+                    (async+sync (get o :sync? default-sync?)
+                                *default-sync-translation*
+                                (go-try- chunk))))}))
+     :close! (fn []
+               (try
+                 (when-let [{:keys [close! remaining]} @merged]
+                   (vreset! merged nil)
+                   (vreset! remaining nil)
+                   (close!))
+                 (catch #?(:clj Throwable :cljs :default) e
+                   (log/warn :datahike/import-sort-close-failed {:error (ex-message e)})))
+               (when-let [{:keys [tmp]} @scratch]
+                 (vreset! scratch nil)
+                 (try
+                   (doseq [nm (or (fs/list-names tmp) [])]
+                     (when (false? (fs/delete! (fs/join tmp nm)))
+                       (log/warn :datahike/import-sort-scratch-left {:file (fs/join tmp nm)})))
+                   (when (false? (fs/delete! tmp))
+                     (log/warn :datahike/import-sort-scratch-left {:dir tmp}))
+                   (catch #?(:clj Throwable :cljs :default) e
+                     (log/warn :datahike/import-sort-scratch-left {:dir tmp :error (ex-message e)})))))}))
+
+(defn- run-import*
   "Medium-agnostic import core.
    `chunk-src` yields the dump's records a CHUNK at a time:
    `{:chunks [descriptor…] :read (fn [descriptor opts] -> records)}`, supplied by
@@ -1925,7 +2041,7 @@
    The dump-specific checks stay with the CALLER — `check-capabilities!`,
    `config-compat!` and `restore-blobs!` each already no-op on an absent
    manifest, so a non-dump caller simply does not call them."
-  [conn source-meta mem chunk-src opts]
+  [conn source-meta mem chunk-src opts sorter-cell]
   (let [opts     (merge {:batch-size default-batch-size :verify? true
                          :on-error :abort :sync? true} opts)
         progress (or (:progress-fn opts) (constantly nil))
@@ -2121,6 +2237,23 @@
           ;;
           ;; Memory is unchanged: one chunk (bounded by `:chunk-size`) plus one
           ;; batch (bounded by `:batch-size`), exactly as before.
+              ;; A history that is not in replay order is sorted first; see
+              ;; `open-import-sorter`. Only when the source says so: a record
+              ;; source that states nothing is taken to be in order, as before.
+              sorted (when (and (:history? source-meta)
+                                (contains? #{false :unknown} (:sorted? source-meta)))
+                       (let [sorter (open-import-sorter opts (false? (:sorted? source-meta)))]
+                         (vreset! sorter-cell (:close! sorter))
+                         (loop [cs (seq (:chunks chunk-src))]
+                           (when cs
+                             ((:add! sorter)
+                              (dt/delivered!
+                               (<?- ((:read chunk-src) (first cs) opts))
+                               {:op :read-chunk :chunk (first cs)}
+                               "a dump chunk could not be read"))
+                             (recur (next cs))))
+                         ((:finish! sorter))))
+              chunk-src (or sorted chunk-src)
               final (loop [cs (seq (:chunks chunk-src))
                            acc {:batch [] :n 0 :last-t ::start :errors [] :dropped 0
                                 :migration migration0}]
@@ -2286,6 +2419,22 @@
                      :recommended-heap (:recommended-heap mem)
                      :errors      errors}
               refs (assoc :dangling-refs refs)))))))))
+
+(defn- run-import
+  "`run-import*`, releasing the scratch of a pre-replay sort on both the success
+   and the failure path. Here rather than in a `finally`, for the reason
+   `run-index-build` gives."
+  [conn source-meta mem chunk-src opts]
+  (let [sorter-cell (volatile! nil)]
+    (async+sync
+     (get opts :sync? true) *default-sync-translation*
+     (go-try-
+      (let [res (try (dt/delivered!
+                      (<?- (run-import* conn source-meta mem chunk-src opts sorter-cell))
+                      {:op :import} "the import ended without a result")
+                     (catch #?(:clj Throwable :cljs :default) e e))]
+        (when-let [close! @sorter-cell] (close!))
+        (if (instance? #?(:clj Throwable :cljs js/Error) res) (throw res) res))))))
 
 ;; ---------------------------------------------------------------------------
 ;; the index-build path (opt-in, `:build-indexes? true`)
@@ -3116,9 +3265,12 @@
    Everything `import-db` takes (`:batch-size` `:xform` `:eids` `:merge?`
    `:build-indexes?` `:on-error` `:sync?` …) plus:
 
-     :source-meta  {:history? :expected-count :max-tx :ident-timeline
+     :source-meta  {:history? :sorted? :expected-count :max-tx :ident-timeline
                     :system-idents}, all
-                   OPTIONAL. Absent `:expected-count` only means the count check
+                   OPTIONAL. `:sorted? false` with `:history? true` says the
+                   records are not in transaction order; they are then sorted
+                   before the replay (see `open-import-sorter`). Saying nothing
+                   means they are in order. Absent `:expected-count` only means the count check
                    has nothing to compare against; absent `:max-tx` only means no
                    drift warning. A source that knows none of them passes none.
 
