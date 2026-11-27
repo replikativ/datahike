@@ -1381,10 +1381,12 @@
                                         "; the wait includes queueing behind other transactions). "
                                         "It may have died on an Error, or still be working: the write "
                                         "in flight may yet land. The import is stopped. Do not write "
-                                        "to this database from this process again, on this connection "
-                                        "or a new one: releasing the connection does not stop a commit "
-                                        "in flight, and a late one can replace newer commits. Restart "
-                                        "the process before resuming or retrying.")
+                                        "to this database again until the writer that owns it has "
+                                        "stopped: releasing the connection does not stop a commit in "
+                                        "flight, and a late one can replace newer commits. With a local "
+                                        "writer, restart this process; with a remote one (kabel), the "
+                                        "server's writer holds the batch and must be stopped or drained "
+                                        "there. Then retry into a fresh target.")
                                    (merge {:error :writer/timeout :timeout-ms ms} what))))]
     (async+sync
      (:sync? opts) *default-sync-translation*
@@ -1457,9 +1459,10 @@
       ;; kill the go block and close its channel empty.
       (when (instance? #?(:clj Throwable :cljs js/Error) r)
         (throw #?(:clj (dt/error->ex-info r) :cljs r)))
-      ;; nil is left to the callers' `delivered!`; any other non-report (a
-      ;; `false`, say) is not a batch that applied either
-      (when (and (some? r) (not (map? r)))
+      ;; nil is left to the callers' `delivered!`; anything else without the
+      ;; `:db-after` and `:migration` a batch report carries (a `false`, an
+      ;; empty map) is not a batch that applied either
+      (when (and (some? r) (not (and (map? r) (contains? r :db-after) (contains? r :migration))))
         (throw (ex-info (str "The writer answered a batch with " (pr-str r) " instead of a report.")
                         {:error :writer/malformed-reply :reply r})))
       r))))
@@ -3053,7 +3056,7 @@
                                                 :op :publish-built-db}
                                                e)))
                     report   (:rep pub)
-                    _        (when-not (or (map? report)
+                    _        (when-not (or (and (map? report) (contains? report :db-after))
                                            (instance? #?(:clj Throwable :cljs js/Error) report))
                                (throw (ex-info (str "Import aborted: the writer answered the publish with "
                                                     (pr-str report) " instead of a report.")

@@ -85,7 +85,7 @@
               ;; carrying the cause, never `:import/corrupt-datom`
               (is (= :import/apply-failed (:error (ex-data r))))
               (is (= :writer/timeout (:cause-error (ex-data r))) "and said why")
-              (is (re-find #"Restart the process before resuming" (ex-message r))
+              (is (re-find #"writer that owns it has stopped" (ex-message r))
                   "and that the batch may still land, which a reconnect does not prevent")))
           (finally (teardown conn)))))))
 
@@ -197,7 +197,8 @@
             (finally (teardown conn))))))
     (testing "a reply that is neither nothing nor a report"
       (doseq [sync? [true false]
-              on-error [:abort :collect]]
+              on-error [:abort :collect]
+              reply [false {}]]
         (let [conn (fresh :memory)
               calls (atom 0)
               orig dwriter/load-entities-migrating]
@@ -205,7 +206,7 @@
             (with-redefs [dwriter/load-entities-migrating
                           (fn [& args]
                             (if (= 2 (swap! calls inc))
-                              (doto (dt/throwable-promise) (deliver false))
+                              (doto (dt/throwable-promise) (deliver reply))
                               (apply orig args)))]
               (let [r (bounded 20000 #(import! conn {:sync? sync? :on-error on-error}))]
                 (is (instance? clojure.lang.ExceptionInfo r)
