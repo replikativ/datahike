@@ -15,6 +15,7 @@
   (:require
    [clojure.test :refer [deftest is testing]]
    [datahike.api :as d]
+   [datahike.db.transaction :as tx]
    [datahike.index.interface :as di]))
 
 (defn- fresh-conn
@@ -46,6 +47,73 @@
                (when (= attr (.-a datom)) (.-v datom))))
        sort
        vec))
+
+(deftest index-enabled-after-creating-and-populating-an-attribute
+  (doseq [refs? [false true] history? [false true]]
+    (let [conn (fresh-conn {:attribute-refs? refs? :keep-history? history?})
+          seen (atom nil)
+          observations (fn [db]
+                         (mapv (fn [order] (set (map :v (d/datoms db order :item/key))))
+                               [:aevt :avet]))
+          tx [{:db/ident :item/key :db/valueType :db.type/string
+               :db/cardinality :db.cardinality/one}
+              {:db/id "one" :item/key "former"}
+              [:db/add "one" :item/key "early"]
+              [:db/add :item/key :db/index true]
+              [:db.fn/call (fn [db] (reset! seen (observations db)) [])]
+              {:db/id "two" :item/key "late"}]]
+      (try
+        (let [report (d/transact conn tx)
+              db (:db-after report)]
+          (is (= [#{"early"} #{"early"}] @seen))
+          (is (= [#{"early" "late"} #{"early" "late"}] (observations db)))
+          (when history?
+            (is (= (set (map (juxt :e :a :v :tx :added) (d/datoms (d/history db) :aevt :item/key)))
+                   (set (map (juxt :e :a :v :tx :added) (d/datoms (d/history db) :avet :item/key)))))))
+        (finally (d/release conn))))))
+
+(deftest rename-of-an-indexed-attribute-ref-reuses-its-index
+  (let [conn (fresh-conn {:attribute-refs? true :keep-history? true})]
+    (try
+      (d/transact conn [{:db/ident :item/old :db/valueType :db.type/string
+                         :db/cardinality :db.cardinality/one :db/unique :db.unique/value}])
+      (d/transact conn [{:db/id "one" :item/old "visible"}])
+      (let [eid (:db/id (d/entity @conn :item/old))
+            backfilled (atom [])
+            backfill @#'tx/backfill-attribute]
+        (with-redefs-fn {#'tx/backfill-attribute
+                         (fn [db ident] (swap! backfilled conj ident) (backfill db ident))}
+          #(d/transact conn [[:db/add eid :db/ident :item/renamed]]))
+        (is (empty? @backfilled))
+        (is (= ["visible"] (mapv :v (d/datoms @conn :avet :item/renamed)))))
+      (finally (d/release conn)))))
+
+(deftest toggling-an-index-on-a-new-attribute
+  (let [conn (fresh-conn)
+        schema {:db/ident :item/key :db/valueType :db.type/string
+                :db/cardinality :db.cardinality/one :db/index true}]
+    (try
+      (let [db (:db-after
+                (d/transact conn [schema {:db/id "one" :item/key "removed"}
+                                  [:db/retract :item/key :db/index true]
+                                  [:db/add "one" :item/key "kept"]
+                                  [:db/add :item/key :db/index true]]))]
+        (is (= ["kept"] (mapv :v (d/datoms db :avet :item/key)))))
+      (finally (d/release conn)))))
+
+(deftest unique-enabled-after-creating-and-populating-an-attribute
+  (let [conn (fresh-conn)
+        spec {:db/ident :item/key :db/valueType :db.type/string
+              :db/cardinality :db.cardinality/one}
+        unique [:db/add :item/key :db/unique :db.unique/value]
+        rows [spec {:db/id "one" :item/key "duplicate"} {:db/id "two" :item/key "duplicate"}]]
+    (try
+      (is (schema-error? #(d/transact conn (conj rows unique))))
+      (is (nil? (get-in @conn [:schema :item/key])))
+      (let [report (d/transact conn [spec {:db/id "one" :item/key "first"} unique
+                                     [:db/add [:item/key "first"] :item/key "second"]])]
+        (is (= ["second"] (mapv :v (d/datoms (:db-after report) :avet :item/key)))))
+      (finally (d/release conn)))))
 
 (deftest db-index-can-be-disabled-without-stranding-avet
   (let [conn (fresh-conn)
