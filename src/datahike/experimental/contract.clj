@@ -6,6 +6,7 @@
   (:import [datahike.db DB]))
 
 (def version :datahike/contract-v1)
+(def version-2 :datahike/contract-v2)
 (def ^:private predicates {'= = 'not= not= '< < '<= <= '> > '>= >=})
 (def ^:private events #{:input :predicate :cursor :advance :project :aggregate :branch})
 
@@ -20,8 +21,8 @@
       (stop! :out-of-fuel))
     (vswap! meter #(-> % (update :used inc) (update-in [:events event] inc)))))
 
-(defn- run [limit evaluate]
-  (let [meter (volatile! {:used 0 :limit limit :events (zipmap events (repeat 0))})]
+(defn- run [profile limit evaluate]
+  (let [meter (volatile! {:used 0 :limit limit :events (zipmap (if (= version-2 profile) (conj events :function :union) events) (repeat 0))})]
     (try
       (let [result (evaluate meter)]
         (assoc @meter :status :ok :rows result))
@@ -57,7 +58,7 @@
 
 (declare compile-clauses)
 
-(defn- compile-clause [attributes vars clause]
+(defn- compile-clause [profile attributes vars clause]
   (cond
     (and (vector? clause) (= 3 (count clause)) (every? term? clause))
     (let [[e a v] clause
@@ -73,19 +74,32 @@
         (reject clause "Unsupported predicate or unbound argument"))
       [vars [:predicate op x y]])
 
+    (and (= profile version-2) (vector? clause) (= 2 (count clause)) (list? (first clause)))
+    (let [[[op arg :as call] out] clause]
+      (when-not (and (#{'inc 'dec} op) (= 2 (count call)) (known? vars arg)
+                     (variable? out) (not (vars out)))
+        (reject clause "Expected a checked unary integer function and a fresh output"))
+      [(conj vars out) [:function op arg out]])
+
     (and (list? clause) (#{'or-join 'not-join} (first clause)))
     (let [[kind args & body] clause
-          scope (set args)]
-      (when-not (and (vector? args) (seq args) (every? vars args) (seq body))
-        (reject clause "Expected bound correlation variables"))
-      (let [branches (if (= kind 'not-join) [body]
-                         (map #(if (and (list? %) (= 'and (first %))) (rest %) [%]) body))]
-        [vars [:exists (= kind 'not-join) args
-               (mapv #(second (compile-clauses attributes scope %)) branches)]]))
+          outputs? (and (= profile version-2) (= kind 'or-join) (vector? args) (some #(not (vars %)) args))]
+      (when-not (and (vector? args) (seq args) (seq body)
+                     (if outputs? (and (every? variable? args) (apply distinct? args)) (every? vars args)))
+        (reject clause "Expected a supported correlation vector"))
+      (let [scope (set (filter vars args))
+            branches (if (= kind 'not-join) [body]
+                         (map #(if (and (list? %) (= 'and (first %))) (rest %) [%]) body))
+            plans (mapv #(compile-clauses profile attributes scope %) branches)]
+        (when (and outputs? (some (fn [[bound]] (not-every? bound args)) plans))
+          (reject clause "Every branch must bind every declared output"))
+        (if outputs?
+          [(into vars args) [:union scope args (mapv second plans)]]
+          [vars [:exists (= kind 'not-join) args (mapv second plans)]])))
 
     :else (reject clause "Clause has no metered operator")))
 
-(defn- compile-clauses [attrs vars clauses]
+(defn- compile-clauses [profile attrs vars clauses]
   (loop [vars vars ops [] [clause & more] clauses]
     (if-not clause
       [vars ops]
@@ -101,13 +115,13 @@
                  (= '>= (ffirst lo)) (= '<= (ffirst hi)))
           (recur (into vars (filter variable? [e v]))
                  (conj ops [:range e a v (last (first lo)) (last (first hi))]) (drop 2 more))
-          (let [[bound op] (compile-clause attrs vars clause)]
+          (let [[bound op] (compile-clause profile attrs vars clause)]
             (recur bound (conj ops op) more)))))))
 
 (defn- lower
   "Validate every clause and projection. attrs is a trusted set of readable
   attribute keywords. width is the arity of the signed delta relation."
-  [form attrs width]
+  [profile form attrs width]
   (check-form! form)
   (when-not (and (vector? form) (= :find (first form)) (set? attrs)
                  (every? qualified-keyword? attrs) (<= 1 width 8))
@@ -122,7 +136,7 @@
                    (every? term? terms) (seq finds))
       (reject form "Expected :in $ $delta and a leading delta pattern"))
     (parser/parse form)
-    (let [[vars ops] (compile-clauses attrs (set (filter variable? terms)) clauses)
+    (let [[vars ops] (compile-clauses profile attrs (set (filter variable? terms)) clauses)
           projection (mapv (fn [x]
                              (cond
                                (vars x) [:value x]
@@ -169,6 +183,31 @@
           (when-not (or (#{'= 'not=} op) (and (int? x) (int? y))) (stop! :type-error))
           (when ((predicates op) x y) (proceed env)))
 
+        :function
+        (let [[op arg out] operands
+              x (value env arg)]
+          (charge! :function)
+          (when-not (int? x) (stop! :type-error))
+          (let [result (try (if (= op 'inc) (Math/incrementExact (long x)) (Math/decrementExact (long x)))
+                            (catch ArithmeticException _ (stop! :numeric-overflow)))]
+            (proceed (assoc env out result))))
+
+        :union
+        (let [[inputs args branches] operands
+              scope (select-keys env inputs)
+              seen (volatile! #{})
+              forward (fn [row]
+                        (charge! :union)
+                        (let [entry (mapv row args)]
+                          (when-not (contains? @seen entry)
+                            (when (>= (count @seen) 128) (stop! :relation-limit))
+                            (vswap! seen conj entry)
+                            (proceed (into env (map vector args entry))))))]
+          (some (fn [branch]
+                  (charge! :branch)
+                  (walk db charge! branch scope forward))
+                branches))
+
         :exists
         (let [[negated? vars branches] operands
               scope (select-keys env vars)
@@ -198,7 +237,7 @@
 (defn- validate-indexes! [schema ops]
   (doseq [[op a b c :as step] ops]
     (case op
-      :exists (doseq [branch c] (validate-indexes! schema branch))
+      (:exists :union) (doseq [branch c] (validate-indexes! schema branch))
       (:lookup :range)
       (let [attr (if (= op :lookup) c b)
             spec (get schema attr)]
@@ -210,10 +249,12 @@
 
 (defn admit
   "Lower a bounded program using the actual readable index schema."
-  [form attrs width schema]
-  (let [plan (lower form attrs width)]
-    (validate-indexes! schema (:ops plan))
-    plan))
+  ([form attrs width schema] (admit version form attrs width schema))
+  ([profile form attrs width schema]
+   (when-not (#{version version-2} profile) (reject profile "Unknown contract profile"))
+   (let [plan (lower profile form attrs width)]
+     (validate-indexes! schema (:ops plan))
+     plan)))
 
 (defn- accumulate [projection env totals]
   (mapv (fn [[op variable] acc]
@@ -253,10 +294,11 @@
 (defn execute
   "Compile the signed form and run it with bounded input and projection sets.
   :rows is returned only on success. Fuel excludes admission and schema checks."
-  [form attrs width db rows fuel]
-  (when-not (and (instance? DB db) (vector? rows) (<= (count rows) 32)
-                 (every? #(and (vector? %) (= width (count %)) (every? scalar? %)) rows)
-                 (nat-int? fuel) (<= fuel 4096))
-    (reject nil "Input or budget outside profile"))
-  (let [plan (admit form attrs width (:schema db))]
-    (run fuel (fn [m] (evaluate plan db rows #(spend! m %))))))
+  ([form attrs width db rows fuel] (execute version form attrs width db rows fuel))
+  ([profile form attrs width db rows fuel]
+   (when-not (and (instance? DB db) (vector? rows) (<= (count rows) 32)
+                  (every? #(and (vector? %) (= width (count %)) (every? scalar? %)) rows)
+                  (nat-int? fuel) (<= fuel 4096))
+     (reject nil "Input or budget outside profile"))
+   (let [plan (admit profile form attrs width (:schema db))]
+     (run profile fuel (fn [m] (evaluate plan db rows #(spend! m %)))))))

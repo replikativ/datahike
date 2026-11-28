@@ -152,3 +152,50 @@
                          [?entity :sample/n ?n] [?entity :sample/n ?x ?tx]
                          (or-join [?free] [_ :sample/n ?free])]))]
       (is (thrown? Exception (contract/admit form attrs 1 schema)) (pr-str form)))))
+
+(deftest versioned-functions-and-binding-disjunction
+  (let [cfg {:store {:backend :memory :id (random-uuid)} :schema-flexibility :write}]
+    (d/create-database cfg)
+    (let [conn (d/connect cfg)]
+      (try
+        (d/transact conn [{:db/ident :item/bucket :db/valueType :db.type/long
+                           :db/index true :db/cardinality :db.cardinality/one}])
+        (d/transact conn (vec (repeat 129 {:item/bucket 1})))
+        (let [db @conn
+              form '[:find ?x ?out :in $ $delta :where [$delta ?x]
+                     (or-join [?x ?out] [(inc ?x) ?out] [(dec ?x) ?out]
+                              (and [(inc ?x) ?local] [(inc ?local) ?tmp] [(dec ?tmp) ?out]))]
+              run (fn [query rows budget] (contract/execute contract/version-2 query #{} 1 db rows budget))
+              rows [[2] [4]]
+              receipt (run form rows 28)]
+          (doseq [legacy? [false true]]
+            (binding [q/*query-result-cache?* false q/*disable-planner* legacy?]
+              (is (= #{[2 3] [2 1] [4 5] [4 3]} (set (d/q form db rows)) (:rows receipt)))))
+          (is (= {:input 2 :branch 6 :function 10 :union 6 :project 4}
+                 (into {} (filter (comp pos? val)) (:events receipt))))
+          (doseq [budget (range 28)]
+            (let [r (run form rows budget)]
+              (is (= [:out-of-fuel budget budget false]
+                     [(:status r) (:used r) (reduce + (vals (:events r))) (contains? r :rows)]))))
+          (doseq [[op x reason] [['inc Long/MAX_VALUE :numeric-overflow] ['dec Long/MIN_VALUE :numeric-overflow]
+                                 ['inc :keyword :type-error]]]
+            (let [f (conj '[:find ?out :in $ $delta :where [$delta ?x]] [(list op '?x) '?out])]
+              (is (= [reason 2 nil] ((juxt :status :used :rows) (run f [[x]] 2))))))
+          (let [union '(or-join [?x ?e] [?e :item/bucket ?x] [?e :item/bucket ?x])
+                query (conj '[:find ?x :in $ $delta :where [$delta ?x]] union '[(< ?x 0)])
+                r (contract/execute contract/version-2 query #{:item/bucket} 1 db [[1]] 4096)]
+            (is (= [:relation-limit 129 0 false]
+                   [(:status r) (get-in r [:events :union]) (get-in r [:events :project]) (contains? r :rows)])))
+          (let [nested '[:find ?x :in $ $delta :where [$delta ?x]
+                         (not-join [?x] (or-join [?x ?y] [(inc ?x) ?y] [(dec ?x) ?y]) [(> ?y 0)])]
+                r (run nested [[0] [-2]] 64)]
+            (is (= #{[-2]} (set (d/q nested db [[0] [-2]])) (:rows r)))
+            (is (= 3 (get-in r [:events :union]))))
+          (is (thrown? Exception (contract/admit form #{} 1 (:schema db))))
+          (doseq [clause ['(or-join [?x ?out] [(inc ?x) ?out] [(= ?x 1)])
+                          '(or-join [?x ?out] [?out :secret/n ?x])
+                          '[(inc ?missing) ?out] '[(inc ?x) ?x] '[(identity ?x) ?out]]]
+            (is (thrown? Exception (contract/admit contract/version-2
+                                                   (conj '[:find ?x :in $ $delta :where [$delta ?x]] clause)
+                                                   #{} 1 (:schema db))))))
+        (finally (d/release conn) (d/delete-database cfg))))))
