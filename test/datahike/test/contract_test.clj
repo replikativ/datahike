@@ -1,6 +1,7 @@
 (ns datahike.test.contract-test
   (:require [clojure.test :refer [deftest is]]
             [datahike.api :as d]
+            [datahike.query :as q]
             [datahike.experimental.contract :as contract]))
 
 (def window
@@ -68,9 +69,18 @@
               (let [rows (vec (for [_ (range 3)
                                     :let [start (.nextInt rng 155)]]
                                 [start (+ start (.nextInt rng 8)) (.nextInt rng 155)]))
-                    rows (conj rows (first rows))]
+                    rows (conj rows (first rows))
+                    wire (mapv #(mapv long %) rows)]
                 (doseq [form [window absent grouped]]
-                  (is (= (set (d/q form db rows)) (:rows (run form rows 4096))))))))
+                  ;; EDN integers decode as Long. On 0.8.1958 the optimized
+                  ;; anti-join can retain a boxed Integer equal to a stored Long.
+                  ;; Compare both carriers to the base engine and signed-wire
+                  ;; inputs independently to the optimized engine.
+                  (let [planned (binding [q/*query-result-cache?* false] (set (q/q form db wire)))
+                        base (binding [q/*query-result-cache?* false q/*disable-planner* true]
+                               (set (q/q form db rows)))]
+                    (is (= base planned (:rows (run form rows 4096)) (:rows (run form wire 4096)))
+                        (pr-str [form rows])))))))
           (doseq [clause ['[(slurp ?target)] '[?e ?attribute ?target] '[?e :secret/id ?target]
                           '[?e :sample/n ?new] '(external ?target) '[(identity ?target) ?x]
                           '(not-join [?new] [?e :sample/n ?new])]]

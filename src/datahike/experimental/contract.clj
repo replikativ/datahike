@@ -137,7 +137,7 @@
 (defn- match-term [env term x]
   (cond
     (= '_ term) env
-    (and (variable? term) (not (contains? env term))) (assoc env term x)
+    (and (variable? term) (not (contains? env term))) (assoc env term (if (int? x) (long x) x))
     (= x (value env term)) env))
 
 (defn- scan [charge! cursor accept]

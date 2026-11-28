@@ -57,7 +57,8 @@ on successful execution and satisfaction of their invariant.
 The profile admits up to 128 syntax nodes, depth 12, one to eight delta
 columns, 32 delta rows and 4,096 fuel. Scalars are signed machine integers,
 keywords or strings; keyword spellings and strings are limited to 128 JVM
-UTF-16 code units. Result materialization retains up to 128 distinct basis
+UTF-16 code units. Integer bindings normalize to signed longs as on the EDN
+wire. Result materialization retains up to 128 distinct basis
 tuples and at most one aggregate group per tuple. Intermediate join bindings
 stream on the stack. A host may set tighter byte, state-size and fuel limits.
 Compilation and schema validation have syntax bounds and do not spend fuel.
@@ -70,6 +71,12 @@ each entity to a second attribute, and returns one projected row. Tests
 compare its result with ordinary Datahike Datalog, stop during the scan at
 several budgets, and exercise the projection limit. Aggregation tests cover
 duplicate inputs, reversed input order, `:with`, and exact exhaustion.
+The generated corpus also exercises overlapping windows, missing keys, and
+grouped counts over duplicate input rows. In 0.8.1958, optimized ordinary
+Datalog can retain a boxed JVM Integer in a `not-join` when an equal Long is
+present in the database. The base engine excludes it. The tests check the
+base engine on those inputs, optimized Datalog on signed-wire Longs, and the
+contract executor on both representations with the same expected result.
 
 This is an experimental execution path separate from `d/q`. Before freezing
 the profile, review equivalence over a broader generated query corpus and
