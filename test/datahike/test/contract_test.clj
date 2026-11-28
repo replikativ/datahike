@@ -72,14 +72,11 @@
                     rows (conj rows (first rows))
                     wire (mapv #(mapv long %) rows)]
                 (doseq [form [window absent grouped]]
-                  ;; EDN integers decode as Long. On 0.8.1958 the optimized
-                  ;; anti-join can retain a boxed Integer equal to a stored Long.
-                  ;; Compare both carriers to the base engine and signed-wire
-                  ;; inputs independently to the optimized engine.
-                  (let [planned (binding [q/*query-result-cache?* false] (set (q/q form db wire)))
-                        base (binding [q/*query-result-cache?* false q/*disable-planner* true]
-                               (set (q/q form db rows)))]
-                    (is (= base planned (:rows (run form rows 4096)) (:rows (run form wire 4096)))
+                  (let [ordinary (fn [legacy? data]
+                                   (binding [q/*query-result-cache?* false q/*disable-planner* legacy?]
+                                     (set (q/q form db data))))]
+                    (is (= (ordinary true rows) (ordinary false rows) (ordinary false wire)
+                           (:rows (run form rows 4096)) (:rows (run form wire 4096)))
                         (pr-str [form rows])))))))
           (doseq [clause ['[(slurp ?target)] '[?e ?attribute ?target] '[?e :secret/id ?target]
                           '[?e :sample/n ?new] '(external ?target) '[(identity ?target) ?x]
@@ -90,3 +87,68 @@
                        (contract/admit '[:find ?e :in $ $delta :where [$delta ?x] [?e :sample/id ?x]]
                                        attrs 1 (:schema db)))))
         (finally (d/release c) (d/delete-database cfg))))))
+
+(deftest clause-and-fuel-conformance
+  (let [cfg {:store {:backend :memory :id (random-uuid)} :schema-flexibility :write}]
+    (d/create-database cfg)
+    (let [conn (d/connect cfg)]
+      (try
+        (d/transact conn [{:db/ident :item/n :db/valueType :db.type/long
+                           :db/cardinality :db.cardinality/one :db/index true}])
+        (d/transact conn [{:item/n 1} {:item/n 2} {:item/n 2}])
+        (let [db @conn
+              attrs #{:item/n}
+              head '[:find ?x :in $ $delta :where [$delta ?x]]
+              ;; Explicit event counts include misses, duplicate results, terminal
+              ;; cursor probes and successful existential short-circuiting.
+              cases [[head [[1] [1]] {:input 2 :project 2}]
+                     [(conj head '[_ :item/n ?x]) [[2] [3]]
+                      {:input 2 :cursor 2 :advance 4 :project 2}]
+                     [(conj head '(not-join [?x] [_ :item/n ?x])) [[2] [3]]
+                      {:input 2 :branch 2 :cursor 2 :advance 2 :project 1}]
+                     [(conj head '(or-join [?x] [(= ?x 1)] (and [(>= ?x 2)] [(< ?x 3)])))
+                      [[1] [2] [3]] {:input 3 :branch 5 :predicate 7 :project 2}]
+                     [(into head '[[?e :item/n ?v] [(>= ?v ?x)] [(<= ?v 2)]
+                                   [?e :item/n _] [(> ?v 2)]])
+                      [[1] [3]] {:input 2 :cursor 5 :advance 11 :predicate 3}]
+                     ['[:find ?x (count ?v) (sum ?v) :with ?e :in $ $delta
+                        :where [$delta ?x] [?e :item/n ?x] [?e :item/n ?v]]
+                      [[2]] {:input 1 :cursor 3 :advance 7 :project 2 :aggregate 2}]
+                     ['[:find ?x :in $ $delta :where [$delta ?x ?x _ :ok] [(not= ?x 2)]]
+                      [[1 1 9 :ok] [1 2 9 :ok] [2 2 9 :ok] [3 3 9 :miss]]
+                      {:input 4 :predicate 2 :project 1}]]]
+          (doseq [[form rows events] cases]
+            (let [width (count (first rows))
+                  limit (reduce + (vals events))
+                  run #(contract/execute form attrs width db rows %)
+                  receipt (run limit)
+                  ordinary (fn [legacy?]
+                             (binding [q/*query-result-cache?* false q/*disable-planner* legacy?]
+                               (set (q/q form db rows))))]
+              (is (= :ok (:status receipt)) (pr-str form))
+              (is (= (ordinary true) (ordinary false) (:rows receipt)) (pr-str form))
+              (is (= events (into {} (filter (comp pos? val)) (:events receipt))) (pr-str form))
+              (doseq [budget (range limit)]
+                (let [r (run budget)]
+                  (is (= [:out-of-fuel budget budget false]
+                         [(:status r) (:used r) (reduce + (vals (:events r))) (contains? r :rows)])
+                      (pr-str [form budget])))))))
+        (finally (d/release conn) (d/delete-database cfg))))))
+
+(deftest ordinary-forms-outside-the-profile-fail-admission
+  (let [head '[:find ?x :in $ $delta :where [$delta ?x]]
+        attrs #{:sample/n}
+        schema {:sample/n {:db/valueType :db.type/long :db/index true}}]
+    (doseq [form (concat
+                  '[[:find ?x . :in $ $delta :where [$delta ?x]]
+                    [:find [?x ...] :in $ $delta :where [$delta ?x]]
+                    [:find (pull ?x [*]) :in $ $delta :where [$delta ?x]]
+                    [:find (min ?x) :in $ $delta :where [$delta ?x]]
+                    [:find ?x :in $ $delta % :where [$delta ?x]]
+                    [:find ?x :with ?missing :in $ $delta :where [$delta ?x]]]
+                  (map #(conj head %)
+                       '[(not [_ :sample/n ?x]) (or [(= ?x 1)] [(= ?x 2)])
+                         (reachable ?x) [(inc ?x) ?y] [?entity ?attr ?x]
+                         [?entity :sample/n ?n] [?entity :sample/n ?x ?tx]
+                         (or-join [?free] [_ :sample/n ?free])]))]
+      (is (thrown? Exception (contract/admit form attrs 1 schema)) (pr-str form)))))

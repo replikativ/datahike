@@ -72,13 +72,71 @@ compare its result with ordinary Datahike Datalog, stop during the scan at
 several budgets, and exercise the projection limit. Aggregation tests cover
 duplicate inputs, reversed input order, `:with`, and exact exhaustion.
 The generated corpus also exercises overlapping windows, missing keys, and
-grouped counts over duplicate input rows. In 0.8.1958, optimized ordinary
-Datalog can retain a boxed JVM Integer in a `not-join` when an equal Long is
-present in the database. The base engine excludes it. The tests check the
-base engine on those inputs, optimized Datalog on signed-wire Longs, and the
-contract executor on both representations with the same expected result.
+grouped counts over duplicate input rows. The differential tests compare boxed
+integer inputs against the base and optimized ordinary engines with result
+caching disabled, and compare the contract results on boxed and wire inputs.
 
-This is an experimental execution path separate from `d/q`. Before freezing
-the profile, review equivalence over a broader generated query corpus and
-define the supported index configurations for consensus replay. A new
-execution order or charging schedule requires a distinct profile identifier.
+### Contract v1 language
+
+The following grammar describes the submitted EDN. Braces mean repetition,
+angle brackets name grammar elements, and the optional section is marked
+with a question mark. Admission also applies the binding and schema rules
+below and the ordinary Datahike parser.
+
+```text
+query     ::= [:find find {find} (:with var {var})? :in $ $delta :where delta {clause}]
+find      ::= var | (sum var) | (count var)
+delta     ::= [$delta term {term}]
+term      ::= var | _ | scalar
+clause    ::= [entity attr term] | [(pred arg arg)] | interval
+            | (not-join [var {var}] clause {clause})
+            | (or-join [var {var}] branch {branch})
+branch    ::= clause | (and clause {clause})
+interval  ::= [entity attr var] [(>= var arg)] [(<= var arg)]
+entity    ::= var | _ | positive-integer
+arg       ::= var | scalar
+pred      ::= = | not= | < | <= | > | >=
+```
+
+Variables are simple symbols beginning with `?`. Each input row unifies
+left to right with the leading delta pattern. A repeated variable requires
+equality, a literal must match, and each wildcard ignores its position.
+A database attribute is a literal qualified keyword on the host's read
+list. Entity lookups use EAVT. A value lookup requires an indexed or unique
+attribute. A range requires an unbound value variable, an unbound entity or
+wildcard, an indexed long attribute, and two already-known endpoints.
+Point lookups support long, string and keyword attributes. Order comparisons
+accept integers. Equality and inequality accept all profile scalars.
+
+Each branch starts with exactly its declared, already-bound correlation
+variables. Locals do not escape. Negation succeeds on absence. Disjunction
+succeeds on the first witness. Each retains its outer row at most once.
+Projection yields a set of vectors. Aggregates deduplicate the combined
+find-variable and `:with` tuple before grouping by plain find variables.
+Each distinct basis tuple incurs one aggregate event even when several
+aggregates share it. Sum uses checked signed 64-bit addition.
+The contract evaluator constructs groups only when it sees a basis tuple.
+
+### Extending coverage toward ordinary Datahike Datalog
+
+| Ordinary query family | Contract v1 coverage | Work to admit more |
+| --- | --- | --- |
+| Patterns and joins | Three-place, fixed-attribute, bound-prefix joins and indexed integer windows | Specify charging for full scans, additional pattern positions, dynamic attributes and additional value types |
+| Logical clauses | Correlated existential disjunction and negation | Specify branch output bindings, deduplication and negation scope for plain `or`, `not` and binding-producing `or-join` |
+| Inputs and databases | One current snapshot and one bounded relation | Define limits and iteration order for scalar, tuple, collection and additional database inputs or views |
+| Results | Relation finds, `:with`, grouped `count` and `sum` | Specify empty-group behavior, scalar/tuple/collection finds, other aggregates, return maps, sorting and pull traversal |
+| Predicates and functions | Six named binary comparisons | Add deterministic built-ins individually with type, result-size and per-call work bounds |
+| Rules | No rule input | Meter rule expansion first; recursive rules also need bounds for intermediate relations and repeated derivation |
+
+For each extension, compare results with ordinary Datalog, record the exact
+charge of a successful run and check interruption before each event. Include
+misses and duplicate candidates so output size cannot hide work. This schedule
+measures logical work. A native seek can still traverse index pages; bounding
+physical work also depends on the supported backend and snapshot size.
+
+Metering ordinary `d/q` would additionally require accounting across both
+engines, including planner rewrites, native join tables, intermediate
+materialization, caches and result shaping. Cancellation supplies a place to
+stop execution; deterministic fuel also needs a versioned definition of what
+consumes a unit across validators. A change to the contract execution order
+or charging schedule requires a distinct profile identifier.
