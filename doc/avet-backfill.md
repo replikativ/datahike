@@ -14,6 +14,12 @@ together. The transaction-local `:allow-index-backfill?` option permits that
 work; it does not start a background job. This path can hold up other writes
 and can require substantial memory for large attributes.
 
+If the transaction creates an attribute, writes values, and then indexes it,
+later transaction functions and lookup refs can read those earlier values
+through AVET. When indexing a previously committed attribute, issue indexed
+reads of its pre-existing values after the migration commits. Its ordinary
+backfill completes during transaction finalization.
+
 Choose `begin-avet-build!` explicitly for online maintenance when writes need
 to continue during construction. It is not the default and does not replace
 ordinary schema transactions. Its promise acknowledges the request, not a
