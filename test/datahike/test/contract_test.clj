@@ -56,6 +56,21 @@
               (doseq [limit (range 12)]
                 (let [r (run form rows limit)]
                   (is (= [:out-of-fuel limit nil] ((juxt :status :used :rows) r)))))))
+          ;; Deterministic differential corpus: overlapping windows, misses,
+          ;; duplicate input rows, and equality joins with local negation.
+          (let [rng (java.util.Random. 127)
+                absent '[:find ?x :in $ $delta :where [$delta ?lo ?hi ?x]
+                         (not-join [?x] [_ :sample/n ?x])]
+                grouped '[:find ?x (count ?n) :with ?entity :in $ $delta
+                          :where [$delta ?lo ?hi ?x] [?entity :sample/n ?n]
+                          [(>= ?n ?lo)] [(<= ?n ?hi)]]]
+            (dotimes [_ 32]
+              (let [rows (vec (for [_ (range 3)
+                                    :let [start (.nextInt rng 155)]]
+                                [start (+ start (.nextInt rng 8)) (.nextInt rng 155)]))
+                    rows (conj rows (first rows))]
+                (doseq [form [window absent grouped]]
+                  (is (= (set (d/q form db rows)) (:rows (run form rows 4096))))))))
           (doseq [clause ['[(slurp ?target)] '[?e ?attribute ?target] '[?e :secret/id ?target]
                           '[?e :sample/n ?new] '(external ?target) '[(identity ?target) ?x]
                           '(not-join [?new] [?e :sample/n ?new])]]

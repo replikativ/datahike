@@ -42,7 +42,9 @@
 
 (defn- term? [x] (or (= x '_) (variable? x) (scalar? x)))
 
-(defn- check-form! [form]
+(defn check-form!
+  "Check size, depth and scalar limits before hashing or parsing a submitted query."
+  [form]
   (let [nodes (volatile! 0)]
     (letfn [(visit [x depth]
               (when (or (> (vswap! nodes inc) 128) (> depth 12))
