@@ -297,22 +297,29 @@ compared element-wise; a mismatched pair falls back to a stable class ordering."
     :else x))
 
 (defn native-key
-  "Key for a java.util or JS container, which compares by identity unless the
-   key is a primitive.
+  "Key for a native container using JVM equals/hashCode or JS SameValueZero.
 
    The ClojureScript string is built here rather than with `pr-str`, which
    honours `*print-length*` and `*print-level*`: under a caller's
    `(binding [*print-length* 1] …)` every array printed the same prefix and
    unequal values collided in a join. A key may not depend on print settings."
   [x]
-  (if #?(:clj (and (vector? x) (some value-array? x)) :cljs false)
-    (mapv native-key x)
-    (if (value-array? x)
-      #?(:clj (wrap-comparable x)
-         :cljs (let [w (wrap-comparable x)]
-                 (apply str (name (:kind w)) "|"
-                        (interpose "," (map str (:vals w))))))
-      x)))
+  #?(:clj
+     ;; Java hash tables distinguish boxed integer types. Keep the common
+     ;; Long key, promoting only integers outside its range to BigInteger.
+     (cond
+       (instance? Long x) x
+       (int? x) (long x)
+       (integer? x) (let [n (biginteger x)]
+                      (if (< (.bitLength n) 64) (.longValue n) n))
+       (vector? x) (mapv native-key x)
+       (value-array? x) (wrap-comparable x)
+       :else x)
+     :cljs
+     (if (value-array? x)
+       (let [w (wrap-comparable x)]
+         (apply str (name (:kind w)) "|" (interpose "," (map str (:vals w)))))
+       x)))
 
 (defn- same-array-kind?
   "Are `a` and `b` the same primitive-array kind?"

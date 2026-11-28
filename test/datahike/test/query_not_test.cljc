@@ -529,3 +529,19 @@
                                [(= ?m false)]
                                [?e :name]
                                [?o :city "Kyiv"])]))))))
+
+#?(:clj
+   (deftest numeric-not-join-uses-clojure-equality
+     (let [db (d/db-with (db/empty-db)
+                         (mapv #(hash-map :number % :label (str %)) (range 150)))
+           scalar '[:find ?n :in $ $rows :where [$rows ?n ?label]
+                    (not-join [?n] [_ :number ?n])]
+           composite '[:find ?n :in $ $rows :where [$rows ?n ?label]
+                       (not-join [?n ?label] [?e :number ?n] [?e :label ?label])]]
+       (binding [dq/*query-result-cache?* false]
+         (doseq [box [int long bigint]
+                 query [scalar composite]]
+           (let [rows [[(box 23) "23"] [(box 151) "151"]]
+                 expected #{[151]}]
+             (is (= expected (binding [dq/*disable-planner* true] (d/q query db rows))))
+             (is (= expected (binding [dq/*disable-planner* false] (d/q query db rows))))))))))
