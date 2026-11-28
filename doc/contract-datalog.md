@@ -1,8 +1,8 @@
 # Experimental metered contract queries
 
 The JVM namespace `datahike.experimental.contract` runs a restricted query
-against a current Datahike snapshot and a bounded input relation. A host pins
-the language and meter identifier `:datahike/contract-v1` at deployment. The
+against immutable Datahike snapshots and a bounded input relation. A host pins
+the language and meter profile at deployment. The
 contract has read access to attributes explicitly granted by the host.
 
 ```clojure
@@ -35,6 +35,31 @@ result can group by projected variables and compute `sum` and `count` over
 distinct projection tuples including the variables specified by `:with`.
 Predicate names resolve from a fixed table. Rules, recursion, arbitrary
 functions, dynamic attributes, pull, and history views are outside this profile.
+
+### Queries over a transaction
+
+Use `contract/transition-profile` to read both snapshots in a transaction report.
+The host supplies the delta rows and their order. For example, a host can pass
+a booking's resolved price changes as four-column rows.
+
+```clojure
+(def confirmed-price-change
+  '[:find ?booking :in $before $after $delta
+    :where [$delta ?booking _ _ :added]
+           [$before ?booking :booking/status :confirmed]])
+
+(def snapshots {'$before (:db-before report) '$after (:db-after report)})
+(contract/execute contract/transition-profile confirmed-price-change
+                  #{:booking/status} 4 snapshots price-changes 32)
+```
+
+Every database pattern names its snapshot, including patterns inside joins.
+Both snapshots use the v2 operators, the same read allowlist and the same
+fuel schedule. Admission checks each read against its source's schema.
+The ordinary query engine and the metered evaluator share the Datalog parser
+and Datahike index operations. The metered evaluator fixes clause order,
+cursor traversal and charging points so replicas can reproduce a receipt
+independently of ordinary query planning and result caching.
 
 ### Receipts and limits
 

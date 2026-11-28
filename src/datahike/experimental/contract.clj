@@ -7,6 +7,8 @@
 
 (def version :datahike/contract-v1)
 (def version-2 :datahike/contract-v2)
+(def transition-profile :datahike/contract-transition)
+(def ^:private transition-sources '#{$before $after})
 (def ^:private predicates {'= = 'not= not= '< < '<= <= '> > '>= >=})
 (def ^:private events #{:input :predicate :cursor :advance :project :aggregate :branch})
 
@@ -22,7 +24,7 @@
     (vswap! meter #(-> % (update :used inc) (update-in [:events event] inc)))))
 
 (defn- run [profile limit evaluate]
-  (let [meter (volatile! {:used 0 :limit limit :events (zipmap (if (= version-2 profile) (conj events :function :union) events) (repeat 0))})]
+  (let [meter (volatile! {:used 0 :limit limit :events (zipmap (if (#{version-2 transition-profile} profile) (conj events :function :union) events) (repeat 0))})]
     (try
       (let [result (evaluate meter)]
         (assoc @meter :status :ok :rows result))
@@ -58,23 +60,24 @@
 
 (declare compile-clauses)
 
+(defn- index-pattern [profile clause]
+  (when (vector? clause)
+    (if (= profile transition-profile)
+      (when (and (= 4 (count clause)) (transition-sources (first clause))
+                 (every? term? (subvec clause 1)))
+        clause)
+      (when (and (= 3 (count clause)) (every? term? clause))
+        (into ['$] clause)))))
+
 (defn- compile-clause [profile attributes vars clause]
   (cond
-    (and (vector? clause) (= 3 (count clause)) (every? term? clause))
-    (let [[e a v] clause
-          index (cond (known? vars e) :eavt
-                      (known? vars v) :avet)]
-      (when-not (and (attributes a) index (or (variable? e) (= '_ e) (pos-int? e)))
-        (reject clause "Expected a declared attribute and a bound index prefix"))
-      [(into vars (filter variable? [e v])) [:lookup index e a v]])
-
     (and (vector? clause) (= 1 (count clause)) (list? (first clause)))
     (let [[op x y :as call] (first clause)]
       (when-not (and (= 3 (count call)) (predicates op) (every? #(known? vars %) [x y]))
         (reject clause "Unsupported predicate or unbound argument"))
       [vars [:predicate op x y]])
 
-    (and (= profile version-2) (vector? clause) (= 2 (count clause)) (list? (first clause)))
+    (and (#{version-2 transition-profile} profile) (vector? clause) (= 2 (count clause)) (list? (first clause)))
     (let [[[op arg :as call] out] clause]
       (when-not (and (#{'inc 'dec} op) (= 2 (count call)) (known? vars arg)
                      (variable? out) (not (vars out)))
@@ -83,7 +86,7 @@
 
     (and (list? clause) (#{'or-join 'not-join} (first clause)))
     (let [[kind args & body] clause
-          outputs? (and (= profile version-2) (= kind 'or-join) (vector? args) (some #(not (vars %)) args))]
+          outputs? (and (#{version-2 transition-profile} profile) (= kind 'or-join) (vector? args) (some #(not (vars %)) args))]
       (when-not (and (vector? args) (seq args) (seq body)
                      (if outputs? (and (every? variable? args) (apply distinct? args)) (every? vars args)))
         (reject clause "Expected a supported correlation vector"))
@@ -106,15 +109,25 @@
       ;; A bounded interval is written as an indexed pattern followed by its
       ;; inclusive lower and upper predicates. Both endpoints must be bound.
       (let [[lo hi] more
-            [e a v] (when (vector? clause) clause)]
-        (if (and (vector? clause) (= 3 (count clause)) (attrs a) (term? e) (variable? v)
-                 (not (vars v)) (not (known? vars e))
-                 (every? #(and (vector? %) (= 1 (count %)) (list? (first %))
-                               (= 3 (count (first %))) (= v (second (first %)))
-                               (known? vars (last (first %)))) [lo hi])
-                 (= '>= (ffirst lo)) (= '<= (ffirst hi)))
+            [source e a v] (index-pattern profile clause)]
+        (cond
+          (and source (attrs a) (term? e) (variable? v)
+               (not (vars v)) (not (known? vars e))
+               (every? #(and (vector? %) (= 1 (count %)) (list? (first %))
+                             (= 3 (count (first %))) (= v (second (first %)))
+                             (known? vars (last (first %)))) [lo hi])
+               (= '>= (ffirst lo)) (= '<= (ffirst hi)))
           (recur (into vars (filter variable? [e v]))
-                 (conj ops [:range e a v (last (first lo)) (last (first hi))]) (drop 2 more))
+                 (conj ops [:range e a v (last (first lo)) (last (first hi)) source]) (drop 2 more))
+
+          source
+          (let [index (cond (known? vars e) :eavt (known? vars v) :avet)]
+            (when-not (and (attrs a) index (or (variable? e) (= '_ e) (pos-int? e)))
+              (reject clause "Expected a declared attribute and a bound index prefix"))
+            (recur (into vars (filter variable? [e v]))
+                   (conj ops [:lookup index e a v source]) more))
+
+          :else
           (let [[bound op] (compile-clause profile attrs vars clause)]
             (recur bound (conj ops op) more)))))))
 
@@ -129,12 +142,13 @@
   (let [[finds tail] (split-with #(not (#{:in :with} %)) (rest form))
         [with tail] (if (= :with (first tail))
                       (split-with #(not= :in %) (rest tail)) [[] tail])
-        [input & clauses] (drop 4 tail)
+        header (if (= profile transition-profile) '(:in $before $after $delta :where) '(:in $ $delta :where))
+        [input & clauses] (drop (count header) tail)
         terms (when (and (vector? input) (seq input)) (subvec input 1))]
-    (when-not (and (= '(:in $ $delta :where) (take 4 tail))
+    (when-not (and (= header (take (count header) tail))
                    (vector? input) (= '$delta (first input)) (= width (count terms))
                    (every? term? terms) (seq finds))
-      (reject form "Expected :in $ $delta and a leading delta pattern"))
+      (reject form "Expected profile source declaration and a leading delta pattern"))
     (parser/parse form)
     (let [[vars ops] (compile-clauses profile attrs (set (filter variable? terms)) clauses)
           projection (mapv (fn [x]
@@ -168,9 +182,9 @@
     :db.type/keyword (keyword? x)
     false))
 
-(defn- walk [db charge! ops env emit]
+(defn- walk [sources charge! ops env emit]
   (if-let [[operator & operands] (first ops)]
-    (let [proceed (fn [row] (walk db charge! (next ops) row emit))
+    (let [proceed (fn [row] (walk sources charge! (next ops) row emit))
           accept (fn [datom entity-term value-term]
                    (let [x (nth datom 2)]
                      (when-not (scalar? x) (stop! :value-limit))
@@ -205,7 +219,7 @@
                             (proceed (into env (map vector args entry))))))]
           (some (fn [branch]
                   (charge! :branch)
-                  (walk db charge! branch scope forward))
+                  (walk sources charge! branch scope forward))
                 branches))
 
         :exists
@@ -213,11 +227,12 @@
               scope (select-keys env vars)
               found (some (fn [branch]
                             (charge! :branch)
-                            (walk db charge! branch scope (constantly true))) branches)]
+                            (walk sources charge! branch scope (constantly true))) branches)]
           (when (= (not negated?) (boolean found)) (proceed env)))
 
         :lookup
-        (let [[index entity attr val-term] operands
+        (let [[index entity attr val-term source] operands
+              db (get sources source)
               avet? (= index :avet)
               key (value env (if avet? val-term entity))]
           (when-not (if avet? (matches-index-type? (:schema db) attr key) (int? key))
@@ -227,20 +242,21 @@
                 #(accept % entity val-term)))
 
         :range
-        (let [[entity attr val-term lower upper] operands
+        (let [[entity attr val-term lower upper source] operands
+              db (get sources source)
               lo (value env lower) hi (value env upper)]
           (when-not (and (int? lo) (int? hi)) (stop! :type-error))
           (scan charge! #(when (<= lo hi) (dbi/index-range db attr lo hi))
                 #(accept % entity val-term)))))
     (emit env)))
 
-(defn- validate-indexes! [schema ops]
+(defn- validate-indexes! [schemas ops]
   (doseq [[op a b c :as step] ops]
     (case op
-      (:exists :union) (doseq [branch c] (validate-indexes! schema branch))
+      (:exists :union) (doseq [branch c] (validate-indexes! schemas branch))
       (:lookup :range)
       (let [attr (if (= op :lookup) c b)
-            spec (get schema attr)]
+            spec (get-in schemas [(peek step) attr])]
         (when-not (and (#{:db.type/keyword :db.type/string :db.type/long} (:db/valueType spec))
                        (or (and (= op :lookup) (= a :eavt)) (:db/unique spec) (:db/index spec))
                        (or (not= op :range) (= :db.type/long (:db/valueType spec))))
@@ -248,12 +264,17 @@
       nil)))
 
 (defn admit
-  "Lower a bounded program using the actual readable index schema."
+  "Lower a bounded program using its index schema. For transition-profile
+  supply a map from the symbols $before and $after to their respective schemas."
   ([form attrs width schema] (admit version form attrs width schema))
   ([profile form attrs width schema]
-   (when-not (#{version version-2} profile) (reject profile "Unknown contract profile"))
+   (when-not (#{version version-2 transition-profile} profile) (reject profile "Unknown contract profile"))
+   (when (and (= profile transition-profile)
+              (not (and (map? schema) (= transition-sources (set (keys schema)))
+                        (every? map? (vals schema)))))
+     (reject nil "Expected schemas for both transition snapshots"))
    (let [plan (lower profile form attrs width)]
-     (validate-indexes! schema (:ops plan))
+     (validate-indexes! (if (= profile transition-profile) schema {'$ schema}) (:ops plan))
      plan)))
 
 (defn- accumulate [projection env totals]
@@ -267,7 +288,7 @@
                             (catch ArithmeticException _ (stop! :numeric-overflow)))))))
         projection (or totals (repeat nil))))
 
-(defn- evaluate [{:keys [terms ops projection with]} db rows charge!]
+(defn- evaluate [{:keys [terms ops projection with]} sources rows charge!]
   (let [fields (mapv second projection)
         aggregated? (some #(not= :value (first %)) projection)
         basis (volatile! #{})
@@ -287,7 +308,7 @@
       (charge! :input)
       (when-let [env (reduce (fn [env [term x]] (or (match-term env term x) (reduced nil)))
                              {} (map vector terms row))]
-        (walk db charge! ops env emit)))
+        (walk sources charge! ops env emit)))
     (if aggregated? (set (vals @groups))
         (into #{} (map #(subvec % 0 (count fields))) @basis))))
 
@@ -296,9 +317,13 @@
   :rows is returned only on success. Fuel excludes admission and schema checks."
   ([form attrs width db rows fuel] (execute version form attrs width db rows fuel))
   ([profile form attrs width db rows fuel]
-   (when-not (and (instance? DB db) (vector? rows) (<= (count rows) 32)
-                  (every? #(and (vector? %) (= width (count %)) (every? scalar? %)) rows)
-                  (nat-int? fuel) (<= fuel 4096))
-     (reject nil "Input or budget outside profile"))
-   (let [plan (admit profile form attrs width (:schema db))]
-     (run profile fuel (fn [m] (evaluate plan db rows #(spend! m %)))))))
+   (let [transition? (= profile transition-profile)
+         sources (if transition? db {'$ db})]
+     (when-not (and (map? sources) (= (if transition? transition-sources '#{$}) (set (keys sources)))
+                    (every? #(instance? DB %) (vals sources)) (vector? rows) (<= (count rows) 32)
+                    (every? #(and (vector? %) (= width (count %)) (every? scalar? %)) rows)
+                    (nat-int? fuel) (<= fuel 4096))
+       (reject nil "Input or budget outside profile"))
+     (let [schema (if transition? (update-vals sources :schema) (:schema db))
+           plan (admit profile form attrs width schema)]
+       (run profile fuel (fn [m] (evaluate plan sources rows #(spend! m %))))))))

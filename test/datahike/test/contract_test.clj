@@ -199,3 +199,39 @@
                                                    (conj '[:find ?x :in $ $delta :where [$delta ?x]] clause)
                                                    #{} 1 (:schema db))))))
         (finally (d/release conn) (d/delete-database cfg))))))
+
+(deftest transition-snapshot-joins-and-fuel
+  (let [cfg {:store {:backend :memory :id (random-uuid)} :schema-flexibility :write}
+        _ (d/create-database cfg)
+        c (d/connect cfg)]
+    (try
+      (d/transact c [{:db/ident :show/price :db/valueType :db.type/long
+                      :db/index true :db/cardinality :db.cardinality/one}])
+      (let [id (get (:tempids (d/transact c [{:db/id "show" :show/price 10}])) "show")
+            before @c
+            after (:db-after (d/with before [[:db/add id :show/price 20]]))
+            sources {'$before before '$after after}
+            schemas (update-vals sources :schema)
+            rows [[id 10 12]]
+            head '[:find ?e :in $before $after $delta :where [$delta ?e ?lo ?hi]]
+            run (fn [q budget] (contract/execute contract/transition-profile q #{:show/price} 3 sources rows budget))]
+        (doseq [q [(conj head '[$before ?e :show/price 10] '[$after ?e :show/price 20])
+                   (conj head '[$before ?old :show/price 10] '[(= ?old ?e)])
+                   (conj head '[$before ?old :show/price ?p] '[(>= ?p ?lo)] '[(<= ?p ?hi)]
+                         '(not-join [?old] [$after ?old :show/price 10]))
+                   (conj head '[$after ?e :show/price 10])]]
+          (let [r (run q 128)]
+            (is (= :ok (:status r)))
+            (doseq [disable-planner? [false true]]
+              (binding [q/*disable-planner* disable-planner? q/*query-result-cache?* false]
+                (is (= (set (d/q q before after rows)) (:rows r)))))
+            (is (= (assoc r :limit (:used r)) (run q (:used r))))
+            (is (= :out-of-fuel (:status (run q (dec (:used r))))))))
+        (doseq [clause ['[?e :show/price 10] '[$ ?e :show/price 10]
+                        '[$other ?e :show/price 10] '[$before ?e :show/secret 10]]]
+          (is (thrown? clojure.lang.ExceptionInfo (run (conj head clause) 128))))
+        (let [q (conj head '[$before ?other :show/price 10])]
+          (is (thrown? clojure.lang.ExceptionInfo
+                       (contract/admit contract/transition-profile q #{:show/price} 3
+                                       (update-in schemas ['$before :show/price] dissoc :db/index))))))
+      (finally (d/release c) (d/delete-database cfg)))))
