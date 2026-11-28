@@ -1820,10 +1820,30 @@
               (log/raise ":db.fn/cas failed on datom [" e " " a " " v "], expected " ov
                          {:error :transact/cas, :old (first datoms), :expected ov, :new nv}))))))))
 
+(def ^:dynamic ^:no-doc *expansion-remaining* nil)
+
+(defn- spend-expansion! [remaining]
+  (when (zero? @remaining)
+    (throw (ex-info "Transaction expansion limit reached"
+                    {:error :transact/expansion-limit})))
+  (vswap! remaining dec))
+
+(defn- retraction-datoms [db pattern]
+  (if-let [remaining *expansion-remaining*]
+    (do
+      (spend-expansion! remaining)
+      ;; Current DB only. Use the normal index strategy directly so a cold
+      ;; search cache cannot realize a full slice before we visit its rows.
+      (if-let [{:keys [db-index lookup-fn]} (dbs/search-strategy-with-index db pattern false)]
+        (into [] (map (fn [d] (spend-expansion! remaining) d))
+              (lookup-fn db-index pattern))
+        []))
+    (dbi/search db pattern)))
+
 (defn retract-entity [db report op-vec]
   (let [[_ e] op-vec]
     (if-let [e (dbu/entid db e)]
-      (let [e-datoms (vec (dbi/search db [e]))
+      (let [e-datoms (vec (retraction-datoms db [e]))
             v-datoms (into []
                            (mapcat (fn [attr]
                                      ;; TODO: Consider using
@@ -1833,7 +1853,7 @@
                                      (let [a (if (dbu/attr-has-ref? db attr)
                                                (dbi/-ref-for db attr)
                                                attr)]
-                                       (dbi/search db [nil a e]))))
+                                       (retraction-datoms db [nil a e]))))
                            (dbi/-attrs-by db :db.type/ref))]
         [(transduce cat transact-retract-datom report [e-datoms v-datoms])
          (retract-components db e-datoms)])
@@ -1935,13 +1955,13 @@
                                       ;; :db.secondary/only stores the content hash in the
                                       ;; primary indexes, so search by hash to find the datom.
                                       [e a (if (dbu/secondary-only? db a) (secondary-only-hash v) v)]))
-                          datoms (vec (dbi/search db pattern))]
+                          datoms (vec (retraction-datoms db pattern))]
                       [(reduce transact-retract-datom report datoms) []])
                     [report []])
 
       :db.fn/retractAttribute (if-let [e (dbu/entid db e)]
                                 (let [a (dbu/normalize-and-validate-attr a op-vec db)
-                                      datoms (vec (dbi/search db [e a]))]
+                                      datoms (vec (retraction-datoms db [e a]))]
                                   [(reduce transact-retract-datom report datoms)
                                    (retract-components db datoms)])
                                 [report []])
@@ -2528,6 +2548,8 @@
                 (concat meta-entities
                         initial-es')
                 initial-es')]
+      (when (and *expansion-remaining* (seq es))
+        (spend-expansion! *expansion-remaining*))
       (let [[entity & entities] es
             {:keys [tempids db-after]} report
             db db-after]
