@@ -33,6 +33,12 @@
             (is (= (:tx-data (d/with db retry)) (outcome db retry 7))))
           (is (= (set (keys (d/with db []))) (set (keys (tx/prepare db [] 0)))))
           (is (= [] (outcome db [] 0)))
+          (let [counts (atom [])
+                record! #(swap! counts conj %)]
+            (is (empty? (:tx-data (tx/prepare db [redundant] 9 record!))))
+            (is (thrown? clojure.lang.ExceptionInfo (tx/prepare db [redundant redundant] 1 record!)))
+            (is (thrown? clojure.lang.ExceptionInfo (tx/prepare db [42] 9 record!)))
+            (is (= [1 1 1] @counts)))
           (is (= [] (outcome db [redundant] 1)))
           (is (= :transact/expansion-limit (outcome db [redundant redundant] 1)))
           (is (= :transact/expansion-limit (outcome db [{:db/id child :sample/id 2}] 1)))

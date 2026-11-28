@@ -212,3 +212,6 @@ Input decoding, map inspection, uniqueness checks, schema changes, transaction
 functions, netting, index maintenance and physical I/O have separate costs which
 this API does not bound. Callers admitting untrusted transactions need separate
 controls for those paths.
+
+An optional fourth argument to `prepare` receives the number of expansion units
+consumed. It runs once as preparation exits, including when a transaction fails.
