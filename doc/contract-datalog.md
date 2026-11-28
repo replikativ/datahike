@@ -195,3 +195,20 @@ price. A first engine-wide experiment could expose opt-in work counters for
 these stages, exercise one-to-many joins and misses, and compare cold and
 warm plans. Contracts would continue to use their pinned operator schedule
 while those counters and the cost of index traversal are evaluated.
+
+## Transaction preparation
+
+On the JVM, `datahike.experimental.transaction/prepare` takes a current database,
+transaction data and a nonnegative integer limit. It returns the ordinary
+transaction report on success. It throws with `:error :transact/expansion-limit`
+when the next logical unit exceeds the limit. The input database stays immutable.
+
+Each transactor queue entry costs one unit, including expanded map operations,
+component retractions, metadata, tuple flushes and entries revisited on a tempid
+retry. Ordinary retractions also spend one unit per index lookup (including a
+miss) and one per matching datom as the slice is collected. This includes outgoing
+facts and incoming references. The schedule measures these logical operations.
+Input decoding, map inspection, uniqueness checks, schema changes, transaction
+functions, netting, index maintenance and physical I/O have separate costs which
+this API does not bound. Callers admitting untrusted transactions need separate
+controls for those paths.
