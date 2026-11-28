@@ -3,6 +3,7 @@
    #?(:clj [clojure.test :refer [deftest is testing]]
       :cljs [cljs.test :refer-macros [deftest is testing]])
    [datahike.api :as d]
+   #?(:clj [datahike.array :as arr])
    [datahike.db :as db]
    [datahike.query :as q]
    [datahike.query.execute :as execute]))
@@ -57,6 +58,31 @@
         (doseq [legacy? [false true]]
           (binding [q/*disable-planner* legacy? q/*query-result-cache?* false]
             (is (= #{[10] [11]} (d/q query source)))))))))
+
+#?(:clj
+   (deftest native-probe-keys-preserve-integer-equivalence
+     (let [values [(byte 1) (short 1) (int 1) (long 1) 1N (biginteger 1)
+                   (double 1) 1.0M 1/2
+                   [1N] [(int 1)] (dec' Long/MIN_VALUE)
+                   Long/MIN_VALUE (bigint Long/MIN_VALUE) Long/MAX_VALUE
+                   (bigint Long/MAX_VALUE) (inc' Long/MAX_VALUE)
+                   (biginteger (inc' Long/MAX_VALUE))]]
+       (doseq [x values y values]
+         (let [members (doto (java.util.HashSet.) (.add (arr/native-key x)))]
+           (is (= (= x y) (.contains members (arr/native-key y)))
+               (pr-str [x (type x) y (type y)])))))))
+
+#?(:clj
+   (deftest mixed-number-probes-propagate-producer-rows
+     (let [db (d/db-with (db/empty-db)
+                         [[:db/add 1 :left (int 23)]
+                          [:db/add 2 :left (long 23)]
+                          [:db/add 10 :right (long 23)]
+                          [:db/add 11 :right (int 24)]])
+           query '[:find ?left ?right :where [?left :left ?x] [?right :right ?x]]]
+       (doseq [legacy? [false true]]
+         (binding [q/*disable-planner* legacy? q/*query-result-cache?* false]
+           (is (= #{[1 10] [2 10]} (d/q query db))))))))
 
 (deftest prepared-non-point-programs-fall-back-to-the-direct-join
   (let [source (d/db-with (db/empty-db)

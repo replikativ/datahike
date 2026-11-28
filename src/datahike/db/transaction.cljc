@@ -1006,6 +1006,8 @@
       report)
     report))
 
+(declare sync-new-attribute-index)
+
 (defn- transact-report
   ([report datom] (transact-report report datom false))
   ([report datom upsert?] (transact-report report datom upsert? ::not-looked-up))
@@ -1087,6 +1089,8 @@
                             (or (= :db/ident a-ident) (ds/secondary-index-attr? a-ident)))
                        (assoc ::as-written true)
                        true (update-in [:db-after] write)
+                       (and db-attr? (#{:db/ident :db/index :db/unique :db/valueType} a-ident))
+                       (sync-new-attribute-index db (.-e datom))
                        collision? (update-in [:db-after :hash] + (hash old))
                        true (update-in [:tx-data] conj datom))]
          ;; ONE resolving lookup, not a resolving predicate plus a raw lookup.
@@ -2137,6 +2141,58 @@
                       :value (.-v current)}))
         (recur (next remaining) current)))))
 
+(defn- backfill-attribute [db ident]
+  (let [db (reduce (fn [db ^Datom d]
+                     (let [n (:op-count db)]
+                       (-> db
+                           (update :avet #(di/-insert % d :avet n))
+                           (update :op-count inc))))
+                   db (schema-attr-current-datoms db ident))]
+    (reduce (fn [db ^Datom d]
+              (let [n (:op-count db)]
+                (-> db
+                    (update :temporal-avet #(di/-temporal-insert % d :avet n))
+                    (update :op-count inc))))
+            db (schema-attr-history-datoms db ident))))
+
+(defn- clear-current-avet [db ident]
+  (reduce (fn [db ^Datom d]
+            (let [n (:op-count db)]
+              (-> db
+                  (update :avet #(di/-remove % d :avet n))
+                  (update :op-count inc))))
+          db (schema-attr-current-datoms db ident)))
+
+(defn- sync-new-attribute-index
+  ;; An attribute declared in this transaction has no entry in the
+  ;; schema against which end-of-transaction migrations are compared.
+  ;; Earlier operations may already have written its values. Maintain the
+  ;; index at the schema operation so subsequent transaction functions and
+  ;; lookup refs see exactly the same rows as an attribute scan.
+  [{:keys [db-before db-after] :as report} prior-db eid]
+  (let [ident (get (:schema db-after) eid)]
+    (if (and (keyword? ident) (nil? (get (:schema db-before) ident)))
+      (let [;; A rename in an attribute-refs DB keeps the physical index
+            ;; key (the attribute EID). Compare against its previous name.
+            prior-ident (get (:schema prior-db) eid ident)
+            was-indexed? (dbu/indexing? prior-db prior-ident)
+            indexed? (dbu/indexing? db-after ident)]
+        (cond-> report
+          (and indexed? (not was-indexed?))
+          (update :db-after backfill-attribute ident)
+
+          (and was-indexed? (not indexed?))
+          (update :db-after clear-current-avet ident)
+
+          ;; Only a late unique declaration with preceding values needs
+          ;; final validation. Declarations before their data use normal
+          ;; per-write uniqueness checks.
+          (and (get-in db-after [:schema ident :db/unique])
+               (not (get-in prior-db [:schema prior-ident :db/unique]))
+               (seq (schema-attr-current-datoms db-after ident)))
+          (update ::new-unique-checks (fnil conj #{}) ident)))
+      report)))
+
 (defn- backfill-enabled-indices
   "Index-backfill migration: for every attribute whose :db/index or
    :db/unique was ENABLED by this transaction (assess-schema-transition's
@@ -2162,10 +2218,12 @@
                                 (filter (fn [ident]
                                           (let [o (get old-schema ident)
                                                 n (get new-schema ident)]
-                                            (and (map? o) (indexed-entry? n)
-                                                 (or (not (indexed-entry? o))
-                                                     (and (:db/unique n)
-                                                          (not (:db/unique o)))))))))
+                                            (or (and (map? o) (indexed-entry? n)
+                                                     (or (not (indexed-entry? o))
+                                                         (and (:db/unique n)
+                                                              (not (:db/unique o)))))
+                                                (and (:db/unique n)
+                                                     (contains? (::new-unique-checks report) ident)))))))
                           (keys new-schema))
             enabled #?(:clj (remove #(admission/covers? prepared %
                                                         (get old-schema %) (get new-schema %)) enabled)
@@ -2177,24 +2235,10 @@
                     (reduce
                      (fn [db ident]
                        (let [unique? (get-in new-schema [ident :db/unique])
-                             db (if (indexed-entry? (get old-schema ident))
+                             db (if (or (nil? (get old-schema ident))
+                                        (indexed-entry? (get old-schema ident)))
                                   db
-                                  (as-> db db
-                                    (reduce (fn [db ^Datom d]
-                                              (let [op-count (:op-count db)]
-                                                (-> db
-                                                    (update :avet #(di/-insert % d :avet op-count))
-                                                    (update :op-count inc))))
-                                            db (schema-attr-current-datoms db ident))
-                                    (if (dbi/-keep-history? db)
-                                      (reduce (fn [db ^Datom d]
-                                                (let [op-count (:op-count db)]
-                                                  (-> db
-                                                      (update :temporal-avet
-                                                              #(di/-temporal-insert % d :avet op-count))
-                                                      (update :op-count inc))))
-                                              db (schema-attr-history-datoms db ident))
-                                      db)))]
+                                  (backfill-attribute db ident))]
                          ;; Validate only after the candidate index is complete.
                          ;; An ordered scan needs no all-values hash set, and
                          ;; rejection still precedes publication of any changes.
@@ -2237,16 +2281,7 @@
           report
           (update report :db-after
                   (fn [db]
-                    (reduce
-                     (fn [db ident]
-                       (reduce (fn [db ^Datom datom]
-                                 (let [op-count (:op-count db)]
-                                   (-> db
-                                       (update :avet #(di/-remove % datom :avet op-count))
-                                       (update :op-count inc))))
-                               db
-                               (schema-attr-current-datoms db ident)))
-                     db disabled))))))))
+                    (reduce clear-current-avet db disabled))))))))
 
 (defn- validate-ident-renames!
   "Refuse an attribute RENAME that would silently split the attribute in two.
@@ -2535,6 +2570,7 @@
                 ;; enabled on existing attributes — must run while
                 ;; :db-after is still transient.
                 (backfill-enabled-indices prepared)
+                (dissoc ::new-unique-checks)
                 ;; The inverse transition is equally atomic: remove the full
                 ;; current AVET slice before this database value is published.
                 remove-disabled-indices

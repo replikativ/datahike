@@ -6,6 +6,11 @@ When something is added, it's typically marked *Experimental*. When the API cont
 
 ## 0.8
 
+- **Indexing an attribute created earlier in the same transaction includes
+  its earlier values.** Transaction functions, lookup refs and subsequent
+  indexed reads can see values written before the index declaration.
+  Adding uniqueness also checks those values for duplicates at commit.
+  The fix applies to new transactions. (0.8)
 - **Creating and altering ordinary attributes costs less on large schemas.**
   The transactor updates reverse-schema memberships for the changed attribute
   at each operation. Later operations in the same transaction see the update.
