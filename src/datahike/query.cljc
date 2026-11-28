@@ -2185,12 +2185,14 @@
 
 (def ^:dynamic ^:private *delta-meter* nil)
 
+(defn- spend-fuel! [meter event]
+  (let [{:keys [used limit]} @meter]
+    (when (= used limit)
+      (throw (ex-info "Query exhausted its fuel" {:datahike/delta-out-of-fuel true})))
+    (vswap! meter #(-> % (update :used inc) (update-in [:events event] inc)))))
+
 (defn- spend-delta! [event]
-  (when-let [meter *delta-meter*]
-    (let [{:keys [used limit]} @meter]
-      (when (= used limit)
-        (throw (ex-info "Delta query exhausted its fuel" {:datahike/delta-out-of-fuel true})))
-      (vswap! meter #(-> % (update :used inc) (update-in [:events event] inc))))))
+  (when *delta-meter* (spend-fuel! *delta-meter* event)))
 
 (defn lookup-pattern-coll [coll pattern orig-pattern]
   (let [attr->idx (var-mapping orig-pattern (range))
@@ -6666,14 +6668,13 @@
 #?(:clj
    (defn- run-metered [limit events evaluate]
      (let [meter (volatile! {:used 0 :limit limit :events (zipmap events (repeat 0))})]
-       (binding [*delta-meter* meter *disable-planner* true *query-result-cache?* false]
-         (try
-           (let [result (evaluate)]
-             (assoc @meter :status :ok :rows result))
-           (catch clojure.lang.ExceptionInfo e
-             (if (:datahike/delta-out-of-fuel (ex-data e))
-               (assoc @meter :status :out-of-fuel)
-               (throw e))))))))
+       (try
+         (let [result (evaluate meter)]
+           (assoc @meter :status :ok :rows result))
+         (catch clojure.lang.ExceptionInfo e
+           (if (:datahike/delta-out-of-fuel (ex-data e))
+             (assoc @meter :status :out-of-fuel)
+             (throw e)))))))
 
 #?(:clj
    (defn metered-delta-query
@@ -6683,50 +6684,43 @@
      [query rows limit]
      (when-not (and (= query delta-sum-query) (nat-int? limit) (vector? rows))
        (throw (ex-info "Unsupported metered delta query, source or budget" {})))
-     (run-metered limit [:scan :project :aggregate] #(into #{} (q query rows)))))
+     (run-metered limit [:scan :project :aggregate]
+                  (fn [meter]
+                    (binding [*delta-meter* meter *disable-planner* true *query-result-cache?* false]
+                      (into #{} (q query rows)))))))
 
 #?(:clj
-   (def commodity-match-query
-     "Violating posting IDs. An existing untyped account accepts any commodity."
-     '[:find ?leg :in $ $postings
-       :where [$postings ?leg ?key ?posted]
-       (or-join [?key ?posted]
-                (and [(identity ?posted) _] (not [_ :invariant.stock/account-key ?key]))
-                (and [?account :invariant.stock/account-key ?key]
-                     [?account :invariant.stock/account-commodity ?actual]
-                     [(not= ?actual ?posted)]))]))
-
-#?(:clj
-   (defn- metered-point [db index prefix]
-     (spend-delta! :seek)
-     (when-let [datom (first (dbi/datoms db index prefix))]
-       (spend-delta! :datom)
-       datom)))
-
-#?(:clj
-   (defn metered-commodity-query
-     "Pinned indexed nested-loop plan over signed posting order. A logical
-     point probe costs one seek plus one unit for a visible match. Physical
-     page reads and cache hits do not participate in the receipt."
-     [query db rows limit]
-     (let [schema (:schema db)]
-       (when-not (and (= query commodity-match-query) (vector? rows) (nat-int? limit)
-                      (= :db.unique/identity (get-in schema [:invariant.stock/account-key :db/unique]))
-                      (= :db.cardinality/one (get-in schema [:invariant.stock/account-commodity :db/cardinality])))
-         (throw (ex-info "Unsupported indexed contract, schema, input or budget" {}))))
+   (defn metered-point-plan
+     "Run a trusted, synchronous JVM plan on a current database. evaluate takes
+     charge! (one declared application event) and point (index, prefix).
+     Point accepts a unique AVET key or a cardinality-one EAVT attribute.
+     A probe costs one seek plus one datom on a hit. Consume results eagerly."
+     [db limit application-events evaluate]
+     (when-not (and (nat-int? limit) (set? application-events)
+                    (every? keyword? application-events)
+                    (not-any? #{:seek :datom} application-events)
+                    (instance? DB db))
+       (throw (ex-info "Unsupported point plan" {})))
      (run-metered
-      limit [:posting :seek :datom :compare]
-      #(reduce (fn [violations row]
-                 (spend-delta! :posting)
-                 (when-not (and (vector? row) (= 3 (count row)) (nat-int? (nth row 0))
-                                (string? (nth row 1)) (keyword? (nth row 2)))
-                   (throw (ex-info "Invalid commodity posting" {})))
-                 (let [[leg key posted] row
-                       account (metered-point db :avet [:invariant.stock/account-key key])]
-                   (if-not account
-                     (conj violations [leg])
-                     (if-let [commodity (metered-point db :eavt [(nth account 0) :invariant.stock/account-commodity])]
-                       (do (spend-delta! :compare)
-                           (if (= posted (nth commodity 2)) violations (conj violations [leg])))
-                       violations))))
-               #{} rows))))
+      limit (into application-events [:seek :datom])
+      (fn [meter]
+        (let [schema (:schema db)
+              charge! (fn [event]
+                        (when-not (contains? application-events event)
+                          (throw (ex-info "Undeclared point-plan event" {:event event})))
+                        (spend-fuel! meter event))
+              point (fn [index prefix]
+                      (let [[x y] prefix]
+                        (when-not (and (vector? prefix) (= 2 (count prefix))
+                                       (case index
+                                         :avet (and (keyword? x) (some? y)
+                                                    (get-in schema [x :db/unique]))
+                                         :eavt (and (pos-int? x) (keyword? y)
+                                                    (= :db.cardinality/one (get-in schema [y :db/cardinality])))
+                                         false))
+                          (throw (ex-info "Expected a single-valued point lookup" {:index index})))
+                        (spend-fuel! meter :seek)
+                        (when-let [datom (first (dbi/datoms db index prefix))]
+                          (spend-fuel! meter :datom)
+                          datom)))]
+          (evaluate charge! point))))))

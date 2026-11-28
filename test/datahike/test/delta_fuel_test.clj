@@ -19,26 +19,27 @@
     (is (thrown? clojure.lang.ExceptionInfo
                  (q/metered-delta-query '[:find ?x :where [?x :a]] rows 12)))))
 
-(deftest indexed-plan-agrees-with-datalog
+(deftest point-plan-charges-seeks-and-visible-datoms
   (let [cfg {:store {:backend :memory :id (random-uuid)} :schema-flexibility :write}]
     (d/create-database cfg)
     (let [c (d/connect cfg)]
       (try
-        (d/transact c [{:db/ident :invariant.stock/account-key :db/valueType :db.type/string
-                        :db/unique :db.unique/identity :db/cardinality :db.cardinality/one}
-                       {:db/ident :invariant.stock/account-commodity :db/valueType :db.type/keyword
-                        :db/cardinality :db.cardinality/one}])
-        (d/transact c [{:invariant.stock/account-key "typed" :invariant.stock/account-commodity :bolts}
-                       {:invariant.stock/account-key "general"}])
-        (let [rows [[0 "typed" :bolts] [1 "typed" :nuts] [2 "general" :nuts] [3 "unknown" :bolts]]
-              db @c
-              ref-result (set (q/q q/commodity-match-query db rows))]
-          (is (= #{[1] [3]} ref-result))
-          (doseq [ordered [rows (vec (reverse rows))]]
-            (let [complete (q/metered-commodity-query q/commodity-match-query db ordered 18)]
-              (is (= ref-result (:rows complete)))
-              (is (= {:posting 4 :seek 7 :datom 5 :compare 2} (:events complete))))
-            (doseq [n (range 18)]
-              (let [r (q/metered-commodity-query q/commodity-match-query db ordered n)]
-                (is (= [:out-of-fuel n n] [(:status r) (:used r) (reduce + (vals (:events r)))]))))))
+        (d/transact c [{:db/ident :example/key :db/valueType :db.type/string
+                        :db/unique :db.unique/identity :db/cardinality :db.cardinality/one}])
+        (d/transact c [{:example/key "a"}])
+        (let [probe (fn [limit key]
+                      (q/metered-point-plan @c limit #{} (fn [_ point] (point :avet [:example/key key]))))]
+          (is (= [:out-of-fuel {:seek 0 :datom 0}] ((juxt :status :events) (probe 0 "a"))))
+          (is (= [:out-of-fuel {:seek 1 :datom 0}] ((juxt :status :events) (probe 1 "a"))))
+          (is (= [:ok {:seek 1 :datom 1}] ((juxt :status :events) (probe 2 "a"))))
+          (is (= [:ok {:seek 1 :datom 0}] ((juxt :status :events) (probe 1 "b"))))
+          (is (thrown? clojure.lang.ExceptionInfo (probe 1 nil)))
+          (doseq [[idx prefix] [[:avet [:example/unknown "a"]] [:avet [:example/key]]
+                                [:eavt [nil :example/key]] [:aevt [:example/key 1]]]]
+            (is (thrown? clojure.lang.ExceptionInfo
+                         (q/metered-point-plan @c 1 #{} (fn [_ point] (point idx prefix))))))
+          (is (thrown? clojure.lang.ExceptionInfo
+                       (q/metered-point-plan @c 1 #{} (fn [charge! _] (charge! :other)))))
+          (is (thrown? clojure.lang.ExceptionInfo
+                       (q/metered-point-plan @c 1 #{:seek} (fn [_ _] nil)))))
         (finally (d/release c) (d/delete-database cfg))))))
