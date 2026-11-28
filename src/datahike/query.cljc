@@ -2183,30 +2183,9 @@
           false))
       true)))
 
-(def ^:dynamic ^:private *delta-meter* nil)
-
-(defn- spend-fuel! [meter event]
-  (let [{:keys [used limit]} @meter]
-    (when (= used limit)
-      (throw (ex-info "Query exhausted its fuel" {:datahike/delta-out-of-fuel true})))
-    (vswap! meter #(-> % (update :used inc) (update-in [:events event] inc)))))
-
-(defn- spend-delta! [event]
-  (when *delta-meter* (spend-fuel! *delta-meter* event)))
-
 (defn lookup-pattern-coll [coll pattern orig-pattern]
   (let [attr->idx (var-mapping orig-pattern (range))
-        accept? (if *delta-meter*
-                  (fn [row]
-                    (spend-delta! :scan)
-                    (when-not (and (vector? row) (= 4 (count row))
-                                   (nat-int? (nth row 0)) (keyword? (nth row 1))
-                                   (keyword? (nth row 2)) (int? (nth row 3))
-                                   (<= -2147483648 (nth row 3) 2147483647))
-                      (throw (ex-info "Invalid inventory delta tuple" {:type :invalid-delta-row})))
-                    (matches-pattern? pattern row))
-                  #(matches-pattern? pattern %))
-        data (filter accept? coll)]
+        data (filter #(matches-pattern? pattern %) coll)]
     (rel/->Relation
      attr->idx
      (if-not resource/*max-intermediate-slots*
@@ -3666,7 +3645,6 @@
                                :clj ^{:tag "[[Ljava.lang.Object;"} t1) acc
                             t2 (:tuples rel)]
                         (let [_ (tick)
-                              _ (when *delta-meter* (spend-delta! :project))
                               res (aclone t1)]
                           (dotimes [i len]
                             (when-some [idx (aget copy-map i)]
@@ -3702,10 +3680,7 @@
           (if (instance? Aggregate element)
             (let [f (-context-resolve (:fn element) context)
                   args (map #(-context-resolve % context) (butlast (:args element)))
-                  value-at (if *delta-meter*
-                             (fn [tuple] (spend-delta! :aggregate) (nth tuple i))
-                             #(nth % i))
-                  vals (map value-at tuples)]
+                  vals (map #(nth % i) tuples)]
               (apply f (concat args [vals])))
             fixed-value))
         find-elements
@@ -6657,70 +6632,3 @@
   :bind-by-fn         bind-by-fn
   :lookup-batch-search lookup-batch-search
   :lookup-pattern-coll lookup-pattern-coll})
-
-#?(:clj
-   (def delta-sum-query
-     "Frozen v1 relation profile: [leg-id commodity location signed-quantity].
-     The leg id in :with preserves distinct movements of equal quantities."
-     '[:find ?commodity (sum ?quantity) :with ?leg :in $delta
-       :where [$delta ?leg ?commodity ?location ?quantity]]))
-
-#?(:clj
-   (defn- run-metered [limit events evaluate]
-     (let [meter (volatile! {:used 0 :limit limit :events (zipmap events (repeat 0))})]
-       (try
-         (let [result (evaluate meter)]
-           (assoc @meter :status :ok :rows result))
-         (catch clojure.lang.ExceptionInfo e
-           (if (:datahike/delta-out-of-fuel (ex-data e))
-             (assoc @meter :status :out-of-fuel)
-             (throw e)))))))
-
-#?(:clj
-   (defn metered-delta-query
-     "Run the supported v1 aggregation with a deterministic logical-work budget.
-     One unit per source tuple examined, projected tuple, and aggregate input.
-     Exhaustion consumes exactly the limit. Unrelated engine errors propagate."
-     [query rows limit]
-     (when-not (and (= query delta-sum-query) (nat-int? limit) (vector? rows))
-       (throw (ex-info "Unsupported metered delta query, source or budget" {})))
-     (run-metered limit [:scan :project :aggregate]
-                  (fn [meter]
-                    (binding [*delta-meter* meter *disable-planner* true *query-result-cache?* false]
-                      (into #{} (q query rows)))))))
-
-#?(:clj
-   (defn metered-point-plan
-     "Run a trusted, synchronous JVM plan on a current database. evaluate takes
-     charge! (one declared application event) and point (index, prefix).
-     Point accepts a unique AVET key or a cardinality-one EAVT attribute.
-     A probe costs one seek plus one datom on a hit. Consume results eagerly."
-     [db limit application-events evaluate]
-     (when-not (and (nat-int? limit) (set? application-events)
-                    (every? keyword? application-events)
-                    (not-any? #{:seek :datom} application-events)
-                    (instance? DB db))
-       (throw (ex-info "Unsupported point plan" {})))
-     (run-metered
-      limit (into application-events [:seek :datom])
-      (fn [meter]
-        (let [schema (:schema db)
-              charge! (fn [event]
-                        (when-not (contains? application-events event)
-                          (throw (ex-info "Undeclared point-plan event" {:event event})))
-                        (spend-fuel! meter event))
-              point (fn [index prefix]
-                      (let [[x y] prefix]
-                        (when-not (and (vector? prefix) (= 2 (count prefix))
-                                       (case index
-                                         :avet (and (keyword? x) (some? y)
-                                                    (get-in schema [x :db/unique]))
-                                         :eavt (and (pos-int? x) (keyword? y)
-                                                    (= :db.cardinality/one (get-in schema [y :db/cardinality])))
-                                         false))
-                          (throw (ex-info "Expected a single-valued point lookup" {:index index})))
-                        (spend-fuel! meter :seek)
-                        (when-let [datom (first (dbi/datoms db index prefix))]
-                          (spend-fuel! meter :datom)
-                          datom)))]
-          (evaluate charge! point))))))
