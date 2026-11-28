@@ -6691,10 +6691,10 @@
      '[:find ?leg :in $ $postings
        :where [$postings ?leg ?key ?posted]
        (or-join [?key ?posted]
-         (and [(identity ?posted) _] (not [_ :invariant.stock/account-key ?key]))
-         (and [?account :invariant.stock/account-key ?key]
-              [?account :invariant.stock/account-commodity ?actual]
-              [(not= ?actual ?posted)]))]))
+                (and [(identity ?posted) _] (not [_ :invariant.stock/account-key ?key]))
+                (and [?account :invariant.stock/account-key ?key]
+                     [?account :invariant.stock/account-commodity ?actual]
+                     [(not= ?actual ?posted)]))]))
 
 #?(:clj
    (defn- metered-point [db index prefix]
